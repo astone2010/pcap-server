@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0-dev.2 — 2026-09-11
+
+### Fixes
+
+- Fix container crash on startup when bind-mount directories are not owned by
+  UID 1000 — entrypoint now auto-fixes ownership before starting
+- SSH keys managed via Admin GUI (upload/delete) instead of manual file placement
+
+### Changes
+
+- Remove `build.yml` CI workflow — builds only run on tag push
+- ssh-keys volume no longer mounted read-only (app writes uploaded keys)
+- Add `gosu` to container for privilege drop in entrypoint
+
 ## 0.1.0-dev.1 — 2026-09-11
 
 Development build, not yet merged to `main`. Tagged directly from a feature

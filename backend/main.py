@@ -5,7 +5,7 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -44,7 +44,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-app = FastAPI(title="pcap-server", version="0.1.0-dev.1")
+app = FastAPI(title="pcap-server", version="0.1.0-dev.2")
 
 db = Database(DATA_DIR / "pcap-server.db")
 ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR)
@@ -420,6 +420,42 @@ async def list_ssh_keys(user: dict = Depends(get_current_user)):
         if f.is_file() and f.name != ".gitkeep":
             keys.append(f.name)
     return sorted(keys)
+
+
+@app.post("/api/admin/ssh-keys")
+async def upload_ssh_key(file: UploadFile, user: dict = Depends(require_admin)):
+    import re
+    name = file.filename or ""
+    if not name or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        raise HTTPException(400, "invalid key name — use only letters, digits, dots, dashes, underscores")
+    if len(name) > 255:
+        raise HTTPException(400, "filename too long")
+    dest = (SSH_KEYS_DIR / name).resolve()
+    if not str(dest).startswith(str(SSH_KEYS_DIR.resolve())):
+        raise HTTPException(400, "invalid key path")
+    if dest.exists():
+        raise HTTPException(409, f"key '{name}' already exists")
+    content = await file.read()
+    if len(content) > 64 * 1024:
+        raise HTTPException(400, "key file too large (max 64 KB)")
+    SSH_KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(content)
+    dest.chmod(0o600)
+    return {"ok": True, "name": name}
+
+
+@app.delete("/api/admin/ssh-keys/{key_name}")
+async def delete_ssh_key(key_name: str, user: dict = Depends(require_admin)):
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", key_name):
+        raise HTTPException(400, "invalid key name")
+    path = (SSH_KEYS_DIR / key_name).resolve()
+    if not str(path).startswith(str(SSH_KEYS_DIR.resolve())):
+        raise HTTPException(400, "invalid key path")
+    if not path.exists():
+        raise HTTPException(404, "key not found")
+    path.unlink()
+    return {"ok": True}
 
 
 # --- captures ---

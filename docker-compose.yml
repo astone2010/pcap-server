@@ -1,25 +1,20 @@
 # Create the bind-mount directories before starting:
 #   mkdir -p ssh-keys data captures
 #
-# The container runs as a non-root user (appuser, UID 1000).
-# Ensure the data and captures directories are writable:
-#   chown -R 1000:1000 data captures
+# The entrypoint automatically fixes ownership for the container's
+# non-root user (appuser, UID 1000). No manual chown needed.
 #
-# ssh-keys is mounted read-only — place private key files there
-# and ensure they are readable by UID 1000:
-#   chmod 600 ssh-keys/*
-#   chown 1000:1000 ssh-keys/*
+# SSH keys are managed via the Admin panel in the web UI.
 
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.1
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.2
     ports:
       - "8080:8080"
     volumes:
       - type: bind
         source: ./ssh-keys
         target: /app/ssh-keys
-        read_only: true
       - type: bind
         source: ./data
         target: /app/data

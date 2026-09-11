@@ -170,6 +170,7 @@ function initTabs() {
             if (tab.dataset.tab === "admin") {
                 loadAdminSettings();
                 loadAdminUsers();
+                loadAdminSSHKeys();
                 loadAdminKnownHosts();
             }
         });
@@ -754,6 +755,68 @@ async function adminDeleteUser(userId) {
         loadAdminUsers();
     } catch (e) {
         $("admin-user-msg").textContent = e.message;
+    }
+}
+
+async function loadAdminSSHKeys() {
+    try {
+        const keys = await api("/api/ssh-keys");
+        const el = $("admin-ssh-keys");
+        if (!keys.length) {
+            el.innerHTML = '<span style="color:var(--text-muted)">No SSH keys uploaded</span>';
+            return;
+        }
+        el.innerHTML = `<table class="admin-table">
+            <thead><tr><th>Key Name</th><th></th></tr></thead>
+            <tbody>${keys.map((k) => `
+                <tr>
+                    <td>${escHtml(k)}</td>
+                    <td><button class="btn btn-sm btn-danger" onclick="adminDeleteKey('${escHtml(k)}')">Delete</button></td>
+                </tr>`).join("")}
+            </tbody>
+        </table>`;
+    } catch (e) {
+        $("admin-ssh-keys").innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
+    }
+}
+
+async function adminUploadKey() {
+    const msgEl = $("admin-key-msg");
+    msgEl.textContent = "";
+    msgEl.className = "error-msg";
+    const fileInput = $("admin-key-file");
+    if (!fileInput.files.length) {
+        msgEl.textContent = "Select a key file first";
+        return;
+    }
+    const formData = new FormData();
+    formData.append("file", fileInput.files[0]);
+    try {
+        const resp = await fetch("/api/admin/ssh-keys", {
+            method: "POST",
+            credentials: "same-origin",
+            body: formData,
+        });
+        if (!resp.ok) {
+            const j = await resp.json().catch(() => ({}));
+            throw new Error(j.detail || resp.statusText);
+        }
+        fileInput.value = "";
+        msgEl.textContent = "Key uploaded";
+        msgEl.className = "success-msg";
+        loadAdminSSHKeys();
+    } catch (e) {
+        msgEl.textContent = e.message;
+    }
+}
+
+async function adminDeleteKey(name) {
+    if (!confirm(`Delete SSH key "${name}"? Servers using this key will no longer connect.`)) return;
+    try {
+        await api(`/api/admin/ssh-keys/${encodeURIComponent(name)}`, { method: "DELETE" });
+        loadAdminSSHKeys();
+    } catch (e) {
+        $("admin-key-msg").textContent = e.message;
     }
 }
 
