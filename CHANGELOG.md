@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-dev.3 — 2026-09-11
+
+### Fixes
+
+- Fix login/registration failing over plain HTTP — session cookie had
+  `Secure` flag hardcoded, browsers silently dropped it on non-HTTPS
+
+### Changes
+
+- `COOKIE_SECURE` env var controls Secure cookie flag (default: true)
+- Set `COOKIE_SECURE=false` in docker-compose for HTTP/LAN deployments
+
 ## 0.1.0-dev.2 — 2026-09-11
 
 ### Fixes
