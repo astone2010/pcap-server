@@ -1,15 +1,9 @@
 # Changelog
 
-## 0.1.0-dev.5 — 2026-09-11
+## 0.1.0-dev.6 — 2026-09-11
 
 ### Features
 
-- Run tcpdump under `sudo -n` per server, for hosts where the SSH user is not
-  root. Set on the server, so every capture against it inherits the choice.
-- Edit a saved server after creation — name, host, port, username, SSH key and
-  the sudo flag. Previously a key could only be chosen at creation time.
-- Pick the capture interface from a dropdown populated by reading
-  `/sys/class/net` on the target host, instead of typing a name blind.
 - Move the flag picker from Capture to the Viewer, where the flags actually do
   something. A capture is always written with `tcpdump -w`, so tcpdump's display
   flags never changed the saved pcap; they now control how the packet list is
@@ -20,8 +14,7 @@
   timestamp and resolution flags are mutually exclusive.
 - Flags are split into a "Standard" box (`-n`, `-nn`, with `-nn` on by default
   and dot-marked) and a "Niche" box for the situational rest. The buttons are
-  larger, a selected one is clearly highlighted, each has a tooltip, and
-  selected flags are explained under the picker.
+  larger and a selected one is clearly highlighted.
 - Add a light theme alongside the dark one, with a toggle in the toolbar.
   Dark stays the default and the choice is remembered; the palette moves to
   neutral slate with a teal accent, and packet colours are tuned per theme.
@@ -38,6 +31,24 @@
   reflows, the packet table scrolls sideways instead of being crushed, and the
   sign-in screen scrolls on short viewports.
 
+### Fixes
+
+- Don't pass `-n` twice when it is also picked as an extra flag, and drop it
+  entirely when `-nn` is selected, since `-nn` supersedes it.
+
+## 0.1.0-dev.5 — 2026-09-11
+
+### Features
+
+- Run tcpdump under `sudo -n` per server, for hosts where the SSH user is not
+  root. Set on the server, so every capture against it inherits the choice.
+- Edit a saved server after creation — name, host, port, username, SSH key and
+  the sudo flag. Previously a key could only be chosen at creation time.
+- Pick the capture interface from a dropdown populated by reading
+  `/sys/class/net` on the target host, instead of typing a name blind.
+- Every tcpdump flag in the picker now has a tooltip, and selected flags are
+  explained in a list under the picker.
+
 - Warn on the sign-in page when the cookie setting and the page's protocol
   disagree. Plain HTTP with `COOKIE_SECURE=true` shows a red banner saying
   sign-in cannot work and how to fix it; HTTPS with `COOKIE_SECURE=false`
@@ -51,8 +62,6 @@
 - A failed capture now reports tcpdump's actual stderr instead of the fixed
   string "capture failed". The remote command no longer ends in `; true`, which
   was discarding tcpdump's exit status.
-- Don't pass `-n` twice when it is also picked as an extra flag, and drop it
-  entirely when `-nn` is selected, since `-nn` supersedes it.
 
 ### Security
 

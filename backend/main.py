@@ -44,7 +44,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-app = FastAPI(title="pcap-server", version="0.1.0-dev.5")
+app = FastAPI(title="pcap-server", version="0.1.0-dev.6")
 
 db = Database(DATA_DIR / "pcap-server.db")
 ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR)
