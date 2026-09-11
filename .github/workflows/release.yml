@@ -28,22 +28,52 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Derive release metadata from tag
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push production image
+          if [[ "$version" == *-dev* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "release_name=v${version} (Dev)" >> "$GITHUB_OUTPUT"
+            {
+              echo "tags<<EOF"
+              echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${version}"
+              echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          elif [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "release_name=v${version} (Pre-release)" >> "$GITHUB_OUTPUT"
+            {
+              echo "tags<<EOF"
+              echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${version}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "release_name=v${version}" >> "$GITHUB_OUTPUT"
+            {
+              echo "tags<<EOF"
+              echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${version}"
+              echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ steps.meta.outputs.release_name }}
           generate_release_notes: true
+          prerelease: ${{ steps.meta.outputs.prerelease }}

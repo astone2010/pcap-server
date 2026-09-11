@@ -1,8 +1,9 @@
 # Changelog
 
-## 0.1.0 — 2026-09-11
+## 0.1.0-dev.1 — 2026-09-11
 
-Initial release.
+Development build, not yet merged to `main`. Tagged directly from a feature
+branch so the packaged build can be tested before a stable release is cut.
 
 ### Features
 
@@ -20,5 +21,5 @@ Initial release.
 - Automatic cleanup of remote tcpdump processes on shutdown
 - Rate limiting on login with configurable lockout
 - Docker deployment with non-root container user
-- CI workflows for build verification and release publishing
+- CI release workflow — builds and pushes Docker image to GHCR on tag push
 - Bind-mount volumes for persistent data and captures
