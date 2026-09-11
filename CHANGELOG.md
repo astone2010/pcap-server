@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-dev.4 — 2026-09-11
+
+### Fixes
+
+- Fix TOTP setup screen appearing to never load after creating the admin
+  account — the `hidden` attribute was overridden by `.auth-container`'s
+  `display: flex`, so all three screens rendered stacked and the QR code sat
+  one full viewport below the register form
+
 ## 0.1.0-dev.3 — 2026-09-11
 
 ### Fixes

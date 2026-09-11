@@ -26,6 +26,12 @@ body {
     overflow: hidden;
 }
 
+/* The `hidden` attribute only works via the UA stylesheet, which any author
+   `display` rule outranks — without this the screens below never hide. */
+[hidden] {
+    display: none !important;
+}
+
 /* --- auth screens --- */
 
 .auth-container {
