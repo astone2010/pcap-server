@@ -14,7 +14,10 @@ in your browser.
 - **Saved servers** — store connection profiles per user, editable after creation
 - **sudo support** — run tcpdump via `sudo -n` per server, for non-root SSH users
 - **Interface discovery** — pick the capture interface from a list read off the target host
-- **Explained flags** — every tcpdump flag in the picker documents what it does
+- **View flags** — name resolution, MAC columns, and timestamp format, each documenting what it does
+- **Colour-coded packets** — Wireshark-style colouring by protocol, with problems and resets called out
+- **Light and dark themes** — dark by default, toggled from the toolbar and remembered
+- **Works on phones** — the layout adapts down to phone width
 - **Configurable** — capture limits, session duration, rate limiting all adjustable from the GUI
 - **Process safety** — remote tcpdump processes are always cleaned up on shutdown
 
@@ -36,7 +39,7 @@ Open `http://localhost:8080`. The first user to register becomes the admin.
 |---|---|---|
 | `SSH_KEYS_DIR` | `/app/ssh-keys` | Directory for SSH private keys |
 | `CAPTURES_DIR` | `/app/captures` | Directory for downloaded pcap files |
-| `DATA_DIR` | `/app/data` | Directory for the SQLite database |
+| `DATA_DIR` | `/app/data` | Directory for the SQLite database. Users, saved servers, known hosts, settings and capture history all live here, so keep it on a persistent volume. |
 | `COOKIE_SECURE` | `true` | Require HTTPS for the session cookie. Set to `false` for plain-HTTP/LAN use, or sign-in will not work. |
 
 ### Admin Settings (GUI)

@@ -125,6 +125,8 @@ class PacketSummary(BaseModel):
     protocol: str
     length: int
     info: str
+    src_mac: str = ""
+    dst_mac: str = ""
 
 
 class PacketDetail(BaseModel):

@@ -10,8 +10,33 @@
   the sudo flag. Previously a key could only be chosen at creation time.
 - Pick the capture interface from a dropdown populated by reading
   `/sys/class/net` on the target host, instead of typing a name blind.
-- Every tcpdump flag in the picker now has a tooltip, and selected flags are
-  explained in a list under the picker.
+- Move the flag picker from Capture to the Viewer, where the flags actually do
+  something. A capture is always written with `tcpdump -w`, so tcpdump's display
+  flags never changed the saved pcap; they now control how the packet list is
+  rendered instead, mapped onto tshark: `-n`/`-nn` disable name resolution,
+  `-e` adds MAC address columns, and `-t`/`-tt`/`-ttt`/`-tttt` pick the
+  timestamp format. Flags that cannot affect a list view (`-v`, `-q`, `-A`,
+  `-X`, `-XX`) are gone. Changing one re-renders immediately, and the
+  timestamp and resolution flags are mutually exclusive.
+- Flags are split into a "Standard" box (`-n`, `-nn`, with `-nn` on by default
+  and dot-marked) and a "Niche" box for the situational rest. The buttons are
+  larger, a selected one is clearly highlighted, each has a tooltip, and
+  selected flags are explained under the picker.
+- Add a light theme alongside the dark one, with a toggle in the toolbar.
+  Dark stays the default and the choice is remembered; the palette moves to
+  neutral slate with a teal accent, and packet colours are tuned per theme.
+- Persist capture history to SQLite. Captures, and the ability to download
+  them, now survive a container restart; previously the list lived only in
+  memory, so restarting orphaned every `.pcap` on disk. A capture that was
+  running when the server stopped is marked failed, since its remote process
+  is gone.
+- Colour-code the packet list in the viewer the way Wireshark does: problems
+  (retransmissions, duplicate ACKs, zero window, unreachable) in red, resets,
+  session open/close, and a distinct colour per protocol — ARP, ICMP, DNS,
+  HTTP, TLS/QUIC, UDP, TCP — with a legend above the table.
+- Adapt the layout for phones. Panels stack into one column, the capture form
+  reflows, the packet table scrolls sideways instead of being crushed, and the
+  sign-in screen scrolls on short viewports.
 
 - Warn on the sign-in page when the cookie setting and the page's protocol
   disagree. Plain HTTP with `COOKIE_SECURE=true` shows a red banner saying
@@ -26,6 +51,8 @@
 - A failed capture now reports tcpdump's actual stderr instead of the fixed
   string "capture failed". The remote command no longer ends in `; true`, which
   was discarding tcpdump's exit status.
+- Don't pass `-n` twice when it is also picked as an extra flag, and drop it
+  entirely when `-nn` is selected, since `-nn` supersedes it.
 
 ### Security
 

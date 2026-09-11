@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 _STDERR_NOISE = ("listening on", "packets captured", "packets received", "packets dropped")
 
 
+def _row(info: CaptureInfo) -> dict:
+    row = info.model_dump()
+    row["status"] = info.status.value
+    for key in ("started_at", "stopped_at"):
+        row[key] = row[key].isoformat() if row[key] else None
+    return row
+
+
 async def _read_stderr(process: object) -> str:
     try:
         return await asyncio.wait_for(process.stderr.read(), timeout=5)
@@ -41,14 +49,29 @@ def _describe_failure(exc: Exception, stderr_text: str) -> str:
 
 
 class CaptureManager:
-    def __init__(self, ssh: SSHManager, captures_dir: Path, get_setting: Callable[[str], int]) -> None:
+    def __init__(self, ssh: SSHManager, captures_dir: Path, get_setting: Callable[[str], int], db) -> None:
         self._ssh = ssh
         self._captures_dir = captures_dir
         self._captures_dir.mkdir(parents=True, exist_ok=True)
         self._get_setting = get_setting
+        self._db = db
         self._captures: dict[str, CaptureInfo] = {}
         self._processes: dict[str, object] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._restore()
+
+    def _restore(self) -> None:
+        for row in self._db.list_captures():
+            info = CaptureInfo(**row)
+            # The process died with the previous container; nothing can resume it.
+            if info.status in (CaptureStatus.RUNNING, CaptureStatus.STOPPING, CaptureStatus.TRANSFERRING):
+                info.status = CaptureStatus.FAILED
+                info.error = "interrupted by a server restart"
+                self._db.upsert_capture(_row(info))
+            self._captures[info.id] = info
+
+    def _persist(self, info: CaptureInfo) -> None:
+        self._db.upsert_capture(_row(info))
 
     @property
     def captures(self) -> dict[str, CaptureInfo]:
@@ -69,7 +92,9 @@ class CaptureManager:
             args += ["-c", str(count)]
         if req.snap_len is not None:
             args += ["-s", str(req.snap_len)]
-        args.append("-n")
+        # -n is the default, but -nn supersedes it and picking either shouldn't duplicate it.
+        if not {"-n", "-nn"} & set(req.extra_flags):
+            args.append("-n")
         args += req.extra_flags
         if req.bpf_filter:
             args.append("--")
@@ -105,6 +130,7 @@ class CaptureManager:
             local_path=str(local_path),
         )
         self._captures[capture_id] = info
+        self._persist(info)
 
         process = await self._ssh.run_tcpdump(
             server,
@@ -128,6 +154,7 @@ class CaptureManager:
             return info
 
         info.status = CaptureStatus.STOPPING
+        self._persist(info)
         process = self._processes.get(capture_id)
         if process:
             await self._ssh.stop_tcpdump(process)
@@ -143,6 +170,7 @@ class CaptureManager:
             self._tasks[capture_id].cancel()
             del self._tasks[capture_id]
 
+        self._db.delete_capture(capture_id)
         info = self._captures.pop(capture_id, None)
         if info and info.local_path:
             path = Path(info.local_path)
@@ -179,6 +207,7 @@ class CaptureManager:
                 raise RuntimeError(f"tcpdump exited {process.exit_status}")
             info.stopped_at = datetime.now(timezone.utc)
             info.status = CaptureStatus.TRANSFERRING
+            self._persist(info)
 
             await self._ssh.fetch_file(server, remote_path, local_path)
 
@@ -201,5 +230,6 @@ class CaptureManager:
             info.status = CaptureStatus.FAILED
             info.error = _describe_failure(exc, stderr_text)
         finally:
+            self._persist(info)
             self._processes.pop(capture_id, None)
             self._tasks.pop(capture_id, None)

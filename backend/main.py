@@ -34,7 +34,7 @@ from backend.models import (
     ServerAuth,
     ServerInfo,
 )
-from backend.packet_parser import get_packet_detail, get_packet_list
+from backend.packet_parser import ALLOWED_VIEW_FLAGS, get_packet_detail, get_packet_list
 from backend.ssh_manager import SSHManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -48,7 +48,7 @@ app = FastAPI(title="pcap-server", version="0.1.0-dev.5")
 
 db = Database(DATA_DIR / "pcap-server.db")
 ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR)
-capture_manager = CaptureManager(ssh_manager, CAPTURES_DIR, db.get_setting_int)
+capture_manager = CaptureManager(ssh_manager, CAPTURES_DIR, db.get_setting_int, db)
 rate_limiter = RateLimiter(
     max_attempts=db.get_setting_int("rate_limit_max_attempts"),
     lockout_minutes=db.get_setting_int("rate_limit_lockout_minutes"),
@@ -559,8 +559,13 @@ async def list_packets(
     offset: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=5000),
     display_filter: str = Query(""),
+    flags: str = Query(""),
     user: dict = Depends(get_current_user),
 ):
+    view_flags = [f for f in flags.split(",") if f]
+    unknown = set(view_flags) - ALLOWED_VIEW_FLAGS
+    if unknown:
+        raise HTTPException(400, f"unknown view flags: {sorted(unknown)}")
     info = capture_manager.get(capture_id)
     if not info or info.user_id != user["id"]:
         raise HTTPException(404, "capture not found")
@@ -570,7 +575,9 @@ async def list_packets(
     if not path.exists():
         raise HTTPException(404, "pcap file missing")
     try:
-        packets = await get_packet_list(path, offset=offset, limit=limit, display_filter=display_filter)
+        packets = await get_packet_list(
+            path, offset=offset, limit=limit, display_filter=display_filter, view_flags=view_flags
+        )
         return {"packets": packets, "total": info.packet_count}
     except Exception:
         logger.exception("packet list failed")

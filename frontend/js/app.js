@@ -42,6 +42,30 @@ function escHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
 }
 
+// --- theme ---
+
+function currentTheme() {
+    return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+
+function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    const btn = $("theme-toggle");
+    if (btn) {
+        btn.textContent = theme === "light" ? "Dark" : "Light";
+        btn.title = `Switch to the ${theme === "light" ? "dark" : "light"} theme`;
+    }
+    try {
+        localStorage.setItem("theme", theme);
+    } catch (e) {
+        // Private window or blocked storage — the theme still applies for this page.
+    }
+}
+
+function toggleTheme() {
+    applyTheme(currentTheme() === "light" ? "dark" : "light");
+}
+
 // --- auth flow ---
 
 function setBanner(kind, lead, parts) {
@@ -289,13 +313,7 @@ function showAddServer() {
                 <label>SSH Key</label>
                 <select id="new-srv-key">${opts || '<option value="">No keys found</option>'}</select>
             </div>
-            <div class="form-group">
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                    <input type="checkbox" id="new-srv-sudo">
-                    <span>Run tcpdump with sudo</span>
-                </label>
-                <div class="field-hint">${escHtml(SUDO_HINT)}</div>
-            </div>
+            <div class="form-group">${sudoOption("new-srv-sudo", false)}</div>
             <div class="form-actions">
                 <button class="btn btn-sm btn-primary" onclick="addServer()">Add server</button>
             </div>
@@ -408,6 +426,17 @@ async function loadSavedServer(id) {
 
 const SUDO_HINT = "Needed when the SSH user isn't root. Requires passwordless sudo for tcpdump on that host.";
 
+function sudoOption(id, checked) {
+    return `
+        <div class="option-row">
+            <input type="checkbox" id="${escHtml(id)}"${checked ? " checked" : ""}>
+            <div class="option-text">
+                <label class="option-title" for="${escHtml(id)}">Run tcpdump with sudo</label>
+                <span class="field-hint">${escHtml(SUDO_HINT)}</span>
+            </div>
+        </div>`;
+}
+
 async function editSavedServer(id) {
     const srv = savedServers.find((s) => s.id === id);
     if (!srv) return;
@@ -427,13 +456,7 @@ async function editSavedServer(id) {
             <label>SSH Key</label>
             <select id="edit-srv-key">${opts || '<option value="">No keys found</option>'}</select>
         </div>
-        <div class="form-group">
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <input type="checkbox" id="edit-srv-sudo"${srv.use_sudo ? " checked" : ""}>
-                <span>Run tcpdump with sudo</span>
-            </label>
-            <div class="field-hint">${escHtml(SUDO_HINT)}</div>
-        </div>
+        <div class="form-group">${sudoOption("edit-srv-sudo", srv.use_sudo)}</div>
         <div class="form-actions">
             <button class="btn btn-sm btn-primary" onclick="saveSavedServerEdit('${escHtml(srv.id)}')">Save changes</button>
         </div>
@@ -470,43 +493,68 @@ async function deleteSavedServer(id) {
 
 // --- capture ---
 
+// These change how the packet list is rendered. tcpdump's display flags are
+// meaningless for the capture itself, which is always written with -w.
 const FLAG_HELP = {
-    "-n": "Don't resolve IP addresses to hostnames",
+    "-n": "Don't resolve addresses to hostnames",
     "-nn": "Don't resolve hostnames or port numbers to service names",
-    "-v": "Verbose — show TTL, total length, and IP options",
-    "-vv": "More verbose — adds NFS and SMB decoding detail",
-    "-vvv": "Most verbose — full protocol detail",
-    "-e": "Show the link-level header, including MAC addresses",
-    "-q": "Quiet — less protocol information, shorter output lines",
-    "-A": "Print each packet's payload as ASCII (useful for plain-text protocols)",
-    "-X": "Print each packet's payload as hex and ASCII",
-    "-XX": "Same as -X, but also include the link-level header",
-    "-t": "Omit the timestamp from each line",
+    "-e": "Show link-layer MAC addresses as extra columns",
+    "-t": "Hide the timestamp column",
     "-tt": "Timestamp as raw seconds since the epoch",
     "-ttt": "Timestamp as the delta since the previous packet",
-    "-tttt": "Timestamp as a full human-readable date and time",
+    "-tttt": "Timestamp as a full date and time",
 };
 
 const ALLOWED_FLAGS = Object.keys(FLAG_HELP);
 
-function initFlagPicker() {
-    const picker = $("flag-picker");
-    picker.textContent = "";
-    for (const flag of ALLOWED_FLAGS) {
-        const chip = document.createElement("span");
-        chip.className = "flag-chip";
-        chip.dataset.flag = flag;
+// The ones people reach for normally; everything else is situational.
+const STANDARD_FLAGS = ["-n", "-nn"];
+// Of those, the ones switched on before you touch anything.
+const DEFAULT_FLAGS = ["-nn"];
+
+function makeFlagChip(flag) {
+    const chip = document.createElement("span");
+    chip.className = "flag-chip";
+    chip.dataset.flag = flag;
+    chip.textContent = flag;
+    if (DEFAULT_FLAGS.includes(flag)) {
+        chip.classList.add("standard", "selected");
+        chip.title = `${FLAG_HELP[flag]} — on by default because it's the usual standard.`;
+    } else {
         chip.title = FLAG_HELP[flag];
-        chip.textContent = flag;
-        chip.addEventListener("click", () => toggleFlag(chip));
-        picker.append(chip);
+    }
+    chip.addEventListener("click", () => toggleFlag(chip));
+    return chip;
+}
+
+function initFlagPicker() {
+    const standard = $("flag-picker-standard");
+    const niche = $("flag-picker-niche");
+    standard.textContent = "";
+    niche.textContent = "";
+    for (const flag of ALLOWED_FLAGS) {
+        const target = STANDARD_FLAGS.includes(flag) ? standard : niche;
+        target.append(makeFlagChip(flag));
     }
     renderFlagHelp();
 }
 
+// One timestamp format and one resolution mode at a time.
+const EXCLUSIVE_FLAG_GROUPS = [["-t", "-tt", "-ttt", "-tttt"], ["-n", "-nn"]];
+
 function toggleFlag(el) {
+    const flag = el.dataset.flag;
+    if (!el.classList.contains("selected")) {
+        const group = EXCLUSIVE_FLAG_GROUPS.find((g) => g.includes(flag)) || [];
+        for (const other of group) {
+            if (other !== flag) {
+                document.querySelector(`.flag-chip[data-flag="${other}"]`)?.classList.remove("selected");
+            }
+        }
+    }
     el.classList.toggle("selected");
     renderFlagHelp();
+    if (viewingCaptureId) loadPackets(viewingCaptureId, $("display-filter").value);
 }
 
 function renderFlagHelp() {
@@ -522,6 +570,12 @@ function renderFlagHelp() {
         const code = document.createElement("code");
         code.textContent = flag;
         row.append(code, " " + FLAG_HELP[flag]);
+        if (DEFAULT_FLAGS.includes(flag)) {
+            const tag = document.createElement("span");
+            tag.className = "help-tag";
+            tag.textContent = "standard";
+            row.append(" ", tag);
+        }
         help.append(row);
     }
 }
@@ -588,7 +642,6 @@ async function startCapture() {
         server_id: serverId,
         interface: $("cap-interface").value || "any",
         bpf_filter: $("cap-bpf").value,
-        extra_flags: getSelectedFlags(),
     };
 
     const count = parseInt($("cap-count").value);
@@ -689,6 +742,7 @@ async function viewCapture(id) {
 
     hide("viewer-empty");
     show("packet-viewer");
+    renderPacketLegend();
     $("viewer-capture-label").textContent = "Capture: " + id;
     $("display-filter").value = "";
     $("packet-detail-tree").innerHTML = '<div class="empty-state" style="font-size:0.75rem">Click a packet above</div>';
@@ -697,26 +751,70 @@ async function viewCapture(id) {
     await loadPackets(id);
 }
 
+// Wireshark-style row coloring. First match wins, so problems outrank protocols.
+const PACKET_RULES = [
+    {
+        cls: "pkt-bad",
+        label: "Problem",
+        test: (p, info) => /retransmission|dup ack|out-of-order|zerowindow|window full|previous segment|port numbers reused|malformed|bad checksum|unreachable|time exceeded/i.test(info),
+    },
+    { cls: "pkt-reset", label: "Reset", test: (p, info) => /\brst\b/i.test(info) },
+    { cls: "pkt-session", label: "Open / close", test: (p, info) => /\b(syn|fin)\b/i.test(info) },
+    { cls: "pkt-arp", label: "ARP", test: (p) => p.protocol === "ARP" },
+    { cls: "pkt-icmp", label: "ICMP", test: (p) => p.protocol.startsWith("ICMP") },
+    { cls: "pkt-dns", label: "DNS", test: (p) => ["DNS", "MDNS", "LLMNR", "NBNS"].includes(p.protocol) },
+    { cls: "pkt-http", label: "HTTP", test: (p) => p.protocol.startsWith("HTTP") },
+    { cls: "pkt-tls", label: "TLS / QUIC", test: (p) => ["TLS", "SSL", "QUIC"].includes(p.protocol) },
+    { cls: "pkt-udp", label: "UDP", test: (p) => p.protocol === "UDP" },
+    { cls: "pkt-tcp", label: "TCP", test: (p) => p.protocol === "TCP" },
+];
+
+function packetClass(p) {
+    const info = p.info || "";
+    const rule = PACKET_RULES.find((r) => r.test(p, info));
+    return rule ? rule.cls : "";
+}
+
+function renderPacketLegend() {
+    const legend = $("packet-legend");
+    if (!legend || legend.childElementCount) return;
+    for (const rule of PACKET_RULES) {
+        const item = document.createElement("span");
+        item.className = "legend-item";
+        const swatch = document.createElement("span");
+        swatch.className = `legend-swatch ${rule.cls}`;
+        item.append(swatch, rule.label);
+        legend.append(item);
+    }
+}
+
 async function loadPackets(captureId, filter = "") {
     const tbody = $("packet-tbody");
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px"><span class="spinner"></span> Loading...</td></tr>';
+    const flags = getSelectedFlags();
+    const showMac = flags.includes("-e");
+    document.querySelectorAll(".col-mac").forEach((el) => { el.hidden = !showMac; });
+    const span = showMac ? 9 : 7;
+    const mac = showMac ? "" : " hidden";
+
+    tbody.innerHTML = `<tr><td colspan="${span}" style="text-align:center;padding:20px"><span class="spinner"></span> Loading...</td></tr>`;
 
     try {
-        const data = await api(
-            `/api/captures/${captureId}/packets?limit=1000&display_filter=${encodeURIComponent(filter)}`
-        );
+        const query = new URLSearchParams({ limit: "1000", display_filter: filter, flags: flags.join(",") });
+        const data = await api(`/api/captures/${captureId}/packets?${query}`);
         if (!data.packets.length) {
-            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted)">No packets match</td></tr>';
+            tbody.innerHTML = `<tr><td colspan="${span}" style="text-align:center;padding:20px;color:var(--text-muted)">No packets match</td></tr>`;
             return;
         }
         tbody.innerHTML = data.packets
             .map(
                 (p) => `
-            <tr data-frame="${p.number}" onclick="selectPacket(${p.number})">
+            <tr class="${packetClass(p)}" data-frame="${p.number}" onclick="selectPacket(${p.number})">
                 <td class="col-no">${p.number}</td>
                 <td class="col-time">${escHtml(p.timestamp)}</td>
                 <td class="col-src">${escHtml(p.source)}</td>
                 <td class="col-dst">${escHtml(p.destination)}</td>
+                <td class="col-mac"${mac}>${escHtml(p.src_mac || "")}</td>
+                <td class="col-mac"${mac}>${escHtml(p.dst_mac || "")}</td>
                 <td class="col-proto">${escHtml(p.protocol)}</td>
                 <td class="col-len">${p.length}</td>
                 <td class="col-info">${escHtml(p.info)}</td>
@@ -724,7 +822,7 @@ async function loadPackets(captureId, filter = "") {
             )
             .join("");
     } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="7" style="color:var(--danger);padding:20px">${escHtml(e.message)}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${span}" style="color:var(--danger);padding:20px">${escHtml(e.message)}</td></tr>`;
     }
 }
 
@@ -1075,4 +1173,5 @@ async function adminDeleteKnownHost(hostId) {
 
 // --- boot ---
 
+applyTheme(currentTheme());
 checkAuth();

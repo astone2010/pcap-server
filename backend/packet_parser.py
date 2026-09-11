@@ -25,22 +25,48 @@ async def get_packet_count(pcap_path: Path) -> int:
     return 0
 
 
+# tcpdump-style view flags, mapped onto how tshark renders the packet list.
+# Only flags that genuinely change this view are accepted.
+VIEW_FLAG_TIME_FIELD = {
+    "-tt": "frame.time_epoch",
+    "-ttt": "frame.time_delta",
+    "-tttt": "frame.time",
+}
+ALLOWED_VIEW_FLAGS = {"-n", "-nn", "-e", "-t", *VIEW_FLAG_TIME_FIELD}
+
+
 async def get_packet_list(
     pcap_path: Path,
     offset: int = 0,
     limit: int = 200,
     display_filter: str = "",
+    view_flags: list[str] | None = None,
 ) -> list[PacketSummary]:
-    cmd = [
-        "tshark", "-r", str(pcap_path),
+    flags = set(view_flags or [])
+    time_field = "frame.time_relative"
+    for flag, field in VIEW_FLAG_TIME_FIELD.items():
+        if flag in flags:
+            time_field = field
+            break
+    show_time = "-t" not in flags
+    show_mac = "-e" in flags
+
+    cmd = ["tshark", "-r", str(pcap_path)]
+    if flags & {"-n", "-nn"}:
+        cmd.append("-n")
+    cmd += [
         "-T", "fields",
         "-e", "frame.number",
-        "-e", "frame.time_relative",
+        "-e", time_field,
         "-e", "ip.src",
         "-e", "ip.dst",
         "-e", "frame.protocols",
         "-e", "frame.len",
         "-e", "_ws.col.Info",
+    ]
+    if show_mac:
+        cmd += ["-e", "eth.src", "-e", "eth.dst"]
+    cmd += [
         "-E", "separator=\t",
         "-E", "quote=n",
         "-E", "occurrence=f",
@@ -73,12 +99,14 @@ async def get_packet_list(
         protocol = parts[4].split(":")[-1] if parts[4] else "?"
         packets.append(PacketSummary(
             number=num,
-            timestamp=parts[1],
+            timestamp=parts[1] if show_time else "",
             source=parts[2] or "N/A",
             destination=parts[3] or "N/A",
             protocol=protocol.upper(),
             length=int(parts[5]) if parts[5] else 0,
             info=parts[6],
+            src_mac=parts[7] if show_mac and len(parts) > 7 else "",
+            dst_mac=parts[8] if show_mac and len(parts) > 8 else "",
         ))
 
     return packets

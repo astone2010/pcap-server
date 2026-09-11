@@ -86,7 +86,23 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
             CREATE INDEX IF NOT EXISTS idx_trusted_devices_user_token ON trusted_devices(user_id, token_hash);
+            CREATE TABLE IF NOT EXISTS captures (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                server_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT,
+                stopped_at TEXT,
+                command TEXT NOT NULL DEFAULT '',
+                remote_path TEXT NOT NULL DEFAULT '',
+                local_path TEXT NOT NULL DEFAULT '',
+                packet_count INTEGER NOT NULL DEFAULT 0,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                error TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE INDEX IF NOT EXISTS idx_saved_servers_user_id ON saved_servers(user_id);
+            CREATE INDEX IF NOT EXISTS idx_captures_user_id ON captures(user_id);
         """)
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(saved_servers)")}
         if "use_sudo" not in columns:
@@ -218,6 +234,27 @@ class Database:
             "SELECT * FROM saved_servers WHERE id = ? AND user_id = ?", (server_id, user_id)
         ).fetchone()
         return dict(row) if row else None
+
+    # --- captures ---
+
+    def upsert_capture(self, row: dict) -> None:
+        self._conn().execute(
+            """INSERT OR REPLACE INTO captures
+               (id, user_id, server_id, status, started_at, stopped_at, command,
+                remote_path, local_path, packet_count, file_size, error)
+               VALUES (:id, :user_id, :server_id, :status, :started_at, :stopped_at, :command,
+                       :remote_path, :local_path, :packet_count, :file_size, :error)""",
+            row,
+        )
+        self._conn().commit()
+
+    def list_captures(self) -> list[dict]:
+        rows = self._conn().execute("SELECT * FROM captures ORDER BY started_at").fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_capture(self, capture_id: str) -> None:
+        self._conn().execute("DELETE FROM captures WHERE id = ?", (capture_id,))
+        self._conn().commit()
 
     # --- known hosts ---
 

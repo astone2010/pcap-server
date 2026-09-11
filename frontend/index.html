@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>pcap-server</title>
     <link rel="stylesheet" href="/css/style.css">
+    <script>
+        // Applied before first paint so the page never flashes the wrong theme.
+        try {
+            var t = localStorage.getItem("theme");
+            if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+        } catch (e) { /* storage blocked — dark default from CSS still applies */ }
+    </script>
 </head>
 <body>
 
@@ -83,6 +90,7 @@
         <span class="logo">pcap-server</span>
         <span class="spacer"></span>
         <span id="user-display" style="font-size:0.8125rem;color:var(--text-secondary)"></span>
+        <button id="theme-toggle" class="btn btn-sm btn-secondary" onclick="toggleTheme()"></button>
         <button class="btn btn-sm btn-secondary" onclick="doLogout()">Logout</button>
     </div>
     <div class="tab-bar">
@@ -146,11 +154,6 @@
                 </div>
                 <button class="btn btn-primary btn-sm" onclick="startCapture()">Start capture</button>
             </div>
-            <div style="padding:4px 16px">
-                <label style="font-size:0.75rem;color:var(--text-secondary)">Extra flags:</label>
-                <div id="flag-picker" class="flag-picker"></div>
-                <div id="flag-help" class="flag-help"></div>
-            </div>
             <div id="capture-list" class="capture-list">
                 <div class="empty-state">No captures yet</div>
             </div>
@@ -166,6 +169,26 @@
                     <button class="btn btn-sm btn-secondary" onclick="applyDisplayFilter()">Apply</button>
                     <button class="btn btn-sm btn-secondary" onclick="downloadCapture()">Download .pcap</button>
                 </div>
+                <div class="view-options" style="padding:8px 16px">
+                    <div class="flag-groups">
+                        <div class="flag-group">
+                            <div class="flag-group-head">
+                                Standard view flags
+                                <span class="flag-group-note">the usual choices — dotted ones are on by default</span>
+                            </div>
+                            <div id="flag-picker-standard" class="flag-picker"></div>
+                        </div>
+                        <div class="flag-group flag-group-niche">
+                            <div class="flag-group-head">
+                                Niche view flags
+                                <span class="flag-group-note">situational — most views never need these</span>
+                            </div>
+                            <div id="flag-picker-niche" class="flag-picker"></div>
+                        </div>
+                    </div>
+                    <div id="flag-help" class="flag-help"></div>
+                </div>
+                <div id="packet-legend" class="packet-legend"></div>
                 <div class="packet-list-container">
                     <div class="packet-table-scroll">
                         <table class="packet-table">
@@ -175,6 +198,8 @@
                                     <th class="col-time">Time</th>
                                     <th class="col-src">Source</th>
                                     <th class="col-dst">Destination</th>
+                                    <th class="col-mac" hidden>Src MAC</th>
+                                    <th class="col-mac" hidden>Dst MAC</th>
                                     <th class="col-proto">Protocol</th>
                                     <th class="col-len">Length</th>
                                     <th class="col-info">Info</th>
