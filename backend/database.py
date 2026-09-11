@@ -67,6 +67,18 @@ class Database:
                 UNIQUE(user_id, name)
             );
 
+            CREATE TABLE IF NOT EXISTS active_servers (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL DEFAULT '',
+                hostname TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 22,
+                username TEXT NOT NULL,
+                ssh_key_name TEXT NOT NULL,
+                use_sudo INTEGER NOT NULL DEFAULT 0,
+                added_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS known_hosts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 hostname TEXT NOT NULL,
@@ -98,15 +110,20 @@ class Database:
                 local_path TEXT NOT NULL DEFAULT '',
                 packet_count INTEGER NOT NULL DEFAULT 0,
                 file_size INTEGER NOT NULL DEFAULT 0,
-                error TEXT NOT NULL DEFAULT ''
+                error TEXT NOT NULL DEFAULT '',
+                server_label TEXT NOT NULL DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_saved_servers_user_id ON saved_servers(user_id);
             CREATE INDEX IF NOT EXISTS idx_captures_user_id ON captures(user_id);
+            CREATE INDEX IF NOT EXISTS idx_active_servers_user_id ON active_servers(user_id);
         """)
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(saved_servers)")}
         if "use_sudo" not in columns:
             conn.execute("ALTER TABLE saved_servers ADD COLUMN use_sudo INTEGER NOT NULL DEFAULT 0")
+        capture_columns = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
+        if "server_label" not in capture_columns:
+            conn.execute("ALTER TABLE captures ADD COLUMN server_label TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
     # --- users ---
@@ -235,14 +252,47 @@ class Database:
         ).fetchone()
         return dict(row) if row else None
 
+    # --- active servers ---
+    #
+    # The runtime registry used to be an in-memory dict, so every server a user
+    # added vanished on restart. Persisting it here makes a server permanent
+    # until it is explicitly deleted, and scopes it to the user who added it.
+
+    def add_active_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool) -> None:
+        self._conn().execute(
+            """INSERT OR REPLACE INTO active_servers (id, user_id, name, hostname, port, username, ssh_key_name, use_sudo, added_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (server_id, user_id, name, hostname, port, username, ssh_key_name, int(use_sudo), _utcnow().isoformat()),
+        )
+        self._conn().commit()
+
+    def list_active_servers(self, user_id: str) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT * FROM active_servers WHERE user_id = ? ORDER BY added_at", (user_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_active_server(self, server_id: str, user_id: str) -> dict | None:
+        row = self._conn().execute(
+            "SELECT * FROM active_servers WHERE id = ? AND user_id = ?", (server_id, user_id)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def delete_active_server(self, server_id: str, user_id: str) -> bool:
+        cur = self._conn().execute(
+            "DELETE FROM active_servers WHERE id = ? AND user_id = ?", (server_id, user_id)
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
     # --- captures ---
 
     def upsert_capture(self, row: dict) -> None:
         self._conn().execute(
             """INSERT OR REPLACE INTO captures
-               (id, user_id, server_id, status, started_at, stopped_at, command,
+               (id, user_id, server_id, server_label, status, started_at, stopped_at, command,
                 remote_path, local_path, packet_count, file_size, error)
-               VALUES (:id, :user_id, :server_id, :status, :started_at, :stopped_at, :command,
+               VALUES (:id, :user_id, :server_id, :server_label, :status, :started_at, :stopped_at, :command,
                        :remote_path, :local_path, :packet_count, :file_size, :error)""",
             row,
         )

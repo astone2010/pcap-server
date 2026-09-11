@@ -15,6 +15,12 @@ class ServerAuth(BaseModel):
     username: str
     ssh_key_name: str
     use_sudo: bool = False
+    name: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        return v.strip()[:100]
 
     @field_validator("hostname")
     @classmethod
@@ -49,22 +55,42 @@ class CaptureStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-ALLOWED_TCPDUMP_FLAGS = {
-    "-i", "-c", "-s", "-n", "-nn", "-v", "-vv", "-vvv",
-    "-e", "-q", "-A", "-X", "-XX",
-    "-tttt", "-ttt", "-tt", "-t",
-}
+# A capture is always written with `tcpdump -w`, which makes tcpdump a writer
+# rather than a printer. Everything tcpdump does with -v/-q/-A/-X/-e/-t/-n is
+# formatting for text it never emits under -w, so those flags cannot change one
+# byte of the resulting pcap. They used to be accepted here, which advertised a
+# control that did nothing.
+#
+# Four things decide what a capture contains, and all four are structured fields
+# on CaptureRequest rather than free-form flags:
+#
+#   interface   -i   which link to read
+#   count       -c   how many packets to keep
+#   snap_len    -s   how many bytes of each packet to keep
+#   bpf_filter  --   which packets match at all
+#
+# Selecting specific traffic is the filter's job, not a flag's. There is no
+# remaining tcpdump flag a caller could usefully pass, so none is accepted.
 
 # tcpdump may run under sudo, so these turn a capture into root code execution or
 # arbitrary file reads. -z runs a command on rotation; -W/-G/-C enable rotation so
-# it fires; -r/-F/-V read attacker-chosen paths. Never allowlist any of them.
+# it fires; -r/-F/-V read attacker-chosen paths. Never let any of them through.
 FORBIDDEN_TCPDUMP_FLAGS = {
     "-z", "--postrotate-command", "-W", "-G", "-C", "-r", "-F", "-V", "-Z",
 }
 
-_overlap = ALLOWED_TCPDUMP_FLAGS & FORBIDDEN_TCPDUMP_FLAGS
-if _overlap:
-    raise RuntimeError(f"tcpdump flag allowlist contains privilege-escalating flags: {sorted(_overlap)}")
+
+def assert_no_forbidden_flags(args: list[str]) -> None:
+    """Last line of defence on the fully-built argument list.
+
+    Nothing user-supplied reaches tcpdump as a flag any more, so this should be
+    unreachable -- which is exactly why it is checked rather than assumed. If a
+    future change routes input into the argument list again, it fails here
+    instead of silently handing root a -z.
+    """
+    found = sorted(set(args) & FORBIDDEN_TCPDUMP_FLAGS)
+    if found:
+        raise ValueError(f"refusing to run tcpdump with privilege-escalating flags: {found}")
 
 
 class CaptureRequest(BaseModel):
@@ -74,7 +100,6 @@ class CaptureRequest(BaseModel):
     snap_len: int | None = Field(default=None, ge=0, le=65535)
     duration_seconds: int | None = Field(default=None, ge=1, le=600)
     bpf_filter: str = ""
-    extra_flags: list[str] = Field(default_factory=list)
 
     @field_validator("interface")
     @classmethod
@@ -91,20 +116,13 @@ class CaptureRequest(BaseModel):
             raise ValueError("BPF filter contains disallowed characters")
         return v
 
-    @field_validator("extra_flags")
-    @classmethod
-    def validate_extra_flags(cls, flags: list[str]) -> list[str]:
-        for f in flags:
-            if f in FORBIDDEN_TCPDUMP_FLAGS:
-                raise ValueError(f"flag {f!r} can execute commands or read files as root and is never permitted")
-            if f not in ALLOWED_TCPDUMP_FLAGS:
-                raise ValueError(f"flag {f!r} is not in the allowlist: {sorted(ALLOWED_TCPDUMP_FLAGS)}")
-        return flags
-
 
 class CaptureInfo(BaseModel):
     id: str
     server_id: str
+    # Denormalised on purpose: a capture must still say where it came from after
+    # the server it ran against has been deleted.
+    server_label: str = ""
     user_id: str = ""
     status: CaptureStatus
     started_at: datetime | None = None

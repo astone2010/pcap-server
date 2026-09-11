@@ -34,6 +34,21 @@ VIEW_FLAG_TIME_FIELD = {
 }
 ALLOWED_VIEW_FLAGS = {"-n", "-nn", "-e", "-t", *VIEW_FLAG_TIME_FIELD}
 
+# tcpdump and tshark spell name resolution differently:
+#   tcpdump -n   host addresses stay numeric, port numbers still become service names
+#   tcpdump -nn  neither is resolved
+#   (neither)    both are resolved
+# tshark's -N takes the layers to resolve -- m MAC, n network/host, t transport/port
+# -- and its bare -n turns everything off. Network resolution is the only one that
+# can reach DNS, which is why it is off for both -n and -nn and only the explicit
+# "resolve everything" case pays for it.
+def _name_resolution_args(flags: set[str]) -> list[str]:
+    if "-nn" in flags:
+        return ["-n"]
+    if "-n" in flags:
+        return ["-N", "mt"]
+    return ["-N", "mnt"]
+
 
 async def get_packet_list(
     pcap_path: Path,
@@ -52,14 +67,13 @@ async def get_packet_list(
     show_mac = "-e" in flags
 
     cmd = ["tshark", "-r", str(pcap_path)]
-    if flags & {"-n", "-nn"}:
-        cmd.append("-n")
+    cmd += _name_resolution_args(flags)
     cmd += [
         "-T", "fields",
         "-e", "frame.number",
         "-e", time_field,
-        "-e", "ip.src",
-        "-e", "ip.dst",
+        "-e", "_ws.col.Source",
+        "-e", "_ws.col.Destination",
         "-e", "frame.protocols",
         "-e", "frame.len",
         "-e", "_ws.col.Info",

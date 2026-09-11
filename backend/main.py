@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
@@ -28,7 +29,6 @@ from backend.auth import (
 from backend.capture import CaptureManager
 from backend.database import Database
 from backend.models import (
-    ALLOWED_TCPDUMP_FLAGS,
     CaptureRequest,
     CaptureStatus,
     ServerAuth,
@@ -44,7 +44,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-app = FastAPI(title="pcap-server", version="0.1.0-dev.6")
+app = FastAPI(title="pcap-server", version="0.1.0-dev.7")
 
 db = Database(DATA_DIR / "pcap-server.db")
 ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR)
@@ -329,41 +329,67 @@ async def admin_delete_known_host(host_id: int, user: dict = Depends(require_adm
     return {"ok": True}
 
 
-# --- servers (runtime, per-session) ---
+# --- servers (persistent, per-user) ---
+#
+# These used to live in a module-level dict, which meant they were lost on every
+# restart and were visible to every logged-in user. They are now rows scoped to
+# the user who added them, and they last until that user deletes them.
 
-runtime_servers: dict[str, ServerInfo] = {}
+
+def _server_from_row(row: dict) -> ServerInfo:
+    return ServerInfo(
+        id=row["id"],
+        name=row["name"],
+        hostname=row["hostname"],
+        port=row["port"],
+        username=row["username"],
+        ssh_key_name=row["ssh_key_name"],
+        use_sudo=bool(row["use_sudo"]),
+        added_at=datetime.fromisoformat(row["added_at"]),
+    )
+
+
+def _require_server(server_id: str, user_id: str) -> ServerInfo:
+    row = db.get_active_server(server_id, user_id)
+    if not row:
+        raise HTTPException(404, "server not found")
+    return _server_from_row(row)
+
+
+def _require_key(ssh_key_name: str) -> None:
+    key_path = (SSH_KEYS_DIR / ssh_key_name).resolve()
+    if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
+        raise HTTPException(400, "invalid key path")
+    if not key_path.exists():
+        raise HTTPException(400, f"SSH key '{ssh_key_name}' not found in keys directory")
 
 
 @app.get("/api/servers")
 async def list_servers(user: dict = Depends(get_current_user)):
-    return list(runtime_servers.values())
+    return [_server_from_row(row) for row in db.list_active_servers(user["id"])]
 
 
 @app.post("/api/servers")
 async def add_server(auth: ServerAuth, user: dict = Depends(get_current_user)):
-    key_path = (SSH_KEYS_DIR / auth.ssh_key_name).resolve()
-    if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
-        raise HTTPException(400, "invalid key path")
-    if not key_path.exists():
-        raise HTTPException(400, f"SSH key '{auth.ssh_key_name}' not found in keys directory")
+    _require_key(auth.ssh_key_name)
     info = ServerInfo(**auth.model_dump())
-    runtime_servers[info.id] = info
+    db.add_active_server(
+        info.id, user["id"], info.name, info.hostname, info.port,
+        info.username, info.ssh_key_name, info.use_sudo,
+    )
     return info
 
 
 @app.delete("/api/servers/{server_id}")
 async def remove_server(server_id: str, user: dict = Depends(get_current_user)):
-    if server_id not in runtime_servers:
+    if not db.delete_active_server(server_id, user["id"]):
         raise HTTPException(404, "server not found")
-    del runtime_servers[server_id]
     return {"ok": True}
 
 
 @app.get("/api/servers/{server_id}/interfaces")
 async def list_server_interfaces(server_id: str, user: dict = Depends(get_current_user)):
-    srv = runtime_servers.get(server_id)
-    if not srv:
-        raise HTTPException(404, "server not found")
+    srv = _require_server(server_id, user["id"])
     try:
         return {"interfaces": await ssh_manager.list_interfaces(srv)}
     except ConnectionError as exc:
@@ -374,9 +400,7 @@ async def list_server_interfaces(server_id: str, user: dict = Depends(get_curren
 
 @app.post("/api/servers/{server_id}/test")
 async def test_server(server_id: str, user: dict = Depends(get_current_user)):
-    srv = runtime_servers.get(server_id)
-    if not srv:
-        raise HTTPException(404, "server not found")
+    srv = _require_server(server_id, user["id"])
     try:
         result = await ssh_manager.test_connection(srv)
         return {"ok": True, "result": result}
@@ -430,16 +454,11 @@ async def load_saved_server(server_id: str, user: dict = Depends(get_current_use
     saved = db.get_saved_server(server_id, user["id"])
     if not saved:
         raise HTTPException(404, "saved server not found")
-    auth = ServerAuth(
-        hostname=saved["hostname"],
-        port=saved["port"],
-        username=saved["username"],
-        ssh_key_name=saved["ssh_key_name"],
-        use_sudo=bool(saved["use_sudo"]),
+    db.add_active_server(
+        saved["id"], user["id"], saved["name"], saved["hostname"], saved["port"],
+        saved["username"], saved["ssh_key_name"], bool(saved["use_sudo"]),
     )
-    info = ServerInfo(**auth.model_dump())
-    runtime_servers[info.id] = info
-    return info
+    return _server_from_row(db.get_active_server(saved["id"], user["id"]))
 
 
 # --- ssh keys ---
@@ -499,9 +518,7 @@ async def list_captures(user: dict = Depends(get_current_user)):
 
 @app.post("/api/captures")
 async def start_capture(req: CaptureRequest, user: dict = Depends(get_current_user)):
-    srv = runtime_servers.get(req.server_id)
-    if not srv:
-        raise HTTPException(404, "server not found")
+    srv = _require_server(req.server_id, user["id"])
     try:
         info = await capture_manager.start(req, srv, user["id"])
         return info
@@ -598,13 +615,6 @@ async def packet_detail(capture_id: str, frame_number: int, user: dict = Depends
         return await get_packet_detail(path, frame_number)
     except Exception:
         raise HTTPException(500, "failed to get packet detail")
-
-
-# --- reference ---
-
-@app.get("/api/tcpdump-flags")
-async def tcpdump_flags(user: dict = Depends(get_current_user)):
-    return {"allowed": sorted(ALLOWED_TCPDUMP_FLAGS)}
 
 
 # --- static files (frontend) ---

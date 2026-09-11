@@ -269,7 +269,7 @@ function renderServerList() {
         .map(
             (s) => `
         <div class="server-item" data-id="${escHtml(s.id)}" onclick="selectServer('${escHtml(s.id)}')">
-            <div class="name">${escHtml(s.hostname)}</div>
+            <div class="name">${escHtml(s.name || s.hostname)}</div>
             <div class="detail">${escHtml(s.username)}@${escHtml(s.hostname)}:${s.port}</div>
         </div>`
         )
@@ -283,7 +283,7 @@ function selectServer(id) {
     document.querySelector(`.server-item[data-id="${id}"]`)?.classList.add("active");
 
     $("server-form-area").innerHTML = `
-        <h3>${escHtml(srv.hostname)}</h3>
+        <h3>${escHtml(srv.name || srv.hostname)}</h3>
         <div class="form-group"><label>Host</label><input type="text" value="${escHtml(srv.hostname)}" disabled></div>
         <div class="form-row">
             <div class="form-group"><label>Port</label><input type="text" value="${srv.port}" disabled></div>
@@ -304,6 +304,7 @@ function showAddServer() {
         const opts = keys.map((k) => `<option value="${escHtml(k)}">${escHtml(k)}</option>`).join("");
         $("server-form-area").innerHTML = `
             <h3>Add server</h3>
+            <div class="form-group"><label>Name <span class="hint">(optional — labels captures from this host)</span></label><input type="text" id="new-srv-name" placeholder="e.g. edge-firewall"></div>
             <div class="form-group"><label>Hostname / IP</label><input type="text" id="new-srv-host"></div>
             <div class="form-row">
                 <div class="form-group"><label>Port</label><input type="number" id="new-srv-port" value="22"></div>
@@ -336,6 +337,7 @@ async function addServer() {
         await api("/api/servers", {
             method: "POST",
             body: JSON.stringify({
+                name: $("new-srv-name").value,
                 hostname: $("new-srv-host").value,
                 port: parseInt($("new-srv-port").value) || 22,
                 username: $("new-srv-user").value,
@@ -676,8 +678,10 @@ function renderCaptures() {
     }
     el.innerHTML = captures
         .map((c) => {
+            // server_label is stamped at capture time, so it survives a restart
+            // and outlives the server it came from.
             const srv = activeServers.find((s) => s.id === c.server_id);
-            const srvName = srv ? srv.hostname : c.server_id;
+            const srvName = c.server_label || (srv ? srv.hostname : c.server_id);
             const statusClass = `status-${c.status}`;
             let actions = "";
             if (c.status === "running") {
@@ -788,11 +792,32 @@ function renderPacketLegend() {
     }
 }
 
+// Each timestamp flag needs a different amount of room; without this the cell
+// just ellipsises and the flag looks inert.
+const TIME_WIDTH_CLASS = {
+    "-t": "time-hidden",
+    "-tt": "time-epoch",
+    "-tttt": "time-full",
+};
+
+function applyTimeColumnWidth(flags) {
+    const table = document.querySelector(".packet-table");
+    if (!table) return;
+    table.classList.remove(...Object.values(TIME_WIDTH_CLASS));
+    for (const [flag, cls] of Object.entries(TIME_WIDTH_CLASS)) {
+        if (flags.includes(flag)) {
+            table.classList.add(cls);
+            break;
+        }
+    }
+}
+
 async function loadPackets(captureId, filter = "") {
     const tbody = $("packet-tbody");
     const flags = getSelectedFlags();
     const showMac = flags.includes("-e");
     document.querySelectorAll(".col-mac").forEach((el) => { el.hidden = !showMac; });
+    applyTimeColumnWidth(flags);
     const span = showMac ? 9 : 7;
     const mac = showMac ? "" : " hidden";
 
@@ -810,9 +835,9 @@ async function loadPackets(captureId, filter = "") {
                 (p) => `
             <tr class="${packetClass(p)}" data-frame="${p.number}" onclick="selectPacket(${p.number})">
                 <td class="col-no">${p.number}</td>
-                <td class="col-time">${escHtml(p.timestamp)}</td>
-                <td class="col-src">${escHtml(p.source)}</td>
-                <td class="col-dst">${escHtml(p.destination)}</td>
+                <td class="col-time" title="${escHtml(p.timestamp)}">${escHtml(p.timestamp)}</td>
+                <td class="col-src" title="${escHtml(p.source)}">${escHtml(p.source)}</td>
+                <td class="col-dst" title="${escHtml(p.destination)}">${escHtml(p.destination)}</td>
                 <td class="col-mac"${mac}>${escHtml(p.src_mac || "")}</td>
                 <td class="col-mac"${mac}>${escHtml(p.dst_mac || "")}</td>
                 <td class="col-proto">${escHtml(p.protocol)}</td>

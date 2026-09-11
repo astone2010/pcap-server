@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from backend.models import (
+    assert_no_forbidden_flags,
     CaptureInfo,
     CaptureRequest,
     CaptureStatus,
@@ -20,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 # tcpdump always announces itself on stderr; only the rest is a diagnosis.
 _STDERR_NOISE = ("listening on", "packets captured", "packets received", "packets dropped")
+
+
+def server_label(server: ServerInfo) -> str:
+    """A human-readable stamp of where a capture ran, frozen at start time."""
+    endpoint = f"{server.username}@{server.hostname}"
+    if server.port != 22:
+        endpoint += f":{server.port}"
+    return f"{server.name} ({endpoint})" if server.name else endpoint
 
 
 def _row(info: CaptureInfo) -> dict:
@@ -84,6 +93,12 @@ class CaptureManager:
         return [c for c in self._captures.values() if c.user_id == user_id]
 
     def build_command_args(self, req: CaptureRequest) -> list[str]:
+        """The complete set of things that change what a -w capture contains.
+
+        -n used to be appended here as well. Under -w tcpdump prints nothing, so
+        it only made the command string shown to the user look like it did
+        something.
+        """
         max_packets = self._get_setting("max_capture_packets")
         args: list[str] = []
         args += ["-i", req.interface]
@@ -92,13 +107,12 @@ class CaptureManager:
             args += ["-c", str(count)]
         if req.snap_len is not None:
             args += ["-s", str(req.snap_len)]
-        # -n is the default, but -nn supersedes it and picking either shouldn't duplicate it.
-        if not {"-n", "-nn"} & set(req.extra_flags):
-            args.append("-n")
-        args += req.extra_flags
         if req.bpf_filter:
+            # After --, so a filter starting with a dash is read as an expression
+            # rather than as an option.
             args.append("--")
             args.append(req.bpf_filter)
+        assert_no_forbidden_flags(args)
         return args
 
     async def start(self, req: CaptureRequest, server: ServerInfo, user_id: str) -> CaptureInfo:
@@ -117,11 +131,13 @@ class CaptureManager:
         full_cmd = ["tcpdump", "-w", remote_path] + args
         if server.use_sudo:
             full_cmd = ["sudo", "-n"] + full_cmd
+        assert_no_forbidden_flags(full_cmd)
         cmd_str = " ".join(full_cmd)
 
         info = CaptureInfo(
             id=capture_id,
             server_id=server.id,
+            server_label=server_label(server),
             user_id=user_id,
             status=CaptureStatus.RUNNING,
             started_at=datetime.now(timezone.utc),

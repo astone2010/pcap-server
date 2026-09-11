@@ -149,11 +149,74 @@
                     <input type="number" id="cap-snaplen" placeholder="auto" style="width:80px">
                 </div>
                 <div class="form-group bpf-filter">
-                    <label>BPF filter</label>
+                    <label>BPF filter <span class="hint">&mdash; this is how you capture specific traffic</span></label>
                     <input type="text" id="cap-bpf" placeholder="e.g. tcp port 80 and host 10.0.0.1">
                 </div>
                 <button class="btn btn-primary btn-sm" onclick="startCapture()">Start capture</button>
             </div>
+
+            <details class="explainer">
+                <summary>Where are the tcpdump flags?</summary>
+                <div class="explainer-body">
+                    <p>
+                        If you are used to typing <code>tcpdump -nnvvXi eth0 port 443</code>, the
+                        flags in that command split into two groups, and only one of them is
+                        doing what you think.
+                    </p>
+                    <p>
+                        This tool always runs <code>tcpdump -w &lt;file&gt;</code>, because the
+                        point is to bring a pcap back for analysis. <strong>-w turns tcpdump
+                        from a printer into a writer.</strong> It stops formatting text
+                        entirely and writes raw packet records to the file. So
+                        <code>-v</code>, <code>-vv</code>, <code>-q</code>, <code>-A</code>,
+                        <code>-X</code>, <code>-XX</code>, <code>-e</code>, <code>-n</code>,
+                        <code>-nn</code> and the <code>-t</code> family have nothing to format
+                        and cannot change a single byte of the capture. They are not filtered
+                        out here &mdash; tcpdump itself ignores them under <code>-w</code>.
+                    </p>
+                    <p>
+                        Those flags were accepted in earlier builds. That was misleading: you
+                        could set them, and nothing happened. They have been removed rather
+                        than left as controls that do nothing. The ones that describe
+                        <em>how to read</em> a capture now live in the <strong>Viewer</strong>,
+                        where they apply to the packet list and genuinely change what you see.
+                    </p>
+                    <p>
+                        <strong>Exactly four things change what a capture contains</strong>,
+                        and all four are fields above:
+                    </p>
+                    <table class="explainer-table">
+                        <tr><td><code>Interface</code></td><td><code>-i</code></td><td>which link to read from</td></tr>
+                        <tr><td><code>Max packets</code></td><td><code>-c</code></td><td>stop after this many packets</td></tr>
+                        <tr><td><code>Snap length</code></td><td><code>-s</code></td><td>bytes kept per packet &mdash; lower it to capture headers only</td></tr>
+                        <tr><td><code>BPF filter</code></td><td>expression</td><td><strong>which packets are captured at all</strong></td></tr>
+                    </table>
+                    <p>
+                        Selecting specific traffic was never a flag's job in tcpdump either
+                        &mdash; it is the filter expression's. That is the box to reach for,
+                        and it takes the full Berkeley Packet Filter syntax:
+                    </p>
+                    <table class="explainer-table">
+                        <tr><td><code>host 10.0.0.230</code></td><td>everything to or from one host</td></tr>
+                        <tr><td><code>tcp port 443</code></td><td>one TCP port, both directions</td></tr>
+                        <tr><td><code>port 53 and not host 8.8.8.8</code></td><td>combine with <code>and</code>, <code>or</code>, <code>not</code></td></tr>
+                        <tr><td><code>net 192.168.1.0/24</code></td><td>a whole subnet</td></tr>
+                        <tr><td><code>vlan 100</code></td><td>a single VLAN</td></tr>
+                        <tr><td><code>icmp or arp</code></td><td>protocols by name</td></tr>
+                        <tr><td><code>tcp[tcpflags] &amp; tcp-syn != 0</code></td><td>SYNs only &mdash; byte-level matching works too</td></tr>
+                        <tr><td><code>less 128</code></td><td>packets under 128 bytes</td></tr>
+                    </table>
+                    <p class="explainer-note">
+                        Shell metacharacters are rejected in the filter, and the expression is
+                        passed to tcpdump as a single quoted argument after <code>--</code>, so
+                        a filter can never become part of the command. A small set of flags
+                        (<code>-z</code>, <code>-W</code>, <code>-G</code>, <code>-C</code>,
+                        <code>-r</code>, <code>-F</code>, <code>-V</code>, <code>-Z</code>) is
+                        permanently refused: tcpdump may be running under <code>sudo</code>,
+                        and those turn a capture into code execution or file reads as root.
+                    </p>
+                </div>
+            </details>
             <div id="capture-list" class="capture-list">
                 <div class="empty-state">No captures yet</div>
             </div>

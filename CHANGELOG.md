@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.1.0-dev.7 — 2026-09-11
+
+### Features
+
+- Servers added under **Servers** are now permanent. They were held in a
+  process-global dictionary, so every one of them disappeared on restart and had
+  to be re-added by hand; they are now rows in SQLite and last until you delete
+  them. They are also scoped to the user who added them — previously every
+  logged-in user could list, test, delete and capture from every other user's
+  servers.
+- A server can be given an optional name when it is added, shown in the server
+  list in place of the bare hostname.
+- Captures record the server they came from. The list used to resolve the
+  capture's `server_id` against the servers loaded in the browser, which meant
+  a bare UUID after any restart and for any server since deleted. Each capture
+  now stores a label — `name (user@host)`, or `user@host` when unnamed — stamped
+  when the capture starts, so it stays correct forever.
+
+- Remove tcpdump's display flags from the capture API. `-v`, `-vv`, `-vvv`,
+  `-q`, `-A`, `-X`, `-XX`, `-e`, `-n`, `-nn` and the `-t` family were still
+  accepted on `POST /api/captures` even though dev.6 dropped them from the UI,
+  and dev.6's changelog described them as gone when only the UI had lost them.
+  A capture is always written with `tcpdump -w`, which makes tcpdump a writer
+  rather than a printer: it emits no text, so none of those flags can change a
+  byte of the pcap. `extra_flags` is gone entirely — what a capture contains is
+  decided by the interface, packet count, snap length and BPF filter, all of
+  which are structured fields. The Capture panel now carries an explainer
+  covering why, and a BPF filter cheatsheet, since selecting specific traffic
+  is the filter's job rather than a flag's.
+- The refusal of `-z`, `-W`, `-G`, `-C`, `-r`, `-F`, `-V` and `-Z` moves from
+  validating user-supplied flags to asserting against the fully-built tcpdump
+  command, including the `sudo -n` prefix. Nothing user-supplied reaches the
+  argument list any more, so the check should be unreachable — which is why it
+  is checked rather than assumed.
+
+### Fixes
+
+- Stop appending `-n` to the capture command. It was inert under `-w` and only
+  made the command string shown against each capture look like it did something.
+- `-n` and `-nn` in the viewer did nothing. The packet list read `ip.src` and
+  `ip.dst`, which tshark always renders numerically whatever name resolution is
+  set to, so neither flag could change what you saw and the two were mapped onto
+  the same tshark flag anyway. The list now reads the resolved Source and
+  Destination columns, and the flags map the way tcpdump means them: `-nn`
+  resolves nothing, `-n` keeps port names but not host names, and selecting
+  neither resolves both. This also fixes ARP, IPv6 and other non-IP packets,
+  which previously showed `N/A` for both addresses because they have no `ip.src`.
+- `-tt` and `-tttt` worked but were invisible. The timestamp column is a fixed
+  100px in a `table-layout: fixed` table with `text-overflow: ellipsis`, so an
+  epoch or full date was clipped to roughly `Sep 11, 202…`. Each format now gets
+  a column width that fits it, `-t` collapses the column instead of leaving a
+  gap, and the timestamp, source and destination cells carry their full value as
+  a tooltip.
+
 ## 0.1.0-dev.6 — 2026-09-11
 
 ### Features

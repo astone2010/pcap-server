@@ -597,6 +597,11 @@ body {
     flex-shrink: 0;
 }
 
+.hint {
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
 .legend-item {
     display: inline-flex;
     align-items: center;
@@ -613,7 +618,14 @@ body {
 }
 
 .col-no { width: 60px; }
+
+/* The table is table-layout:fixed with ellipsis on every cell, so a column too
+   narrow for its format silently truncates -- which made -tt and -tttt look like
+   they did nothing at all. Each timestamp format gets a width that fits it. */
 .col-time { width: 100px; }
+.packet-table.time-epoch .col-time { width: 160px; }
+.packet-table.time-full .col-time { width: 280px; }
+.packet-table.time-hidden .col-time { width: 0; padding: 0; border: none; }
 .col-src { width: 140px; }
 .col-dst { width: 140px; }
 .col-mac { width: 130px; }
@@ -1021,4 +1033,80 @@ body {
 
     .flag-chip { font-size: 0.8125rem; padding: 7px 12px; }
     .server-form { padding: 12px; }
+}
+
+
+/* Capture-panel explainer: why tcpdump's display flags are not offered here,
+   and what to use instead. Collapsed by default so it does not crowd the form. */
+.explainer {
+    margin: 0 16px 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    font-size: 0.8125rem;
+}
+
+.explainer > summary {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text-secondary);
+    list-style: none;
+}
+
+.explainer > summary::-webkit-details-marker { display: none; }
+
+.explainer > summary::before {
+    content: "\25B8";
+    display: inline-block;
+    width: 1em;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+}
+
+.explainer[open] > summary::before { transform: rotate(90deg); }
+.explainer > summary:hover { color: var(--accent); }
+
+.explainer-body {
+    padding: 0 14px 14px;
+    color: var(--text-secondary);
+    line-height: 1.55;
+}
+
+.explainer-body p { margin: 0 0 10px; }
+.explainer-body strong { color: var(--text-primary); }
+
+.explainer-body code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.explainer-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0 0 12px;
+}
+
+.explainer-table td {
+    padding: 4px 10px 4px 0;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+}
+
+.explainer-table td:first-child { white-space: nowrap; }
+
+.explainer-note {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+@media (max-width: 720px) {
+    .explainer-table td:first-child { white-space: normal; }
 }
