@@ -5,6 +5,8 @@
 # non-root user (appuser, UID 1000). No manual chown needed.
 #
 # SSH keys are managed via the Admin panel in the web UI.
+#
+# Set COOKIE_SECURE=true when behind a TLS reverse proxy.
 
 services:
   pcap-server:

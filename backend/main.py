@@ -118,11 +118,14 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
+_COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() in ("1", "true", "yes")
+
+
 def _set_session_cookie(response: Response, token: str) -> None:
     max_age = db.get_setting_int("session_duration_hours") * 3600
     response.set_cookie(
         "session", token,
-        httponly=True, samesite="strict", secure=True,
+        httponly=True, samesite="lax", secure=_COOKIE_SECURE,
         max_age=max_age,
     )
 
@@ -194,7 +197,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 trust_token = create_device_trust(db, user["id"])
                 response.set_cookie(
                     "device_trust", trust_token,
-                    httponly=True, samesite="strict", secure=True,
+                    httponly=True, samesite="lax", secure=_COOKIE_SECURE,
                     max_age=trust_days * 86400,
                 )
 
