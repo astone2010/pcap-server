@@ -147,6 +147,9 @@ function enterApp() {
     hide("totp-setup-screen");
     show("app-screen");
     $("user-display").textContent = currentUser.username;
+    if (currentUser.is_admin) {
+        $("admin-tab").hidden = false;
+    }
     initTabs();
     initFlagPicker();
     loadServers();
@@ -164,6 +167,11 @@ function initTabs() {
             document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
             tab.classList.add("active");
             $("panel-" + tab.dataset.tab).classList.add("active");
+            if (tab.dataset.tab === "admin") {
+                loadAdminSettings();
+                loadAdminUsers();
+                loadAdminKnownHosts();
+            }
         });
     });
 }
@@ -639,6 +647,176 @@ document.addEventListener("keydown", (e) => {
         doLogin();
     }
 });
+
+// --- admin panel ---
+
+const SETTING_LABELS = {
+    max_capture_seconds: "Max capture duration (seconds)",
+    max_capture_packets: "Max capture packets",
+    session_duration_hours: "Session duration (hours)",
+    device_trust_days: "Device trust duration (days)",
+    rate_limit_max_attempts: "Rate limit max attempts",
+    rate_limit_lockout_minutes: "Rate limit lockout (minutes)",
+};
+
+async function loadAdminSettings() {
+    try {
+        const settings = await api("/api/admin/settings");
+        const el = $("admin-settings");
+        el.innerHTML = Object.entries(SETTING_LABELS)
+            .map(([key, label]) => `
+                <div class="setting-item">
+                    <label>${escHtml(label)}</label>
+                    <input type="number" id="setting-${key}" value="${escHtml(settings[key] || "")}" min="1">
+                </div>
+            `)
+            .join("");
+    } catch (e) {
+        $("admin-settings").innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
+    }
+}
+
+async function saveSettings() {
+    const msgEl = $("settings-msg");
+    msgEl.textContent = "";
+    msgEl.className = "error-msg";
+    const keys = Object.keys(SETTING_LABELS);
+    try {
+        for (const key of keys) {
+            const input = $("setting-" + key);
+            if (!input) continue;
+            await api("/api/admin/settings", {
+                method: "PUT",
+                body: JSON.stringify({ key, value: input.value }),
+            });
+        }
+        msgEl.textContent = "Settings saved";
+        msgEl.className = "success-msg";
+    } catch (e) {
+        msgEl.textContent = e.message;
+    }
+}
+
+async function loadAdminUsers() {
+    try {
+        const users = await api("/api/admin/users");
+        const el = $("admin-user-list");
+        if (!users.length) {
+            el.innerHTML = "No users";
+            return;
+        }
+        el.innerHTML = `<table class="admin-table">
+            <thead><tr><th>Username</th><th>Admin</th><th>MFA</th><th>Created</th><th></th></tr></thead>
+            <tbody>${users.map((u) => `
+                <tr>
+                    <td>${escHtml(u.username)}</td>
+                    <td>${u.is_admin ? "Yes" : "No"}</td>
+                    <td>${u.totp_confirmed ? "Yes" : "No"}</td>
+                    <td>${escHtml(u.created_at || "")}</td>
+                    <td>${!u.is_admin ? `<button class="btn btn-sm btn-danger" onclick="adminDeleteUser('${escHtml(u.id)}')">Delete</button>` : ""}</td>
+                </tr>`).join("")}
+            </tbody>
+        </table>`;
+    } catch (e) {
+        $("admin-user-list").innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
+    }
+}
+
+async function adminCreateUser() {
+    const msgEl = $("admin-user-msg");
+    msgEl.textContent = "";
+    msgEl.className = "error-msg";
+    const username = $("admin-new-username").value;
+    const password = $("admin-new-password").value;
+    if (!username || !password) {
+        msgEl.textContent = "Username and password required";
+        return;
+    }
+    try {
+        await api("/api/admin/users", {
+            method: "POST",
+            body: JSON.stringify({ username, password }),
+        });
+        $("admin-new-username").value = "";
+        $("admin-new-password").value = "";
+        msgEl.textContent = "User created";
+        msgEl.className = "success-msg";
+        loadAdminUsers();
+    } catch (e) {
+        msgEl.textContent = e.message;
+    }
+}
+
+async function adminDeleteUser(userId) {
+    if (!confirm("Delete this user? This cannot be undone.")) return;
+    try {
+        await api(`/api/admin/users/${userId}`, { method: "DELETE" });
+        loadAdminUsers();
+    } catch (e) {
+        $("admin-user-msg").textContent = e.message;
+    }
+}
+
+async function loadAdminKnownHosts() {
+    try {
+        const hosts = await api("/api/admin/known-hosts");
+        const el = $("admin-known-hosts");
+        if (!hosts.length) {
+            el.innerHTML = '<span style="color:var(--text-muted)">No known hosts</span>';
+            return;
+        }
+        el.innerHTML = `<table class="admin-table">
+            <thead><tr><th>Hostname</th><th>Port</th><th>Key Type</th><th>Added</th><th></th></tr></thead>
+            <tbody>${hosts.map((h) => `
+                <tr>
+                    <td>${escHtml(h.hostname)}</td>
+                    <td>${h.port}</td>
+                    <td>${escHtml(h.key_type)}</td>
+                    <td>${escHtml(h.added_at || "")}</td>
+                    <td><button class="btn btn-sm btn-danger" onclick="adminDeleteKnownHost(${h.id})">Remove</button></td>
+                </tr>`).join("")}
+            </tbody>
+        </table>`;
+    } catch (e) {
+        $("admin-known-hosts").innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
+    }
+}
+
+async function adminScanHost() {
+    const msgEl = $("admin-host-msg");
+    msgEl.textContent = "";
+    msgEl.className = "error-msg";
+    const hostname = $("admin-scan-hostname").value.trim();
+    const port = parseInt($("admin-scan-port").value) || 22;
+    if (!hostname) {
+        msgEl.textContent = "Hostname required";
+        return;
+    }
+    msgEl.textContent = "Scanning...";
+    msgEl.className = "success-msg";
+    try {
+        const result = await api("/api/admin/known-hosts/scan", {
+            method: "POST",
+            body: JSON.stringify({ hostname, port }),
+        });
+        msgEl.textContent = `Found ${result.keys.length} key(s)`;
+        msgEl.className = "success-msg";
+        loadAdminKnownHosts();
+    } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "error-msg";
+    }
+}
+
+async function adminDeleteKnownHost(hostId) {
+    if (!confirm("Remove this known host key?")) return;
+    try {
+        await api(`/api/admin/known-hosts/${hostId}`, { method: "DELETE" });
+        loadAdminKnownHosts();
+    } catch (e) {
+        $("admin-host-msg").textContent = e.message;
+    }
+}
 
 // --- boot ---
 

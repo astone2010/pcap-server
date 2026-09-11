@@ -6,6 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
+RUN useradd -r -s /bin/false -m appuser
+
 WORKDIR /app
 
 COPY backend/requirements.txt /app/backend/requirements.txt
@@ -14,7 +16,10 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
 
-RUN mkdir -p /app/ssh-keys /app/captures /app/data
+RUN mkdir -p /app/ssh-keys /app/captures /app/data \
+    && chown -R appuser:appuser /app/ssh-keys /app/captures /app/data
+
+USER appuser
 
 EXPOSE 8080
 

@@ -5,16 +5,10 @@ services:
       - "8080:8080"
     volumes:
       - ./ssh-keys:/app/ssh-keys:ro
-      - pcap-data:/app/data
-      - pcap-captures:/app/captures
+      - ./data:/app/data
+      - ./captures:/app/captures
     environment:
       - SSH_KEYS_DIR=/app/ssh-keys
       - CAPTURES_DIR=/app/captures
       - DATA_DIR=/app/data
-      - MAX_CAPTURE_SECONDS=300
-      - MAX_CAPTURE_PACKETS=100000
     restart: unless-stopped
-
-volumes:
-  pcap-data:
-  pcap-captures:

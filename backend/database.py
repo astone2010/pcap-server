@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Database:
@@ -37,14 +40,14 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL REFERENCES users(id),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS trusted_devices (
                 id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL REFERENCES users(id),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 token_hash TEXT NOT NULL,
                 name TEXT NOT NULL DEFAULT 'Unknown',
                 created_at TEXT NOT NULL,
@@ -53,7 +56,7 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS saved_servers (
                 id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL REFERENCES users(id),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
                 hostname TEXT NOT NULL,
                 port INTEGER NOT NULL DEFAULT 22,
@@ -62,6 +65,27 @@ class Database:
                 created_at TEXT NOT NULL,
                 UNIQUE(user_id, name)
             );
+
+            CREATE TABLE IF NOT EXISTS known_hosts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hostname TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 22,
+                key_type TEXT NOT NULL,
+                host_key TEXT NOT NULL,
+                added_at TEXT NOT NULL,
+                added_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+                UNIQUE(hostname, port, key_type)
+            );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_trusted_devices_user_token ON trusted_devices(user_id, token_hash);
+            CREATE INDEX IF NOT EXISTS idx_saved_servers_user_id ON saved_servers(user_id);
         """)
         conn.commit()
 
@@ -70,7 +94,7 @@ class Database:
     def create_user(self, user_id: str, username: str, password_hash: str, *, is_admin: bool = False) -> None:
         self._conn().execute(
             "INSERT INTO users (id, username, password_hash, created_at, is_admin) VALUES (?, ?, ?, ?, ?)",
-            (user_id, username, password_hash, datetime.utcnow().isoformat(), int(is_admin)),
+            (user_id, username, password_hash, _utcnow().isoformat(), int(is_admin)),
         )
         self._conn().commit()
 
@@ -98,19 +122,49 @@ class Database:
         rows = self._conn().execute("SELECT id, username, created_at, is_admin, totp_confirmed FROM users").fetchall()
         return [dict(r) for r in rows]
 
+    def delete_user(self, user_id: str) -> bool:
+        cur = self._conn().execute("DELETE FROM users WHERE id = ?", (user_id,))
+        self._conn().commit()
+        return cur.rowcount > 0
+
+    # --- sessions ---
+
+    def create_session(self, token: str, user_id: str, expires_at: str) -> None:
+        self._conn().execute(
+            "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+            (token, user_id, _utcnow().isoformat(), expires_at),
+        )
+        self._conn().commit()
+
+    def get_valid_session(self, token: str) -> dict | None:
+        row = self._conn().execute(
+            "SELECT * FROM sessions WHERE token = ? AND expires_at > ?",
+            (token, _utcnow().isoformat()),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def delete_session(self, token: str) -> None:
+        self._conn().execute("DELETE FROM sessions WHERE token = ?", (token,))
+        self._conn().commit()
+
+    def cleanup_expired_sessions(self) -> int:
+        cur = self._conn().execute("DELETE FROM sessions WHERE expires_at <= ?", (_utcnow().isoformat(),))
+        self._conn().commit()
+        return cur.rowcount
+
     # --- trusted devices ---
 
     def add_trusted_device(self, device_id: str, user_id: str, token_hash: str, name: str, expires_at: str) -> None:
         self._conn().execute(
             "INSERT INTO trusted_devices (id, user_id, token_hash, name, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (device_id, user_id, token_hash, name, datetime.utcnow().isoformat(), expires_at),
+            (device_id, user_id, token_hash, name, _utcnow().isoformat(), expires_at),
         )
         self._conn().commit()
 
     def get_trusted_device_by_hash(self, user_id: str, token_hash: str) -> dict | None:
         row = self._conn().execute(
             "SELECT * FROM trusted_devices WHERE user_id = ? AND token_hash = ? AND expires_at > ?",
-            (user_id, token_hash, datetime.utcnow().isoformat()),
+            (user_id, token_hash, _utcnow().isoformat()),
         ).fetchone()
         return dict(row) if row else None
 
@@ -119,7 +173,7 @@ class Database:
         self._conn().commit()
 
     def cleanup_expired_devices(self) -> int:
-        cur = self._conn().execute("DELETE FROM trusted_devices WHERE expires_at <= ?", (datetime.utcnow().isoformat(),))
+        cur = self._conn().execute("DELETE FROM trusted_devices WHERE expires_at <= ?", (_utcnow().isoformat(),))
         self._conn().commit()
         return cur.rowcount
 
@@ -129,7 +183,7 @@ class Database:
         self._conn().execute(
             """INSERT OR REPLACE INTO saved_servers (id, user_id, name, hostname, port, username, ssh_key_name, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (server_id, user_id, name, hostname, port, username, ssh_key_name, datetime.utcnow().isoformat()),
+            (server_id, user_id, name, hostname, port, username, ssh_key_name, _utcnow().isoformat()),
         )
         self._conn().commit()
 
@@ -151,3 +205,65 @@ class Database:
             "SELECT * FROM saved_servers WHERE id = ? AND user_id = ?", (server_id, user_id)
         ).fetchone()
         return dict(row) if row else None
+
+    # --- known hosts ---
+
+    def add_known_host(self, hostname: str, port: int, key_type: str, host_key: str, added_by: str | None = None) -> None:
+        self._conn().execute(
+            """INSERT OR REPLACE INTO known_hosts (hostname, port, key_type, host_key, added_at, added_by)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (hostname, port, key_type, host_key, _utcnow().isoformat(), added_by),
+        )
+        self._conn().commit()
+
+    def get_known_hosts(self, hostname: str, port: int) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT * FROM known_hosts WHERE hostname = ? AND port = ?",
+            (hostname, port),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_known_hosts(self) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT * FROM known_hosts ORDER BY hostname, port"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_known_host(self, host_id: int) -> bool:
+        cur = self._conn().execute("DELETE FROM known_hosts WHERE id = ?", (host_id,))
+        self._conn().commit()
+        return cur.rowcount > 0
+
+    # --- settings ---
+
+    DEFAULTS: dict[str, str] = {
+        "max_capture_seconds": "300",
+        "max_capture_packets": "100000",
+        "session_duration_hours": "8",
+        "device_trust_days": "30",
+        "rate_limit_max_attempts": "5",
+        "rate_limit_lockout_minutes": "15",
+    }
+
+    def get_setting(self, key: str) -> str:
+        row = self._conn().execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        if row:
+            return row["value"]
+        return self.DEFAULTS.get(key, "")
+
+    def get_setting_int(self, key: str) -> int:
+        return int(self.get_setting(key))
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._conn().execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        self._conn().commit()
+
+    def get_all_settings(self) -> dict[str, str]:
+        rows = self._conn().execute("SELECT key, value FROM settings").fetchall()
+        result = dict(self.DEFAULTS)
+        for r in rows:
+            result[r["key"]] = r["value"]
+        return result

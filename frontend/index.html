@@ -87,6 +87,7 @@
         <div class="tab active" data-tab="servers">Servers</div>
         <div class="tab" data-tab="capture">Capture</div>
         <div class="tab" data-tab="viewer">Viewer</div>
+        <div class="tab" data-tab="admin" id="admin-tab" hidden>Admin</div>
     </div>
     <div class="main-content">
 
@@ -184,6 +185,38 @@
                         <div class="empty-state" style="font-size:0.75rem">Click a packet above</div>
                     </div>
                     <div id="hex-dump" class="hex-dump"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- admin panel -->
+        <div id="panel-admin" class="panel">
+            <div class="admin-layout">
+                <div class="admin-section">
+                    <h3>Settings</h3>
+                    <div id="admin-settings" class="admin-settings-grid"></div>
+                    <button class="btn btn-sm btn-primary" style="margin-top:12px" onclick="saveSettings()">Save settings</button>
+                    <div id="settings-msg" class="error-msg"></div>
+                </div>
+                <div class="admin-section">
+                    <h3>Users</h3>
+                    <div id="admin-user-list" class="admin-table-container"></div>
+                    <div class="admin-inline-form" style="margin-top:12px">
+                        <input type="text" id="admin-new-username" placeholder="Username" style="width:140px">
+                        <input type="password" id="admin-new-password" placeholder="Password" style="width:140px">
+                        <button class="btn btn-sm btn-secondary" onclick="adminCreateUser()">Add user</button>
+                    </div>
+                    <div id="admin-user-msg" class="error-msg"></div>
+                </div>
+                <div class="admin-section">
+                    <h3>Known Hosts</h3>
+                    <div id="admin-known-hosts" class="admin-table-container"></div>
+                    <div class="admin-inline-form" style="margin-top:12px">
+                        <input type="text" id="admin-scan-hostname" placeholder="Hostname" style="width:180px">
+                        <input type="number" id="admin-scan-port" placeholder="22" value="22" style="width:70px">
+                        <button class="btn btn-sm btn-secondary" onclick="adminScanHost()">Scan keys</button>
+                    </div>
+                    <div id="admin-host-msg" class="error-msg"></div>
                 </div>
             </div>
         </div>

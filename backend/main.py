@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.auth import (
-    TRUST_DURATION_DAYS,
+    RateLimiter,
     check_device_trust,
     cleanup_expired_sessions,
     create_device_trust,
@@ -43,14 +43,21 @@ logger = logging.getLogger(__name__)
 SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
-MAX_CAPTURE_SECONDS = int(os.environ.get("MAX_CAPTURE_SECONDS", "300"))
-MAX_CAPTURE_PACKETS = int(os.environ.get("MAX_CAPTURE_PACKETS", "100000"))
 
 app = FastAPI(title="pcap-server", version="0.1.0")
 
 db = Database(DATA_DIR / "pcap-server.db")
-ssh_manager = SSHManager(SSH_KEYS_DIR)
-capture_manager = CaptureManager(ssh_manager, CAPTURES_DIR, MAX_CAPTURE_SECONDS, MAX_CAPTURE_PACKETS)
+ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR)
+capture_manager = CaptureManager(ssh_manager, CAPTURES_DIR, db.get_setting_int)
+rate_limiter = RateLimiter(
+    max_attempts=db.get_setting_int("rate_limit_max_attempts"),
+    lockout_minutes=db.get_setting_int("rate_limit_lockout_minutes"),
+)
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await capture_manager.shutdown()
 
 
 # --- auth helpers ---
@@ -79,6 +86,18 @@ class SaveServerRequest(BaseModel):
     ssh_key_name: str
 
 
+class SettingUpdate(BaseModel):
+    key: str
+    value: str
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 def get_current_user(request: Request) -> dict:
     token = request.cookies.get("session")
     if not token:
@@ -91,6 +110,21 @@ def get_current_user(request: Request) -> dict:
     if not user:
         raise HTTPException(401, "session expired or invalid")
     return user
+
+
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if not user["is_admin"]:
+        raise HTTPException(403, "admin only")
+    return user
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    max_age = db.get_setting_int("session_duration_hours") * 3600
+    response.set_cookie(
+        "session", token,
+        httponly=True, samesite="strict", secure=True,
+        max_age=max_age,
+    )
 
 
 # --- auth routes ---
@@ -107,7 +141,11 @@ async def auth_status(request: Request):
     return {
         "has_users": has_users,
         "authenticated": user is not None,
-        "user": {"username": user["username"], "totp_confirmed": bool(user["totp_confirmed"])} if user else None,
+        "user": {
+            "username": user["username"],
+            "is_admin": bool(user["is_admin"]),
+            "totp_confirmed": bool(user["totp_confirmed"]),
+        } if user else None,
     }
 
 
@@ -122,19 +160,24 @@ async def register(req: RegisterRequest, response: Response):
     if db.get_user_by_username(req.username):
         raise HTTPException(409, "username taken")
 
-    user_id = str(uuid.uuid4())[:8]
+    user_id = str(uuid.uuid4())
     pw_hash = hash_password(req.password)
     db.create_user(user_id, req.username, pw_hash, is_admin=True)
 
     token, expires = create_session_token(db, user_id)
-    response.set_cookie("session", token, httponly=True, samesite="strict", max_age=8 * 3600)
+    _set_session_cookie(response, token)
     return {"ok": True, "user_id": user_id, "needs_totp_setup": True}
 
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest, request: Request, response: Response):
+    client_ip = _client_ip(request)
+    if rate_limiter.is_locked(client_ip):
+        raise HTTPException(429, "too many failed attempts, try again later")
+
     user = db.get_user_by_username(req.username)
     if not user or not verify_password(req.password, user["password_hash"]):
+        rate_limiter.record_failure(client_ip)
         raise HTTPException(401, "invalid credentials")
 
     if user["totp_confirmed"]:
@@ -144,17 +187,20 @@ async def login(req: LoginRequest, request: Request, response: Response):
             if not req.totp_code:
                 return {"needs_totp": True}
             if not verify_totp(user["totp_secret"], req.totp_code):
+                rate_limiter.record_failure(client_ip)
                 raise HTTPException(401, "invalid TOTP code")
             if req.trust_device:
+                trust_days = db.get_setting_int("device_trust_days")
                 trust_token = create_device_trust(db, user["id"])
                 response.set_cookie(
                     "device_trust", trust_token,
-                    httponly=True, samesite="strict",
-                    max_age=TRUST_DURATION_DAYS * 86400,
+                    httponly=True, samesite="strict", secure=True,
+                    max_age=trust_days * 86400,
                 )
 
+    rate_limiter.reset(client_ip)
     token, expires = create_session_token(db, user["id"])
-    response.set_cookie("session", token, httponly=True, samesite="strict", max_age=8 * 3600)
+    _set_session_cookie(response, token)
     return {"ok": True, "needs_totp_setup": not user["totp_confirmed"]}
 
 
@@ -196,25 +242,86 @@ async def totp_confirm(req: TOTPSetupRequest, user: dict = Depends(get_current_u
 # --- admin: user management ---
 
 @app.post("/api/admin/users")
-async def admin_create_user(req: RegisterRequest, user: dict = Depends(get_current_user)):
-    if not user["is_admin"]:
-        raise HTTPException(403, "admin only")
+async def admin_create_user(req: RegisterRequest, user: dict = Depends(require_admin)):
     if len(req.username) < 3:
         raise HTTPException(400, "username must be at least 3 characters")
     if len(req.password) < 8:
         raise HTTPException(400, "password must be at least 8 characters")
     if db.get_user_by_username(req.username):
         raise HTTPException(409, "username taken")
-    user_id = str(uuid.uuid4())[:8]
+    user_id = str(uuid.uuid4())
     db.create_user(user_id, req.username, hash_password(req.password))
     return {"ok": True, "user_id": user_id}
 
 
 @app.get("/api/admin/users")
-async def admin_list_users(user: dict = Depends(get_current_user)):
-    if not user["is_admin"]:
-        raise HTTPException(403, "admin only")
+async def admin_list_users(user: dict = Depends(require_admin)):
     return db.list_users()
+
+
+@app.delete("/api/admin/users/{target_user_id}")
+async def admin_delete_user(target_user_id: str, user: dict = Depends(require_admin)):
+    if target_user_id == user["id"]:
+        raise HTTPException(400, "cannot delete yourself")
+    if not db.delete_user(target_user_id):
+        raise HTTPException(404, "user not found")
+    return {"ok": True}
+
+
+# --- admin: settings ---
+
+@app.get("/api/admin/settings")
+async def admin_get_settings(user: dict = Depends(require_admin)):
+    return db.get_all_settings()
+
+
+@app.put("/api/admin/settings")
+async def admin_update_setting(req: SettingUpdate, user: dict = Depends(require_admin)):
+    allowed_keys = set(Database.DEFAULTS.keys())
+    if req.key not in allowed_keys:
+        raise HTTPException(400, f"unknown setting: {req.key}")
+    try:
+        int_val = int(req.value)
+        if int_val < 1:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, "value must be a positive integer")
+    db.set_setting(req.key, req.value)
+    if req.key in ("rate_limit_max_attempts", "rate_limit_lockout_minutes"):
+        rate_limiter.update_config(
+            db.get_setting_int("rate_limit_max_attempts"),
+            db.get_setting_int("rate_limit_lockout_minutes"),
+        )
+    return {"ok": True}
+
+
+# --- admin: known hosts ---
+
+@app.get("/api/admin/known-hosts")
+async def admin_list_known_hosts(user: dict = Depends(require_admin)):
+    return db.list_known_hosts()
+
+
+@app.post("/api/admin/known-hosts/scan")
+async def admin_scan_host(request: Request, user: dict = Depends(require_admin)):
+    body = await request.json()
+    hostname = body.get("hostname", "").strip()
+    port = int(body.get("port", 22))
+    if not hostname or any(c in hostname for c in " ;|&$`\\\n\r"):
+        raise HTTPException(400, "invalid hostname")
+    if not (1 <= port <= 65535):
+        raise HTTPException(400, "invalid port")
+    keys = await ssh_manager.scan_host_keys(hostname, port, user["id"])
+    if not keys:
+        raise HTTPException(502, "no host keys found")
+    return {"ok": True, "keys": keys}
+
+
+@app.delete("/api/admin/known-hosts/{host_id}")
+async def admin_delete_known_host(host_id: int, user: dict = Depends(require_admin)):
+    if not db.delete_known_host(host_id):
+        raise HTTPException(404, "known host not found")
+    return {"ok": True}
 
 
 # --- servers (runtime, per-session) ---
@@ -255,8 +362,12 @@ async def test_server(server_id: str, user: dict = Depends(get_current_user)):
     try:
         result = await ssh_manager.test_connection(srv)
         return {"ok": True, "result": result}
-    except Exception as exc:
-        raise HTTPException(502, f"connection failed: {exc}")
+    except ConnectionError as exc:
+        raise HTTPException(502, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception:
+        raise HTTPException(502, "connection failed")
 
 
 # --- saved servers (persistent, per-user) ---
@@ -271,7 +382,7 @@ async def save_server(req: SaveServerRequest, user: dict = Depends(get_current_u
     key_path = (SSH_KEYS_DIR / req.ssh_key_name).resolve()
     if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
         raise HTTPException(400, "invalid key path")
-    server_id = str(uuid.uuid4())[:8]
+    server_id = str(uuid.uuid4())
     db.save_server(server_id, user["id"], req.name, req.hostname, req.port, req.username, req.ssh_key_name)
     return {"ok": True, "id": server_id}
 
@@ -315,7 +426,7 @@ async def list_ssh_keys(user: dict = Depends(get_current_user)):
 
 @app.get("/api/captures")
 async def list_captures(user: dict = Depends(get_current_user)):
-    return list(capture_manager.captures.values())
+    return capture_manager.list_for_user(user["id"])
 
 
 @app.post("/api/captures")
@@ -324,15 +435,18 @@ async def start_capture(req: CaptureRequest, user: dict = Depends(get_current_us
     if not srv:
         raise HTTPException(404, "server not found")
     try:
-        info = await capture_manager.start(req, srv)
+        info = await capture_manager.start(req, srv, user["id"])
         return info
-    except Exception as exc:
+    except Exception:
         logger.exception("failed to start capture")
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, "failed to start capture")
 
 
 @app.post("/api/captures/{capture_id}/stop")
 async def stop_capture(capture_id: str, user: dict = Depends(get_current_user)):
+    info = capture_manager.get(capture_id)
+    if not info or info.user_id != user["id"]:
+        raise HTTPException(404, "capture not found")
     try:
         return await capture_manager.stop(capture_id)
     except KeyError:
@@ -341,17 +455,17 @@ async def stop_capture(capture_id: str, user: dict = Depends(get_current_user)):
 
 @app.delete("/api/captures/{capture_id}")
 async def delete_capture(capture_id: str, user: dict = Depends(get_current_user)):
-    try:
-        await capture_manager.delete(capture_id)
-        return {"ok": True}
-    except KeyError:
+    info = capture_manager.get(capture_id)
+    if not info or info.user_id != user["id"]:
         raise HTTPException(404, "capture not found")
+    await capture_manager.delete(capture_id)
+    return {"ok": True}
 
 
 @app.get("/api/captures/{capture_id}")
 async def get_capture(capture_id: str, user: dict = Depends(get_current_user)):
     info = capture_manager.get(capture_id)
-    if not info:
+    if not info or info.user_id != user["id"]:
         raise HTTPException(404, "capture not found")
     return info
 
@@ -359,7 +473,7 @@ async def get_capture(capture_id: str, user: dict = Depends(get_current_user)):
 @app.get("/api/captures/{capture_id}/download")
 async def download_capture(capture_id: str, user: dict = Depends(get_current_user)):
     info = capture_manager.get(capture_id)
-    if not info:
+    if not info or info.user_id != user["id"]:
         raise HTTPException(404, "capture not found")
     if info.status != CaptureStatus.COMPLETED:
         raise HTTPException(400, "capture not yet completed")
@@ -380,7 +494,7 @@ async def list_packets(
     user: dict = Depends(get_current_user),
 ):
     info = capture_manager.get(capture_id)
-    if not info:
+    if not info or info.user_id != user["id"]:
         raise HTTPException(404, "capture not found")
     if info.status != CaptureStatus.COMPLETED:
         raise HTTPException(400, "capture not yet completed")
@@ -390,15 +504,15 @@ async def list_packets(
     try:
         packets = await get_packet_list(path, offset=offset, limit=limit, display_filter=display_filter)
         return {"packets": packets, "total": info.packet_count}
-    except Exception as exc:
+    except Exception:
         logger.exception("packet list failed")
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, "failed to list packets")
 
 
 @app.get("/api/captures/{capture_id}/packets/{frame_number}")
 async def packet_detail(capture_id: str, frame_number: int, user: dict = Depends(get_current_user)):
     info = capture_manager.get(capture_id)
-    if not info:
+    if not info or info.user_id != user["id"]:
         raise HTTPException(404, "capture not found")
     if info.status != CaptureStatus.COMPLETED:
         raise HTTPException(400, "capture not yet completed")
@@ -407,8 +521,8 @@ async def packet_detail(capture_id: str, frame_number: int, user: dict = Depends
         raise HTTPException(404, "pcap file missing")
     try:
         return await get_packet_detail(path, frame_number)
-    except Exception as exc:
-        raise HTTPException(500, str(exc))
+    except Exception:
+        raise HTTPException(500, "failed to get packet detail")
 
 
 # --- reference ---

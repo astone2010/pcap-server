@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
 from pydantic import BaseModel, Field, field_validator
@@ -12,7 +12,7 @@ class ServerAuth(BaseModel):
     hostname: str
     port: int = 22
     username: str
-    ssh_key_name: str  # filename inside SSH_KEYS_DIR
+    ssh_key_name: str
 
     @field_validator("hostname")
     @classmethod
@@ -34,8 +34,8 @@ class ServerAuth(BaseModel):
 
 
 class ServerInfo(ServerAuth):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
-    added_at: datetime = Field(default_factory=datetime.utcnow)
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class CaptureStatus(str, enum.Enum):
@@ -90,6 +90,7 @@ class CaptureRequest(BaseModel):
 class CaptureInfo(BaseModel):
     id: str
     server_id: str
+    user_id: str = ""
     status: CaptureStatus
     started_at: datetime | None = None
     stopped_at: datetime | None = None
