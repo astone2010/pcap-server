@@ -11,7 +11,10 @@ in your browser.
 - **Multi-user** — scrypt password hashing, TOTP two-factor auth, trusted devices
 - **Admin panel** — manage users, configure settings, scan SSH host keys
 - **SSH host key verification** — Trust On First Use (TOFU) with known hosts database
-- **Saved servers** — store connection profiles per user
+- **Saved servers** — store connection profiles per user, editable after creation
+- **sudo support** — run tcpdump via `sudo -n` per server, for non-root SSH users
+- **Interface discovery** — pick the capture interface from a list read off the target host
+- **Explained flags** — every tcpdump flag in the picker documents what it does
 - **Configurable** — capture limits, session duration, rate limiting all adjustable from the GUI
 - **Process safety** — remote tcpdump processes are always cleaned up on shutdown
 
@@ -34,6 +37,7 @@ Open `http://localhost:8080`. The first user to register becomes the admin.
 | `SSH_KEYS_DIR` | `/app/ssh-keys` | Directory for SSH private keys |
 | `CAPTURES_DIR` | `/app/captures` | Directory for downloaded pcap files |
 | `DATA_DIR` | `/app/data` | Directory for the SQLite database |
+| `COOKIE_SECURE` | `true` | Require HTTPS for the session cookie. Set to `false` for plain-HTTP/LAN use, or sign-in will not work. |
 
 ### Admin Settings (GUI)
 
@@ -50,9 +54,33 @@ These are configurable from the Admin tab by the admin user:
 
 ## SSH Keys
 
-Place private key files in the `ssh-keys/` directory (mounted at `/app/ssh-keys`).
-The server reads key filenames from this directory and presents them as options
-when connecting to a remote server.
+Upload private keys from the **Admin** tab. They are stored in the `ssh-keys/`
+directory (mounted at `/app/ssh-keys`) and offered as options when connecting to
+a remote server. Keys can be uploaded and deleted from the GUI; no manual file
+placement is needed.
+
+## Running tcpdump with sudo
+
+tcpdump usually needs root to open a capture interface. If the SSH user is not
+root, tick **Run tcpdump with sudo** on the server, and grant that user
+passwordless sudo for tcpdump only:
+
+```
+# /etc/sudoers.d/pcap-server
+pcapuser ALL=(root) NOPASSWD: /usr/bin/tcpdump
+```
+
+pcap-server invokes `sudo -n`, so a host that still demands a password fails
+immediately with a clear error rather than hanging.
+
+**Understand what this grants.** `tcpdump` can run arbitrary commands as root
+via its `-z` flag and read any file via `-r`, so anyone who can open a shell as
+`pcapuser` on that host effectively has root there. pcap-server never sends
+those flags — `-z`, `-Z`, `-W`, `-G`, `-C`, `-r`, `-F` and `-V` are rejected by
+a server-side allowlist that refuses to start if one is ever added to it, and
+every argument is shell-quoted — but the sudoers grant itself is still a
+privilege boundary you are choosing to open. Prefer a dedicated, unprivileged
+account used only by pcap-server, and don't reuse it for anything else.
 
 ## Architecture
 

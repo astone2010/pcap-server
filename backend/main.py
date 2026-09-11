@@ -44,7 +44,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-app = FastAPI(title="pcap-server", version="0.1.0-dev.4")
+app = FastAPI(title="pcap-server", version="0.1.0-dev.5")
 
 db = Database(DATA_DIR / "pcap-server.db")
 ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR)
@@ -84,6 +84,7 @@ class SaveServerRequest(BaseModel):
     port: int = 22
     username: str
     ssh_key_name: str
+    use_sudo: bool = False
 
 
 class SettingUpdate(BaseModel):
@@ -143,6 +144,7 @@ async def auth_status(request: Request):
     user = validate_session(db, token) if token else None
     return {
         "has_users": has_users,
+        "cookie_secure": _COOKIE_SECURE,
         "authenticated": user is not None,
         "user": {
             "username": user["username"],
@@ -357,6 +359,19 @@ async def remove_server(server_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+@app.get("/api/servers/{server_id}/interfaces")
+async def list_server_interfaces(server_id: str, user: dict = Depends(get_current_user)):
+    srv = runtime_servers.get(server_id)
+    if not srv:
+        raise HTTPException(404, "server not found")
+    try:
+        return {"interfaces": await ssh_manager.list_interfaces(srv)}
+    except ConnectionError as exc:
+        raise HTTPException(502, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/api/servers/{server_id}/test")
 async def test_server(server_id: str, user: dict = Depends(get_current_user)):
     srv = runtime_servers.get(server_id)
@@ -386,8 +401,21 @@ async def save_server(req: SaveServerRequest, user: dict = Depends(get_current_u
     if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
         raise HTTPException(400, "invalid key path")
     server_id = str(uuid.uuid4())
-    db.save_server(server_id, user["id"], req.name, req.hostname, req.port, req.username, req.ssh_key_name)
+    db.save_server(server_id, user["id"], req.name, req.hostname, req.port, req.username, req.ssh_key_name, req.use_sudo)
     return {"ok": True, "id": server_id}
+
+
+@app.put("/api/saved-servers/{server_id}")
+async def update_saved_server(server_id: str, req: SaveServerRequest, user: dict = Depends(get_current_user)):
+    key_path = (SSH_KEYS_DIR / req.ssh_key_name).resolve()
+    if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
+        raise HTTPException(400, "invalid key path")
+    updated = db.update_saved_server(
+        server_id, user["id"], req.name, req.hostname, req.port, req.username, req.ssh_key_name, req.use_sudo
+    )
+    if not updated:
+        raise HTTPException(404, "saved server not found")
+    return {"ok": True}
 
 
 @app.delete("/api/saved-servers/{server_id}")
@@ -407,6 +435,7 @@ async def load_saved_server(server_id: str, user: dict = Depends(get_current_use
         port=saved["port"],
         username=saved["username"],
         ssh_key_name=saved["ssh_key_name"],
+        use_sudo=bool(saved["use_sudo"]),
     )
     info = ServerInfo(**auth.model_dump())
     runtime_servers[info.id] = info

@@ -99,6 +99,19 @@ class SSHManager:
         except Exception:
             raise ConnectionError("SSH connection failed")
 
+    async def list_interfaces(self, server: ServerAuth) -> list[str]:
+        # /sys/class/net needs no privileges, unlike `tcpdump -D` on most hosts.
+        try:
+            conn = await self._connect(server)
+            async with conn:
+                result = await conn.run("ls -1 /sys/class/net", check=True, timeout=10)
+        except (ConnectionError, FileNotFoundError):
+            raise
+        except Exception:
+            raise ConnectionError("could not list interfaces")
+        names = sorted(n.strip() for n in result.stdout.splitlines() if n.strip())
+        return ["any"] + names
+
     async def run_tcpdump(
         self,
         server: ServerAuth,
@@ -108,10 +121,13 @@ class SSHManager:
         duration: int | None = None,
     ) -> asyncssh.SSHClientProcess:
         full_cmd = ["tcpdump", "-w", remote_path] + command_args
+        if server.use_sudo:
+            # -n so a password prompt fails fast instead of hanging on a non-tty.
+            full_cmd = ["sudo", "-n"] + full_cmd
         cmd_str = " ".join(_shell_quote(a) for a in full_cmd)
 
         if duration:
-            cmd_str = f"timeout {duration} {cmd_str}; true"
+            cmd_str = f"timeout {duration} {cmd_str}"
 
         conn = await self._connect(server)
         logger.info("running on %s: %s", server.hostname, cmd_str)

@@ -3,6 +3,7 @@
 const API = "";
 let currentUser = null;
 let activeServers = [];
+let savedServers = [];
 let captures = [];
 let viewingCaptureId = null;
 let selectedPacketRow = null;
@@ -34,16 +35,61 @@ async function api(path, opts = {}) {
 function show(id) { document.getElementById(id).hidden = false; }
 function hide(id) { document.getElementById(id).hidden = true; }
 function $(id) { return document.getElementById(id); }
+const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
+// Quotes must be escaped too — this value gets interpolated into attributes.
 function escHtml(s) {
-    const d = document.createElement("div");
-    d.textContent = s;
-    return d.innerHTML;
+    return String(s).replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
 }
 
 // --- auth flow ---
 
+function setBanner(kind, lead, parts) {
+    const banner = $("config-banner");
+    banner.textContent = "";
+    banner.className = "config-banner banner-" + kind;
+    const strong = document.createElement("strong");
+    strong.textContent = lead;
+    banner.append(strong, " ");
+    for (const part of parts) {
+        if (typeof part === "string") {
+            banner.append(part);
+        } else {
+            const code = document.createElement("code");
+            code.textContent = part.code;
+            banner.append(code);
+        }
+    }
+    banner.hidden = false;
+}
+
+function checkCookieConfig(cookieSecure) {
+    const httpsPage = location.protocol === "https:";
+    // Browsers treat localhost as a secure context, so Secure cookies work there over plain HTTP.
+    const localhost = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+
+    if (!httpsPage && cookieSecure && !localhost) {
+        setBanner("danger", "Sign-in will not work on this address.", [
+            "The server requires Secure cookies, but this page was loaded over plain HTTP — your browser will discard the session cookie, so sign-in appears to succeed and then every request fails. Put pcap-server behind an HTTPS reverse proxy, or set ",
+            { code: "COOKIE_SECURE=false" },
+            " for HTTP/LAN use and restart the container.",
+        ]);
+    } else if (httpsPage && !cookieSecure) {
+        setBanner("warning", "Session cookies are not protected.", [
+            "This page is HTTPS, but the server is running with ",
+            { code: "COOKIE_SECURE=false" },
+            ", so the session cookie is sent without the Secure flag and can leak over any plain-HTTP request to this host. Set ",
+            { code: "COOKIE_SECURE=true" },
+            " and restart the container.",
+        ]);
+    } else {
+        $("config-banner").hidden = true;
+    }
+}
+
 async function checkAuth() {
     const status = await api("/api/auth/status");
+    checkCookieConfig(status.cookie_secure);
     if (!status.has_users) {
         show("auth-screen");
         show("register-form");
@@ -243,6 +289,13 @@ function showAddServer() {
                 <label>SSH Key</label>
                 <select id="new-srv-key">${opts || '<option value="">No keys found</option>'}</select>
             </div>
+            <div class="form-group">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                    <input type="checkbox" id="new-srv-sudo">
+                    <span>Run tcpdump with sudo</span>
+                </label>
+                <div class="field-hint">${escHtml(SUDO_HINT)}</div>
+            </div>
             <div class="form-actions">
                 <button class="btn btn-sm btn-primary" onclick="addServer()">Add server</button>
             </div>
@@ -269,6 +322,7 @@ async function addServer() {
                 port: parseInt($("new-srv-port").value) || 22,
                 username: $("new-srv-user").value,
                 ssh_key_name: $("new-srv-key").value,
+                use_sudo: $("new-srv-sudo").checked,
             }),
         });
         await loadServers();
@@ -309,6 +363,7 @@ async function saveServerConfig(id) {
                 port: srv.port,
                 username: srv.username,
                 ssh_key_name: srv.ssh_key_name,
+                use_sudo: srv.use_sudo,
             }),
         });
         loadSavedServers();
@@ -320,6 +375,7 @@ async function saveServerConfig(id) {
 async function loadSavedServers() {
     try {
         const servers = await api("/api/saved-servers");
+        savedServers = servers;
         const el = $("saved-server-list");
         if (!servers.length) {
             el.innerHTML = "None";
@@ -331,6 +387,7 @@ async function loadSavedServers() {
             <div style="display:flex;align-items:center;gap:8px;padding:4px 0">
                 <span style="flex:1">${escHtml(s.name)} (${escHtml(s.hostname)})</span>
                 <button class="btn-icon" onclick="loadSavedServer('${escHtml(s.id)}')" title="Load">&#x25B6;</button>
+                <button class="btn-icon" onclick="editSavedServer('${escHtml(s.id)}')" title="Edit">&#x270E;</button>
                 <button class="btn-icon" onclick="deleteSavedServer('${escHtml(s.id)}')" title="Delete">&times;</button>
             </div>`
             )
@@ -349,6 +406,62 @@ async function loadSavedServer(id) {
     }
 }
 
+const SUDO_HINT = "Needed when the SSH user isn't root. Requires passwordless sudo for tcpdump on that host.";
+
+async function editSavedServer(id) {
+    const srv = savedServers.find((s) => s.id === id);
+    if (!srv) return;
+    const keys = await loadSSHKeys();
+    const opts = keys
+        .map((k) => `<option value="${escHtml(k)}"${k === srv.ssh_key_name ? " selected" : ""}>${escHtml(k)}</option>`)
+        .join("");
+    $("server-form-area").innerHTML = `
+        <h3>Edit saved server</h3>
+        <div class="form-group"><label>Name</label><input type="text" id="edit-srv-name" value="${escHtml(srv.name)}"></div>
+        <div class="form-group"><label>Hostname / IP</label><input type="text" id="edit-srv-host" value="${escHtml(srv.hostname)}"></div>
+        <div class="form-row">
+            <div class="form-group"><label>Port</label><input type="number" id="edit-srv-port" value="${escHtml(srv.port)}"></div>
+            <div class="form-group"><label>Username</label><input type="text" id="edit-srv-user" value="${escHtml(srv.username)}"></div>
+        </div>
+        <div class="form-group">
+            <label>SSH Key</label>
+            <select id="edit-srv-key">${opts || '<option value="">No keys found</option>'}</select>
+        </div>
+        <div class="form-group">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                <input type="checkbox" id="edit-srv-sudo"${srv.use_sudo ? " checked" : ""}>
+                <span>Run tcpdump with sudo</span>
+            </label>
+            <div class="field-hint">${escHtml(SUDO_HINT)}</div>
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-sm btn-primary" onclick="saveSavedServerEdit('${escHtml(srv.id)}')">Save changes</button>
+        </div>
+        <div id="edit-server-error" class="error-msg"></div>
+    `;
+}
+
+async function saveSavedServerEdit(id) {
+    $("edit-server-error").textContent = "";
+    try {
+        await api(`/api/saved-servers/${id}`, {
+            method: "PUT",
+            body: JSON.stringify({
+                name: $("edit-srv-name").value,
+                hostname: $("edit-srv-host").value,
+                port: parseInt($("edit-srv-port").value) || 22,
+                username: $("edit-srv-user").value,
+                ssh_key_name: $("edit-srv-key").value,
+                use_sudo: $("edit-srv-sudo").checked,
+            }),
+        });
+        await loadSavedServers();
+        $("server-form-area").innerHTML = '<div class="empty-state">Saved server updated</div>';
+    } catch (e) {
+        $("edit-server-error").textContent = e.message;
+    }
+}
+
 async function deleteSavedServer(id) {
     if (!confirm("Delete this saved server?")) return;
     await api(`/api/saved-servers/${id}`, { method: "DELETE" });
@@ -357,19 +470,60 @@ async function deleteSavedServer(id) {
 
 // --- capture ---
 
-const ALLOWED_FLAGS = [
-    "-n", "-nn", "-v", "-vv", "-vvv", "-e", "-q",
-    "-A", "-X", "-XX", "-t", "-tt", "-ttt", "-tttt",
-];
+const FLAG_HELP = {
+    "-n": "Don't resolve IP addresses to hostnames",
+    "-nn": "Don't resolve hostnames or port numbers to service names",
+    "-v": "Verbose — show TTL, total length, and IP options",
+    "-vv": "More verbose — adds NFS and SMB decoding detail",
+    "-vvv": "Most verbose — full protocol detail",
+    "-e": "Show the link-level header, including MAC addresses",
+    "-q": "Quiet — less protocol information, shorter output lines",
+    "-A": "Print each packet's payload as ASCII (useful for plain-text protocols)",
+    "-X": "Print each packet's payload as hex and ASCII",
+    "-XX": "Same as -X, but also include the link-level header",
+    "-t": "Omit the timestamp from each line",
+    "-tt": "Timestamp as raw seconds since the epoch",
+    "-ttt": "Timestamp as the delta since the previous packet",
+    "-tttt": "Timestamp as a full human-readable date and time",
+};
+
+const ALLOWED_FLAGS = Object.keys(FLAG_HELP);
 
 function initFlagPicker() {
-    $("flag-picker").innerHTML = ALLOWED_FLAGS.map(
-        (f) => `<span class="flag-chip" data-flag="${f}" onclick="toggleFlag(this)">${f}</span>`
-    ).join("");
+    const picker = $("flag-picker");
+    picker.textContent = "";
+    for (const flag of ALLOWED_FLAGS) {
+        const chip = document.createElement("span");
+        chip.className = "flag-chip";
+        chip.dataset.flag = flag;
+        chip.title = FLAG_HELP[flag];
+        chip.textContent = flag;
+        chip.addEventListener("click", () => toggleFlag(chip));
+        picker.append(chip);
+    }
+    renderFlagHelp();
 }
 
 function toggleFlag(el) {
     el.classList.toggle("selected");
+    renderFlagHelp();
+}
+
+function renderFlagHelp() {
+    const help = $("flag-help");
+    help.textContent = "";
+    const selected = getSelectedFlags();
+    if (!selected.length) {
+        help.textContent = "Hover a flag to see what it does. Selected flags are explained here.";
+        return;
+    }
+    for (const flag of selected) {
+        const row = document.createElement("div");
+        const code = document.createElement("code");
+        code.textContent = flag;
+        row.append(code, " " + FLAG_HELP[flag]);
+        help.append(row);
+    }
 }
 
 function getSelectedFlags() {
@@ -378,14 +532,52 @@ function getSelectedFlags() {
     );
 }
 
+function fillSelect(sel, values, labelFor = (v) => v) {
+    sel.textContent = "";
+    for (const value of values) {
+        const opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = labelFor(value);
+        sel.append(opt);
+    }
+}
+
 function updateServerDropdown() {
     const sel = $("cap-server");
-    sel.innerHTML = activeServers
-        .map((s) => `<option value="${escHtml(s.id)}">${escHtml(s.hostname)}</option>`)
-        .join("");
+    sel.textContent = "";
     if (!activeServers.length) {
-        sel.innerHTML = '<option value="">No servers</option>';
+        fillSelect(sel, [""], () => "No servers");
+        fillSelect($("cap-interface"), ["any"]);
+        return;
     }
+    for (const srv of activeServers) {
+        const opt = document.createElement("option");
+        opt.value = srv.id;
+        opt.textContent = srv.hostname;
+        sel.append(opt);
+    }
+    sel.onchange = loadInterfaces;
+    loadInterfaces();
+}
+
+async function loadInterfaces() {
+    const serverId = $("cap-server").value;
+    const sel = $("cap-interface");
+    const previous = sel.value;
+    if (!serverId) {
+        fillSelect(sel, ["any"]);
+        return;
+    }
+    let names;
+    try {
+        ({ interfaces: names } = await api(`/api/servers/${serverId}/interfaces`));
+    } catch {
+        // Unreachable host — leave "any" available rather than an empty dropdown.
+        fillSelect(sel, ["any"]);
+        return;
+    }
+    fillSelect(sel, names);
+    if (names.includes(previous)) sel.value = previous;
 }
 
 async function startCapture() {

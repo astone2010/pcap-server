@@ -14,6 +14,8 @@
         <h1>pcap-server</h1>
         <p id="auth-subtitle">Remote packet capture &amp; analysis</p>
 
+        <div id="config-banner" hidden></div>
+
         <div id="register-form" hidden>
             <div style="background:var(--bg-surface);border-radius:8px;padding:12px;margin-bottom:16px;font-size:0.8125rem;color:var(--text-secondary)">
                 Welcome to pcap-server. Create your admin account to get started.
@@ -122,7 +124,9 @@
                 </div>
                 <div class="form-group">
                     <label>Interface</label>
-                    <input type="text" id="cap-interface" value="any" style="width:100px">
+                    <select id="cap-interface" style="width:140px">
+                        <option value="any">any</option>
+                    </select>
                 </div>
                 <div class="form-group">
                     <label>Max packets</label>
@@ -145,6 +149,7 @@
             <div style="padding:4px 16px">
                 <label style="font-size:0.75rem;color:var(--text-secondary)">Extra flags:</label>
                 <div id="flag-picker" class="flag-picker"></div>
+                <div id="flag-help" class="flag-help"></div>
             </div>
             <div id="capture-list" class="capture-list">
                 <div class="empty-state">No captures yet</div>

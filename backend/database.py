@@ -62,6 +62,7 @@ class Database:
                 port INTEGER NOT NULL DEFAULT 22,
                 username TEXT NOT NULL,
                 ssh_key_name TEXT NOT NULL,
+                use_sudo INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 UNIQUE(user_id, name)
             );
@@ -87,6 +88,9 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_trusted_devices_user_token ON trusted_devices(user_id, token_hash);
             CREATE INDEX IF NOT EXISTS idx_saved_servers_user_id ON saved_servers(user_id);
         """)
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(saved_servers)")}
+        if "use_sudo" not in columns:
+            conn.execute("ALTER TABLE saved_servers ADD COLUMN use_sudo INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
     # --- users ---
@@ -179,13 +183,22 @@ class Database:
 
     # --- saved servers ---
 
-    def save_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str) -> None:
+    def save_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool = False) -> None:
         self._conn().execute(
-            """INSERT OR REPLACE INTO saved_servers (id, user_id, name, hostname, port, username, ssh_key_name, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (server_id, user_id, name, hostname, port, username, ssh_key_name, _utcnow().isoformat()),
+            """INSERT OR REPLACE INTO saved_servers (id, user_id, name, hostname, port, username, ssh_key_name, use_sudo, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (server_id, user_id, name, hostname, port, username, ssh_key_name, int(use_sudo), _utcnow().isoformat()),
         )
         self._conn().commit()
+
+    def update_saved_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool) -> bool:
+        cur = self._conn().execute(
+            """UPDATE saved_servers SET name = ?, hostname = ?, port = ?, username = ?, ssh_key_name = ?, use_sudo = ?
+               WHERE id = ? AND user_id = ?""",
+            (name, hostname, port, username, ssh_key_name, int(use_sudo), server_id, user_id),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
 
     def list_saved_servers(self, user_id: str) -> list[dict]:
         rows = self._conn().execute(

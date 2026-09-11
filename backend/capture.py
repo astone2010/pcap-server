@@ -18,6 +18,27 @@ from backend.ssh_manager import SSHManager
 
 logger = logging.getLogger(__name__)
 
+# tcpdump always announces itself on stderr; only the rest is a diagnosis.
+_STDERR_NOISE = ("listening on", "packets captured", "packets received", "packets dropped")
+
+
+async def _read_stderr(process: object) -> str:
+    try:
+        return await asyncio.wait_for(process.stderr.read(), timeout=5)
+    except Exception:
+        return ""
+
+
+def _describe_failure(exc: Exception, stderr_text: str) -> str:
+    lines = [
+        line.strip()
+        for line in stderr_text.splitlines()
+        if line.strip() and not any(noise in line for noise in _STDERR_NOISE)
+    ]
+    if lines:
+        return " | ".join(lines)[:300]
+    return str(exc)[:300] or "capture failed"
+
 
 class CaptureManager:
     def __init__(self, ssh: SSHManager, captures_dir: Path, get_setting: Callable[[str], int]) -> None:
@@ -69,6 +90,8 @@ class CaptureManager:
             duration = max_seconds
 
         full_cmd = ["tcpdump", "-w", remote_path] + args
+        if server.use_sudo:
+            full_cmd = ["sudo", "-n"] + full_cmd
         cmd_str = " ".join(full_cmd)
 
         info = CaptureInfo(
@@ -147,8 +170,13 @@ class CaptureManager:
         local_path: Path,
     ) -> None:
         info = self._captures[capture_id]
+        stderr_text = ""
         try:
             await process.wait()
+            stderr_text = await _read_stderr(process)
+            # timeout(1) exits 124 and SIGINT exits 130 — both are how a capture ends normally.
+            if process.exit_status not in (0, 124, 130, None):
+                raise RuntimeError(f"tcpdump exited {process.exit_status}")
             info.stopped_at = datetime.now(timezone.utc)
             info.status = CaptureStatus.TRANSFERRING
 
@@ -168,10 +196,10 @@ class CaptureManager:
         except asyncio.CancelledError:
             info.status = CaptureStatus.FAILED
             info.error = "cancelled"
-        except Exception:
+        except Exception as exc:
             logger.exception("capture %s failed", capture_id)
             info.status = CaptureStatus.FAILED
-            info.error = "capture failed"
+            info.error = _describe_failure(exc, stderr_text)
         finally:
             self._processes.pop(capture_id, None)
             self._tasks.pop(capture_id, None)

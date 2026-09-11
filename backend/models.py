@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
@@ -13,6 +14,7 @@ class ServerAuth(BaseModel):
     port: int = 22
     username: str
     ssh_key_name: str
+    use_sudo: bool = False
 
     @field_validator("hostname")
     @classmethod
@@ -53,6 +55,17 @@ ALLOWED_TCPDUMP_FLAGS = {
     "-tttt", "-ttt", "-tt", "-t",
 }
 
+# tcpdump may run under sudo, so these turn a capture into root code execution or
+# arbitrary file reads. -z runs a command on rotation; -W/-G/-C enable rotation so
+# it fires; -r/-F/-V read attacker-chosen paths. Never allowlist any of them.
+FORBIDDEN_TCPDUMP_FLAGS = {
+    "-z", "--postrotate-command", "-W", "-G", "-C", "-r", "-F", "-V", "-Z",
+}
+
+_overlap = ALLOWED_TCPDUMP_FLAGS & FORBIDDEN_TCPDUMP_FLAGS
+if _overlap:
+    raise RuntimeError(f"tcpdump flag allowlist contains privilege-escalating flags: {sorted(_overlap)}")
+
 
 class CaptureRequest(BaseModel):
     server_id: str
@@ -67,7 +80,7 @@ class CaptureRequest(BaseModel):
     @classmethod
     def validate_interface(cls, v: str) -> str:
         v = v.strip()
-        if not v or any(c in v for c in ";|&$`"):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@-]*", v):
             raise ValueError("invalid interface name")
         return v
 
@@ -82,6 +95,8 @@ class CaptureRequest(BaseModel):
     @classmethod
     def validate_extra_flags(cls, flags: list[str]) -> list[str]:
         for f in flags:
+            if f in FORBIDDEN_TCPDUMP_FLAGS:
+                raise ValueError(f"flag {f!r} can execute commands or read files as root and is never permitted")
             if f not in ALLOWED_TCPDUMP_FLAGS:
                 raise ValueError(f"flag {f!r} is not in the allowlist: {sorted(ALLOWED_TCPDUMP_FLAGS)}")
         return flags

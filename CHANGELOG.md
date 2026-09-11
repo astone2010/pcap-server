@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.1.0-dev.5 — 2026-09-11
+
+### Features
+
+- Run tcpdump under `sudo -n` per server, for hosts where the SSH user is not
+  root. Set on the server, so every capture against it inherits the choice.
+- Edit a saved server after creation — name, host, port, username, SSH key and
+  the sudo flag. Previously a key could only be chosen at creation time.
+- Pick the capture interface from a dropdown populated by reading
+  `/sys/class/net` on the target host, instead of typing a name blind.
+- Every tcpdump flag in the picker now has a tooltip, and selected flags are
+  explained in a list under the picker.
+
+- Warn on the sign-in page when the cookie setting and the page's protocol
+  disagree. Plain HTTP with `COOKIE_SECURE=true` shows a red banner saying
+  sign-in cannot work and how to fix it; HTTPS with `COOKIE_SECURE=false`
+  shows a yellow banner that the session cookie is unprotected. `localhost`
+  is exempt, since browsers treat it as a secure context.
+- `/api/auth/status` reports `cookie_secure` so the page can detect the
+  mismatch.
+
+### Fixes
+
+- A failed capture now reports tcpdump's actual stderr instead of the fixed
+  string "capture failed". The remote command no longer ends in `; true`, which
+  was discarding tcpdump's exit status.
+
+### Security
+
+- Reject the tcpdump flags that become privilege escalation under sudo — `-z`
+  and `--postrotate-command` run commands as root, `-W`/`-G`/`-C` enable the
+  rotation that fires them, and `-r`/`-F`/`-V` read arbitrary files. The module
+  refuses to import if any is ever added to the allowlist.
+- Validate interface names against a strict character allowlist rather than
+  blocking a handful of shell metacharacters.
+- `escHtml` now escapes quotes, so interpolating a value into an HTML attribute
+  cannot break out of it.
+
 ## 0.1.0-dev.4 — 2026-09-11
 
 ### Fixes
