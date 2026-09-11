@@ -6,7 +6,7 @@
 #
 # SSH keys are managed via the Admin panel in the web UI.
 #
-# Set COOKIE_SECURE=true when behind a TLS reverse proxy.
+# Cookies require HTTPS by default. Set COOKIE_SECURE=false for plain HTTP.
 
 services:
   pcap-server:
@@ -27,4 +27,5 @@ services:
       - SSH_KEYS_DIR=/app/ssh-keys
       - CAPTURES_DIR=/app/captures
       - DATA_DIR=/app/data
+      - COOKIE_SECURE=false
     restart: unless-stopped

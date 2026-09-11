@@ -118,7 +118,7 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
-_COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() in ("1", "true", "yes")
+_COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() in ("1", "true", "yes")
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
