@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+ssh-keys/*
+!ssh-keys/.gitkeep
+captures/
+*.pcap
+*.pcapng
+.venv/
+node_modules/
+.DS_Store

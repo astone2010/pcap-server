@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>pcap-server</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<!-- auth: login/register -->
+<div id="auth-screen" class="auth-container" hidden>
+    <div class="auth-card">
+        <h1>pcap-server</h1>
+        <p id="auth-subtitle">Remote packet capture &amp; analysis</p>
+
+        <div id="register-form" hidden>
+            <div style="background:var(--bg-surface);border-radius:8px;padding:12px;margin-bottom:16px;font-size:0.8125rem;color:var(--text-secondary)">
+                Welcome to pcap-server. Create your admin account to get started.
+                This will be the only account with user management privileges.
+                You'll set up two-factor authentication next.
+            </div>
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="reg-username" autocomplete="username" placeholder="Choose a username">
+            </div>
+            <div class="form-group">
+                <label>Password (min 8 characters)</label>
+                <input type="password" id="reg-password" autocomplete="new-password" placeholder="Choose a strong password">
+            </div>
+            <button class="btn btn-primary" onclick="doRegister()">Create admin account</button>
+            <div id="reg-error" class="error-msg"></div>
+        </div>
+
+        <div id="login-form" hidden>
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="login-username" autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="login-password" autocomplete="current-password">
+            </div>
+            <div id="totp-group" class="form-group" hidden>
+                <label>TOTP Code</label>
+                <input type="text" id="login-totp" autocomplete="one-time-code" inputmode="numeric" maxlength="6">
+                <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+                    <input type="checkbox" id="login-trust-device" checked>
+                    <span>Trust this device for 30 days</span>
+                </label>
+            </div>
+            <button class="btn btn-primary" onclick="doLogin()">Sign in</button>
+            <div id="login-error" class="error-msg"></div>
+        </div>
+    </div>
+</div>
+
+<!-- auth: TOTP setup -->
+<div id="totp-setup-screen" class="auth-container" hidden>
+    <div class="auth-card">
+        <h1>Set up two-factor auth</h1>
+        <p>Scan this QR code with your authenticator app (Google Authenticator, Authy, 1Password, etc.)</p>
+        <div class="qr-container">
+            <img id="totp-qr" alt="TOTP QR code">
+        </div>
+        <div class="totp-secret">
+            <span id="totp-secret-text"></span>
+        </div>
+        <div class="form-group">
+            <label>Enter code from app to confirm</label>
+            <input type="text" id="totp-confirm-code" inputmode="numeric" maxlength="6">
+        </div>
+        <button class="btn btn-primary" onclick="confirmTotp()">Confirm &amp; enable MFA</button>
+        <div id="totp-error" class="error-msg"></div>
+    </div>
+</div>
+
+<!-- main app -->
+<div id="app-screen" class="app-layout" hidden>
+    <div class="toolbar">
+        <span class="logo">pcap-server</span>
+        <span class="spacer"></span>
+        <span id="user-display" style="font-size:0.8125rem;color:var(--text-secondary)"></span>
+        <button class="btn btn-sm btn-secondary" onclick="doLogout()">Logout</button>
+    </div>
+    <div class="tab-bar">
+        <div class="tab active" data-tab="servers">Servers</div>
+        <div class="tab" data-tab="capture">Capture</div>
+        <div class="tab" data-tab="viewer">Viewer</div>
+    </div>
+    <div class="main-content">
+
+        <!-- servers panel -->
+        <div id="panel-servers" class="panel active">
+            <div class="servers-layout">
+                <div class="server-sidebar">
+                    <div class="server-sidebar-header">
+                        <h3>Active Servers</h3>
+                        <button class="btn btn-sm btn-secondary" onclick="showAddServer()">+ Add</button>
+                    </div>
+                    <div id="server-list" class="server-list">
+                        <div class="empty-state" style="padding:20px;font-size:0.8125rem">No servers added</div>
+                    </div>
+                    <div class="saved-servers-section">
+                        <h4>Saved Servers</h4>
+                        <div id="saved-server-list" style="font-size:0.8125rem;color:var(--text-muted)">None</div>
+                    </div>
+                </div>
+                <div id="server-form-area" class="server-form">
+                    <div class="empty-state">Select a server or click + Add</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- capture panel -->
+        <div id="panel-capture" class="panel">
+            <div class="capture-config">
+                <div class="form-group">
+                    <label>Server</label>
+                    <select id="cap-server"></select>
+                </div>
+                <div class="form-group">
+                    <label>Interface</label>
+                    <input type="text" id="cap-interface" value="any" style="width:100px">
+                </div>
+                <div class="form-group">
+                    <label>Max packets</label>
+                    <input type="number" id="cap-count" placeholder="auto" style="width:100px">
+                </div>
+                <div class="form-group">
+                    <label>Duration (s)</label>
+                    <input type="number" id="cap-duration" placeholder="300" style="width:80px">
+                </div>
+                <div class="form-group">
+                    <label>Snap length</label>
+                    <input type="number" id="cap-snaplen" placeholder="auto" style="width:80px">
+                </div>
+                <div class="form-group bpf-filter">
+                    <label>BPF filter</label>
+                    <input type="text" id="cap-bpf" placeholder="e.g. tcp port 80 and host 10.0.0.1">
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="startCapture()">Start capture</button>
+            </div>
+            <div style="padding:4px 16px">
+                <label style="font-size:0.75rem;color:var(--text-secondary)">Extra flags:</label>
+                <div id="flag-picker" class="flag-picker"></div>
+            </div>
+            <div id="capture-list" class="capture-list">
+                <div class="empty-state">No captures yet</div>
+            </div>
+        </div>
+
+        <!-- viewer panel -->
+        <div id="panel-viewer" class="panel">
+            <div id="viewer-empty" class="empty-state">Select a completed capture to view packets</div>
+            <div id="packet-viewer" class="packet-viewer" hidden>
+                <div class="packet-toolbar">
+                    <span id="viewer-capture-label" style="font-size:0.8125rem;white-space:nowrap;color:var(--text-secondary)"></span>
+                    <input type="text" id="display-filter" placeholder="Display filter (e.g. tcp, ip.addr == 10.0.0.1)">
+                    <button class="btn btn-sm btn-secondary" onclick="applyDisplayFilter()">Apply</button>
+                    <button class="btn btn-sm btn-secondary" onclick="downloadCapture()">Download .pcap</button>
+                </div>
+                <div class="packet-list-container">
+                    <div class="packet-table-scroll">
+                        <table class="packet-table">
+                            <thead>
+                                <tr>
+                                    <th class="col-no">No.</th>
+                                    <th class="col-time">Time</th>
+                                    <th class="col-src">Source</th>
+                                    <th class="col-dst">Destination</th>
+                                    <th class="col-proto">Protocol</th>
+                                    <th class="col-len">Length</th>
+                                    <th class="col-info">Info</th>
+                                </tr>
+                            </thead>
+                            <tbody id="packet-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="resizer" id="resizer"></div>
+                <div class="packet-detail-container">
+                    <div id="packet-detail-tree" class="packet-detail-tree">
+                        <div class="empty-state" style="font-size:0.75rem">Click a packet above</div>
+                    </div>
+                    <div id="hex-dump" class="hex-dump"></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script src="/js/app.js"></script>
+</body>
+</html>
