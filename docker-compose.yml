@@ -1,12 +1,31 @@
+# Create the bind-mount directories before starting:
+#   mkdir -p ssh-keys data captures
+#
+# The container runs as a non-root user (appuser, UID 1000).
+# Ensure the data and captures directories are writable:
+#   chown -R 1000:1000 data captures
+#
+# ssh-keys is mounted read-only — place private key files there
+# and ensure they are readable by UID 1000:
+#   chmod 600 ssh-keys/*
+#   chown 1000:1000 ssh-keys/*
+
 services:
   pcap-server:
-    build: .
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.1
     ports:
       - "8080:8080"
     volumes:
-      - ./ssh-keys:/app/ssh-keys:ro
-      - ./data:/app/data
-      - ./captures:/app/captures
+      - type: bind
+        source: ./ssh-keys
+        target: /app/ssh-keys
+        read_only: true
+      - type: bind
+        source: ./data
+        target: /app/data
+      - type: bind
+        source: ./captures
+        target: /app/captures
     environment:
       - SSH_KEYS_DIR=/app/ssh-keys
       - CAPTURES_DIR=/app/captures
