@@ -88,6 +88,25 @@ single quoted argument after `--`. `-z`, `-W`, `-G`, `-C`, `-r`, `-F`, `-V` and
 `-Z` are permanently refused: tcpdump may be running under `sudo`, and those turn
 a capture into code execution or file reads as root.
 
+## Sessions
+
+Sessions are bearer tokens in an `HttpOnly` cookie, stored only as a SHA-256
+digest so the database never holds anything replayable. Three things end a
+session:
+
+| Limit | Where | Default |
+| --- | --- | --- |
+| Absolute lifetime | Admin → Settings, `Session duration (hours)` | 8 hours |
+| Idle timeout | Admin → Settings, `Session idle timeout (minutes)` | 60 minutes (0 disables) |
+| Restart | automatic | every session is invalidated when the container starts |
+
+Because sessions are cleared at startup, restarting the container signs everyone
+out — including you. Trusted devices are separate and survive a restart; they
+skip the TOTP prompt, not the sign-in.
+
+Run pcap-server as a single process. Starting uvicorn with `--workers` would
+clear sessions once per worker as each boots, signing users out repeatedly.
+
 ## SSH Keys
 
 Upload private keys from the **Admin** tab. They are stored in the `ssh-keys/`

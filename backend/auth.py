@@ -60,24 +60,72 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(h.hex(), expected_hex)
 
 
+def hash_token(token: str) -> str:
+    """Sessions are looked up by digest, so the database never holds the bearer."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def create_session_token(db: Database, user_id: str) -> tuple[str, str]:
     token = secrets.token_urlsafe(48)
     now = datetime.now(timezone.utc)
     duration_hours = db.get_setting_int("session_duration_hours")
     expires = now + timedelta(hours=duration_hours)
-    db.create_session(token, user_id, expires.isoformat())
+    db.create_session(hash_token(token), user_id, expires.isoformat())
     return token, expires.isoformat()
 
 
 def validate_session(db: Database, token: str) -> dict | None:
-    session = db.get_valid_session(token)
+    """Absolute expiry is enforced in SQL; idle expiry is enforced here.
+
+    An idle session is deleted rather than merely rejected, so it cannot be
+    revived by a later request that happens to arrive inside the window.
+    """
+    token_hash = hash_token(token)
+    session = db.get_valid_session(token_hash)
     if not session:
         return None
+
+    idle_minutes = db.get_setting_int("session_idle_timeout_minutes")
+    if idle_minutes > 0 and session.get("last_seen"):
+        try:
+            last_seen = datetime.fromisoformat(session["last_seen"])
+        except ValueError:
+            last_seen = None
+        if last_seen is not None:
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - last_seen > timedelta(minutes=idle_minutes):
+                db.delete_session(token_hash)
+                return None
+
+    # Only write when the stamp is actually stale. Touching on every request
+    # turns each authenticated API call into a SQLite write, which on a
+    # single-writer database is both wasteful and a lock-contention risk.
+    _refresh_last_seen(db, token_hash, session.get("last_seen"))
     return db.get_user(session["user_id"])
 
 
+# Coarser than the idle window by a wide margin, so throttling can never cause
+# a session to outlive its timeout by a meaningful amount.
+_LAST_SEEN_WRITE_INTERVAL = timedelta(seconds=60)
+
+
+def _refresh_last_seen(db: Database, token_hash: str, last_seen: str | None) -> None:
+    if last_seen:
+        try:
+            stamp = datetime.fromisoformat(last_seen)
+        except ValueError:
+            stamp = None
+        if stamp is not None:
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - stamp < _LAST_SEEN_WRITE_INTERVAL:
+                return
+    db.touch_session(token_hash)
+
+
 def delete_session(db: Database, token: str) -> None:
-    db.delete_session(token)
+    db.delete_session(hash_token(token))
 
 
 def cleanup_expired_sessions(db: Database) -> int:

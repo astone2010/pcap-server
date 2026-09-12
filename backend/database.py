@@ -42,7 +42,8 @@ class Database:
                 token TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL
+                expires_at TEXT NOT NULL,
+                last_seen TEXT
             );
 
             CREATE TABLE IF NOT EXISTS trusted_devices (
@@ -121,6 +122,9 @@ class Database:
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(saved_servers)")}
         if "use_sudo" not in columns:
             conn.execute("ALTER TABLE saved_servers ADD COLUMN use_sudo INTEGER NOT NULL DEFAULT 0")
+        session_columns = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
+        if "last_seen" not in session_columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN last_seen TEXT")
         capture_columns = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
         if "server_label" not in capture_columns:
             conn.execute("ALTER TABLE captures ADD COLUMN server_label TEXT NOT NULL DEFAULT ''")
@@ -166,23 +170,41 @@ class Database:
 
     # --- sessions ---
 
-    def create_session(self, token: str, user_id: str, expires_at: str) -> None:
+    # The token column holds a SHA-256 of the bearer token, never the token
+    # itself. Trusted devices were already stored this way; sessions were not,
+    # so anyone who could read the database file could replay every live
+    # session. Hashing costs one call and removes that entirely.
+
+    def create_session(self, token_hash: str, user_id: str, expires_at: str) -> None:
+        now = _utcnow().isoformat()
         self._conn().execute(
-            "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-            (token, user_id, _utcnow().isoformat(), expires_at),
+            "INSERT INTO sessions (token, user_id, created_at, expires_at, last_seen) VALUES (?, ?, ?, ?, ?)",
+            (token_hash, user_id, now, expires_at, now),
         )
         self._conn().commit()
 
-    def get_valid_session(self, token: str) -> dict | None:
+    def get_valid_session(self, token_hash: str) -> dict | None:
         row = self._conn().execute(
             "SELECT * FROM sessions WHERE token = ? AND expires_at > ?",
-            (token, _utcnow().isoformat()),
+            (token_hash, _utcnow().isoformat()),
         ).fetchone()
         return dict(row) if row else None
 
-    def delete_session(self, token: str) -> None:
-        self._conn().execute("DELETE FROM sessions WHERE token = ?", (token,))
+    def touch_session(self, token_hash: str) -> None:
+        self._conn().execute(
+            "UPDATE sessions SET last_seen = ? WHERE token = ?", (_utcnow().isoformat(), token_hash)
+        )
         self._conn().commit()
+
+    def delete_session(self, token_hash: str) -> None:
+        self._conn().execute("DELETE FROM sessions WHERE token = ?", (token_hash,))
+        self._conn().commit()
+
+    def delete_all_sessions(self) -> int:
+        """Called at startup: a restart must not leave anyone signed in."""
+        cur = self._conn().execute("DELETE FROM sessions")
+        self._conn().commit()
+        return cur.rowcount
 
     def cleanup_expired_sessions(self) -> int:
         cur = self._conn().execute("DELETE FROM sessions WHERE expires_at <= ?", (_utcnow().isoformat(),))
@@ -340,6 +362,7 @@ class Database:
         "max_capture_seconds": "300",
         "max_capture_packets": "100000",
         "session_duration_hours": "8",
+        "session_idle_timeout_minutes": "60",
         "device_trust_days": "30",
         "rate_limit_max_attempts": "5",
         "rate_limit_lockout_minutes": "15",

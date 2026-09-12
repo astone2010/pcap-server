@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.1.0-dev.8 — 2026-09-12
+
+### Security
+
+- Session tokens are no longer stored in the clear. The `sessions` table held
+  the bearer token verbatim, so anyone able to read the database file could
+  replay every live session; trusted-device tokens were already hashed, so the
+  schema disagreed with itself. Sessions are now looked up by SHA-256 digest.
+  Tokens issued before this are not recognised and are cleared on startup.
+- A restart signs everyone out. Sessions live in SQLite on a persistent volume,
+  so they outlived the container that issued them — including one restarted to
+  apply a security fix. Every session is invalidated at startup.
+- Add a configurable idle timeout, `Session idle timeout (minutes)` in
+  Admin → Settings, default 60. `session_duration_hours` remains an absolute
+  cap; the idle window closes a session that stops being used. An idle session
+  is deleted rather than merely refused, so a later request cannot revive it.
+  Set it to 0 to disable idle expiry and keep only the absolute cap.
+- Warn when the app is served over plain HTTP with `COOKIE_SECURE=false`. The
+  banner covered HTTP with Secure cookies required, and HTTPS with them
+  disabled, but not the override itself — the one configuration where sign-in
+  works normally and the session cookie, password and TOTP code all cross the
+  network in cleartext. That case was silent. `localhost` stays quiet, since
+  browsers treat it as a secure context.
+
+### Fixes
+
+- Throttle the `last_seen` write to once a minute. Stamping it on every
+  authenticated request turned each API call into a SQLite write, which on a
+  single-writer database is wasteful and risks lock contention. The interval is
+  far shorter than any usable idle window, so timeouts are unaffected.
+- Accept 0 for the idle timeout in Admin → Settings. The settings validator
+  required every value to be >= 1, which made the documented "0 disables it"
+  unreachable from the GUI.
+
 ## 0.1.0-dev.7 — 2026-09-11
 
 ### Features

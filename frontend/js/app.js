@@ -106,6 +106,16 @@ function checkCookieConfig(cookieSecure) {
             { code: "COOKIE_SECURE=true" },
             " and restart the container.",
         ]);
+    } else if (!httpsPage && !cookieSecure && !localhost) {
+        // The override case. Sign-in works, which is exactly why this needs
+        // saying: nothing looks wrong, and every request is in the clear.
+        setBanner("warning", "This connection is not encrypted.", [
+            "pcap-server is running with ",
+            { code: "COOKIE_SECURE=false" },
+            " over plain HTTP, so your session cookie, password and TOTP code cross the network in cleartext, and captured packets download unencrypted. Anyone on the path can read them or replay your session. This is fine on a trusted LAN and unsafe anywhere else \u2014 put the app behind an HTTPS reverse proxy and set ",
+            { code: "COOKIE_SECURE=true" },
+            " for any other network.",
+        ]);
     } else {
         $("config-banner").hidden = true;
     }
@@ -970,6 +980,7 @@ const SETTING_LABELS = {
     max_capture_seconds: "Max capture duration (seconds)",
     max_capture_packets: "Max capture packets",
     session_duration_hours: "Session duration (hours)",
+    session_idle_timeout_minutes: "Session idle timeout (minutes)",
     device_trust_days: "Device trust duration (days)",
     rate_limit_max_attempts: "Rate limit max attempts",
     rate_limit_lockout_minutes: "Rate limit lockout (minutes)",

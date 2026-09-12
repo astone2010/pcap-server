@@ -44,7 +44,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-app = FastAPI(title="pcap-server", version="0.1.0-dev.7")
+app = FastAPI(title="pcap-server", version="0.1.0-dev.8")
 
 db = Database(DATA_DIR / "pcap-server.db")
 ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR)
@@ -53,6 +53,18 @@ rate_limiter = RateLimiter(
     max_attempts=db.get_setting_int("rate_limit_max_attempts"),
     lockout_minutes=db.get_setting_int("rate_limit_lockout_minutes"),
 )
+
+# A restart must not leave anyone signed in. Sessions live in SQLite on a
+# persistent volume, so without this they outlive the container that issued
+# them -- including one restarted to apply a security change.
+#
+# This runs once per process, which is correct for the single uvicorn process
+# the image starts. Running with --workers would wipe sessions once per worker
+# as each boots, signing users out repeatedly; keep this app single-process, or
+# move session state out of SQLite first.
+_dropped_sessions = db.delete_all_sessions()
+if _dropped_sessions:
+    logger.info("invalidated %d session(s) carried over from a previous run", _dropped_sessions)
 
 
 @app.on_event("shutdown")
@@ -285,12 +297,18 @@ async def admin_update_setting(req: SettingUpdate, user: dict = Depends(require_
     allowed_keys = set(Database.DEFAULTS.keys())
     if req.key not in allowed_keys:
         raise HTTPException(400, f"unknown setting: {req.key}")
+    # Idle timeout treats 0 as "no idle expiry"; every other setting needs >= 1.
+    minimum = 0 if req.key == "session_idle_timeout_minutes" else 1
     try:
         int_val = int(req.value)
-        if int_val < 1:
+        if int_val < minimum:
             raise ValueError
     except ValueError:
-        raise HTTPException(400, "value must be a positive integer")
+        raise HTTPException(
+            400,
+            "value must be 0 or a positive integer" if minimum == 0
+            else "value must be a positive integer",
+        )
     db.set_setting(req.key, req.value)
     if req.key in ("rate_limit_max_attempts", "rate_limit_lockout_minutes"):
         rate_limiter.update_config(
