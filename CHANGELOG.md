@@ -1,5 +1,100 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Every capture failed at the final step under uvloop.** A capture that ran
+  and transferred correctly then died with `could not supply capture data to
+  capinfos`, and the error path deleted the pcap it had just downloaded — so a
+  successful capture left nothing behind. `capinfos` exits as soon as it has
+  counted the packets, closing its stdin while chunks are still being written.
+  Under plain asyncio that write raises `BrokenPipeError`, which was caught and
+  ignored; under uvloop — which uvicorn selects in the container, so this only
+  ever reproduced in a real deployment — it raises
+  `RuntimeError("...the handler is closed")`, which was not. A genuine read
+  failure is still reported: only a closed pipe is ignored.
+- **A capture that failed to launch held a concurrency slot forever.** `start()`
+  registers the capture as running before invoking tcpdump, and only the
+  monitor task ends a running capture. When the launch itself raised — an
+  unreachable host, a missing key, sudo refusing — no monitor was ever created,
+  so the record stayed `running` for the life of the process. Each failure
+  permanently consumed one of `max_concurrent_captures`, and after enough of
+  them every capture was refused with "already running" until the container was
+  restarted. A failed launch now closes its own record.
+- **`getcap` was reported missing on hosts that had it.** The prerequisite probe
+  looked for `getcap` with `command -v` alone, while `tcpdump` beside it also
+  searched the sbin directories — precisely because a non-login SSH session for
+  a non-root user has no `/usr/sbin` on `$PATH`. Since `getcap` installs to
+  `/sbin` on Debian and Ubuntu, the capability check reported it uninstalled on
+  exactly the hosts it was installed on. It now gets the same fallback search,
+  and the warning carries the right package name per distribution.
+- **A missing comma blanked the entire UI.** A string concatenation in the
+  read-only-over-HTTP banner was missing its separator, which is a parse error
+  for the whole of `app.js` — every screen rendered empty. Introduced after
+  `0.1.0-dev.9` was tagged, so no released version is affected.
+
+### Security
+
+- Update `starlette` 0.50.0 → 1.3.1 and `fastapi` 0.125.0 → 0.141.1, found by
+  `pip-audit` in this release's security gate. `fastapi` 0.125.0 capped
+  `starlette` below 0.51.0, which is why 0.50.0 was held; 0.141.1 lifts the cap.
+  The advisory that concretely applies here is `request.url` being rebuilt from
+  an unvalidated path and `Host` header (PYSEC-2026-248, PYSEC-2026-161): this
+  app reads `request.url.path` to decide which requests are refused over plain
+  HTTP, so a path that re-parses differently is a way past that control. Also
+  fixed: form limits silently ignored for urlencoded bodies (PYSEC-2026-249).
+  Two more are not reachable here — `HTTPEndpoint` dispatch (unused) and a
+  Windows-only `StaticFiles` UNC traversal (this ships as a Linux container).
+  `starlette` 1.x removes `on_event`, so the shutdown handler is now a lifespan
+  context manager.
+- **SSH usernames are validated.** The username was the one connection field
+  with no validator, and it is interpolated into the sudoers rule the
+  prerequisite check prints for an operator to run as root. A username carrying
+  sudoers syntax — `x ALL=(ALL) NOPASSWD: ALL #` — produced a rule granting
+  unrestricted root to that account, presented as the fix to paste. Usernames
+  are now restricted to the characters a real login name uses, excluding
+  everything sudoers gives meaning to.
+- **The printed sudoers rule installs through `visudo`.** The prerequisite
+  check told operators to `echo ... | sudo tee /etc/sudoers.d/pcap-server`,
+  which the README warns against in the same breath: a malformed file there
+  breaks `sudo` for everyone on the host until someone with existing root
+  repairs it. It now pipes through `visudo`, which validates before installing.
+  The group form also creates the group it references, which it previously did
+  not — a rule naming a group that doesn't exist matches nobody, and captures
+  kept failing with the same error.
+
+### Changed
+
+- **One list of servers, not two.** "Active Servers" and "Saved Servers" were
+  separate persistent tables holding the same columns, with a save/load round
+  trip copying rows between them. Both survived restarts, so the split bought
+  nothing and the two names meant nearly the same thing. They are now a single
+  **Servers** list; existing saved profiles are carried into it on first start
+  and the retired table is dropped. Servers can be edited in place, which
+  previously only saved profiles could be.
+- **Test connection and Check prerequisites work before a server is saved.**
+  Both were only reachable from a server's detail page, so a host could only be
+  probed after committing to it. The add form now offers both against the
+  details typed into it, via endpoints that take connection parameters directly.
+  The same self-target refusal and key checks apply as when adding.
+- **Usernames are remembered.** The add and edit forms suggest SSH usernames
+  already used, and default to the most recent one.
+- **Known Hosts is driven by the servers you have configured.** It required
+  typing a hostname that the app already knew, and listed one row per key with
+  a Remove button — but a host answers with one key per algorithm, so removing a
+  single row left the rest still verifying the host and the next scan restored
+  the removed one alongside them, which read as deletion doing nothing. Hosts
+  now appear automatically from the configured servers, with trust shown and
+  granted per host, a **Forget** that drops the whole set, and the stored time
+  displayed so a rescan is visible as one.
+- **Connections report which host key was negotiated.** Testing a connection now
+  shows the algorithm the handshake settled on, and warns — without blocking —
+  when the host had a stronger one on offer.
+- The Known Hosts and SSH Keys panels now explain what they hold and how they
+  differ: host keys prove the machine's identity, SSH keys are the private keys
+  this app logs in with.
+
 ## 0.1.0-dev.9 — 2026-09-12
 
 ### Security

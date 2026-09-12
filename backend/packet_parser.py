@@ -36,13 +36,15 @@ async def _run_tool(cmd: list[str], source: PcapSource) -> tuple[bytes, bytes, i
             async for chunk in source.chunks():
                 proc.stdin.write(chunk)
                 await proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, RuntimeError):
             # Normal when the tool stops early, e.g. tshark with -c.
+            # uvloop raises RuntimeError("handler is closed") instead of
+            # BrokenPipeError when the transport is already torn down.
             pass
         finally:
             try:
                 proc.stdin.close()
-            except (BrokenPipeError, OSError):
+            except (BrokenPipeError, OSError, RuntimeError):
                 pass
 
     feeder = asyncio.create_task(feed())

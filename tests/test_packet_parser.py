@@ -244,3 +244,67 @@ async def test_get_packet_detail_raises_for_missing_frame():
 async def test_get_packet_count_matches_real_capture():
     count = await packet_parser.get_packet_count(BytesSource(_build_minimal_pcap(num_packets=3)))
     assert count == 3
+
+
+# --- the tool exiting before the feed finishes -----------------------------
+#
+# A tool that has what it needs closes its stdin and exits while chunks are
+# still being written. Under plain asyncio that write raises BrokenPipeError;
+# under uvloop -- which uvicorn selects in the container -- it raises
+# RuntimeError("...the handler is closed") instead. Only the first was caught,
+# so every real capture died on "could not supply capture data to capinfos"
+# after transferring successfully, and the error path then deleted the file.
+
+
+class ClosedTransportSource(PcapSource):
+    """Writes once, then fails the way uvloop fails on a closed stdin."""
+
+    def __init__(self, data: bytes, error: Exception) -> None:
+        self._data = data
+        self._error = error
+
+    async def chunks(self):
+        yield self._data
+        raise self._error
+
+    async def size(self) -> int:
+        return len(self._data)
+
+
+@needs_capinfos
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError(
+            "unable to perform operation on <WriteUnixTransport closed=True "
+            "reading=False 0x7fb21ff3ac20>; the handler is closed"
+        ),
+        BrokenPipeError(),
+        ConnectionResetError(),
+    ],
+    ids=["uvloop-runtime-error", "broken-pipe", "connection-reset"],
+)
+async def test_get_packet_count_survives_the_tool_closing_stdin_early(error):
+    count = await packet_parser.get_packet_count(
+        ClosedTransportSource(_build_minimal_pcap(num_packets=3), error)
+    )
+    assert count == 3
+
+
+class UnreadableSource(PcapSource):
+    """A source that genuinely cannot be read -- not a closed pipe."""
+
+    async def chunks(self):
+        raise OSError("captures volume is not readable")
+        yield b""  # pragma: no cover
+
+    async def size(self) -> int:
+        return 0
+
+
+@needs_capinfos
+async def test_get_packet_count_still_fails_when_the_source_itself_breaks():
+    """The pipe-closed exemption must not swallow a real read failure: output
+    from a tool that was fed nothing is not a trustworthy packet count."""
+    with pytest.raises(RuntimeError, match="could not supply capture data"):
+        await packet_parser.get_packet_count(UnreadableSource())

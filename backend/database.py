@@ -55,19 +55,6 @@ class Database:
                 expires_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS saved_servers (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                hostname TEXT NOT NULL,
-                port INTEGER NOT NULL DEFAULT 22,
-                username TEXT NOT NULL,
-                ssh_key_name TEXT NOT NULL,
-                use_sudo INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                UNIQUE(user_id, name)
-            );
-
             CREATE TABLE IF NOT EXISTS active_servers (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -116,13 +103,9 @@ class Database:
                 server_label TEXT NOT NULL DEFAULT ''
             );
 
-            CREATE INDEX IF NOT EXISTS idx_saved_servers_user_id ON saved_servers(user_id);
             CREATE INDEX IF NOT EXISTS idx_captures_user_id ON captures(user_id);
             CREATE INDEX IF NOT EXISTS idx_active_servers_user_id ON active_servers(user_id);
         """)
-        columns = {r["name"] for r in conn.execute("PRAGMA table_info(saved_servers)")}
-        if "use_sudo" not in columns:
-            conn.execute("ALTER TABLE saved_servers ADD COLUMN use_sudo INTEGER NOT NULL DEFAULT 0")
         active_columns = {r["name"] for r in conn.execute("PRAGMA table_info(active_servers)")}
         if "tcpdump_path" not in active_columns:
             conn.execute("ALTER TABLE active_servers ADD COLUMN tcpdump_path TEXT NOT NULL DEFAULT ''")
@@ -132,7 +115,30 @@ class Database:
         capture_columns = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
         if "server_label" not in capture_columns:
             conn.execute("ALTER TABLE captures ADD COLUMN server_label TEXT NOT NULL DEFAULT ''")
+        self._fold_saved_servers(conn)
         conn.commit()
+
+    @staticmethod
+    def _fold_saved_servers(conn) -> None:
+        """Retire saved_servers: one list of servers, not two.
+
+        Both tables were persistent and held the same columns, reached through a
+        save/load round trip that copied rows between them. Anything only in
+        saved_servers is carried over -- ids are shared with active_servers, so
+        a profile already loaded is already there and is left alone.
+        """
+        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "saved_servers" not in tables:
+            return
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(saved_servers)")}
+        use_sudo = "use_sudo" if "use_sudo" in columns else "0"
+        conn.execute(f"""
+            INSERT OR IGNORE INTO active_servers
+                (id, user_id, name, hostname, port, username, ssh_key_name, use_sudo, tcpdump_path, added_at)
+            SELECT id, user_id, name, hostname, port, username, ssh_key_name, {use_sudo}, '', created_at
+            FROM saved_servers
+        """)
+        conn.execute("DROP TABLE saved_servers")
 
     # --- users ---
 
@@ -246,45 +252,7 @@ class Database:
         self._conn().commit()
         return cur.rowcount
 
-    # --- saved servers ---
-
-    def save_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool = False) -> None:
-        self._conn().execute(
-            """INSERT OR REPLACE INTO saved_servers (id, user_id, name, hostname, port, username, ssh_key_name, use_sudo, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (server_id, user_id, name, hostname, port, username, ssh_key_name, int(use_sudo), _utcnow().isoformat()),
-        )
-        self._conn().commit()
-
-    def update_saved_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool) -> bool:
-        cur = self._conn().execute(
-            """UPDATE saved_servers SET name = ?, hostname = ?, port = ?, username = ?, ssh_key_name = ?, use_sudo = ?
-               WHERE id = ? AND user_id = ?""",
-            (name, hostname, port, username, ssh_key_name, int(use_sudo), server_id, user_id),
-        )
-        self._conn().commit()
-        return cur.rowcount > 0
-
-    def list_saved_servers(self, user_id: str) -> list[dict]:
-        rows = self._conn().execute(
-            "SELECT * FROM saved_servers WHERE user_id = ? ORDER BY name", (user_id,)
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def delete_saved_server(self, server_id: str, user_id: str) -> bool:
-        cur = self._conn().execute(
-            "DELETE FROM saved_servers WHERE id = ? AND user_id = ?", (server_id, user_id)
-        )
-        self._conn().commit()
-        return cur.rowcount > 0
-
-    def get_saved_server(self, server_id: str, user_id: str) -> dict | None:
-        row = self._conn().execute(
-            "SELECT * FROM saved_servers WHERE id = ? AND user_id = ?", (server_id, user_id)
-        ).fetchone()
-        return dict(row) if row else None
-
-    # --- active servers ---
+    # --- servers ---
     #
     # The runtime registry used to be an in-memory dict, so every server a user
     # added vanished on restart. Persisting it here makes a server permanent
@@ -318,12 +286,33 @@ class Database:
         self._conn().commit()
         return cur.rowcount > 0
 
+    def update_active_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool) -> bool:
+        # tcpdump_path is cleared: it was discovered on the old host and says
+        # nothing about wherever this server now points.
+        cur = self._conn().execute(
+            """UPDATE active_servers
+               SET name = ?, hostname = ?, port = ?, username = ?, ssh_key_name = ?, use_sudo = ?, tcpdump_path = ''
+               WHERE id = ? AND user_id = ?""",
+            (name, hostname, port, username, ssh_key_name, int(use_sudo), server_id, user_id),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
     def delete_active_server(self, server_id: str, user_id: str) -> bool:
         cur = self._conn().execute(
             "DELETE FROM active_servers WHERE id = ? AND user_id = ?", (server_id, user_id)
         )
         self._conn().commit()
         return cur.rowcount > 0
+
+    def list_usernames(self, user_id: str) -> list[str]:
+        """Distinct SSH usernames this user has already typed, most recent first."""
+        rows = self._conn().execute(
+            """SELECT username FROM active_servers WHERE user_id = ?
+               GROUP BY username ORDER BY MAX(added_at) DESC""",
+            (user_id,),
+        ).fetchall()
+        return [r["username"] for r in rows]
 
     # --- captures ---
 
@@ -373,6 +362,42 @@ class Database:
         cur = self._conn().execute("DELETE FROM known_hosts WHERE id = ?", (host_id,))
         self._conn().commit()
         return cur.rowcount > 0
+
+    def forget_known_host(self, hostname: str, port: int) -> int:
+        """Drop every key for one endpoint, and report how many went.
+
+        A host answers with one key per algorithm, so its keys are trusted or
+        not as a set. Removing them one row at a time looks like it failed:
+        the rows that remain still verify the host, and the next scan restores
+        the deleted one alongside them.
+        """
+        cur = self._conn().execute(
+            "DELETE FROM known_hosts WHERE hostname = ? AND port = ?", (hostname, port)
+        )
+        self._conn().commit()
+        return cur.rowcount
+
+    def list_server_endpoints(self) -> list[dict]:
+        """Every host any user has configured a server for, with its labels.
+
+        Host trust is keyed on the endpoint rather than the server row, since
+        several servers can point at one host and they all verify against the
+        same key. Labels are grouped here rather than by GROUP_CONCAT, which
+        would split wrongly on a server name that itself contains a comma.
+        """
+        rows = self._conn().execute(
+            "SELECT hostname, port, name, username FROM active_servers ORDER BY hostname, port"
+        ).fetchall()
+        endpoints: dict[tuple[str, int], list[str]] = {}
+        for row in rows:
+            label = row["name"] or f"{row['username']}@{row['hostname']}"
+            labels = endpoints.setdefault((row["hostname"], row["port"]), [])
+            if label not in labels:
+                labels.append(label)
+        return [
+            {"hostname": hostname, "port": port, "labels": labels}
+            for (hostname, port), labels in sorted(endpoints.items())
+        ]
 
     # --- settings ---
 

@@ -5,7 +5,7 @@ let currentUser = null;
 let activeServers = [];
 // Whether this page reached the server over a connection a capture may cross.
 let secureTransport = true;
-let savedServers = [];
+let knownUsernames = [];
 let captures = [];
 let viewingCaptureId = null;
 let selectedPacketRow = null;
@@ -192,7 +192,7 @@ function checkCookieConfig(cookieSecure) {
             "servers and view captures, but ",
             { strong: "captures cannot be downloaded, SSH keys cannot be uploaded, and nothing can be changed" },
             ". To get full access, serve pcap-server over HTTPS \u2014 either put a reverse proxy in front ",
-            "that can obtain and renew its own certificates (Caddy, Nginx Proxy Manager and Traefik all do "
+            "that can obtain and renew its own certificates (Caddy, Nginx Proxy Manager and Traefik all do ",
             "this automatically; plain nginx needs certbot or similar alongside it) ",
             "and set ",
             { code: "TRUST_PROXY_HEADERS=true" },
@@ -349,7 +349,6 @@ function enterApp() {
     initTabs();
     initFlagPicker();
     loadServers();
-    loadSavedServers();
     loadCaptures();
     setInterval(refreshRunningCaptures, 3000);
 }
@@ -420,7 +419,7 @@ function selectServer(id) {
         <div class="form-actions">
             <button class="btn btn-sm btn-secondary" data-action="test-server" data-id="${escHtml(srv.id)}">Test connection</button>
             <button class="btn btn-sm btn-secondary" data-action="prereq-check" data-id="${escHtml(srv.id)}">Check prerequisites</button>
-            <button class="btn btn-sm btn-secondary" data-action="save-server-config" data-id="${escHtml(srv.id)}">Save to profile</button>
+            <button class="btn btn-sm btn-secondary" data-action="edit-server" data-id="${escHtml(srv.id)}">Edit</button>
             <button class="btn btn-sm btn-danger" data-action="remove-server" data-id="${escHtml(srv.id)}">Remove</button>
         </div>
         <div id="server-test-result" style="margin-top:8px;font-size:0.8125rem"></div>
@@ -508,15 +507,22 @@ function renderPrereqs(box, res) {
 }
 
 function showAddServer() {
-    loadSSHKeys().then((keys) => {
+    Promise.all([loadSSHKeys(), loadUsernames()]).then(([keys, usernames]) => {
         const opts = keys.map((k) => `<option value="${escHtml(k)}">${escHtml(k)}</option>`).join("");
+        // A datalist suggests without constraining: previous usernames are offered,
+        // and a new one can still be typed straight over them.
+        const userOpts = usernames.map((u) => `<option value="${escHtml(u)}"></option>`).join("");
         $("server-form-area").innerHTML = `
             <h3>Add server</h3>
             <div class="form-group"><label>Name <span class="hint">(optional — labels captures from this host)</span></label><input type="text" id="new-srv-name" placeholder="e.g. edge-firewall"></div>
             <div class="form-group"><label>Hostname / IP</label><input type="text" id="new-srv-host"></div>
             <div class="form-row">
                 <div class="form-group"><label>Port</label><input type="number" id="new-srv-port" value="22"></div>
-                <div class="form-group"><label>Username</label><input type="text" id="new-srv-user" value="root"></div>
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="new-srv-user" value="${escHtml(usernames[0] || "root")}" list="known-usernames" autocomplete="off">
+                    <datalist id="known-usernames">${userOpts}</datalist>
+                </div>
             </div>
             <div class="form-group">
                 <label>SSH Key</label>
@@ -525,10 +531,62 @@ function showAddServer() {
             <div class="form-group">${sudoOption("new-srv-sudo", false)}</div>
             <div class="form-actions">
                 <button class="btn btn-sm btn-primary" data-action="add-server">Add server</button>
+                <button class="btn btn-sm btn-secondary" data-action="probe-test">Test connection</button>
+                <button class="btn btn-sm btn-secondary" data-action="probe-prereq">Check prerequisites</button>
             </div>
             <div id="add-server-error" class="error-msg"></div>
+            <div id="server-test-result" style="margin-top:8px;font-size:0.8125rem"></div>
+            <div id="prereq-result"></div>
         `;
     });
+}
+
+async function loadUsernames() {
+    try {
+        knownUsernames = await api("/api/usernames");
+    } catch {
+        knownUsernames = [];
+    }
+    return knownUsernames;
+}
+
+// The add form's details, as the API wants them. Shared by add, test and
+// prereq so all three always probe exactly what the form says.
+function addFormServer() {
+    return {
+        name: $("new-srv-name").value,
+        hostname: $("new-srv-host").value,
+        port: parseInt($("new-srv-port").value) || 22,
+        username: $("new-srv-user").value,
+        ssh_key_name: $("new-srv-key").value,
+        use_sudo: $("new-srv-sudo").checked,
+    };
+}
+
+async function probeTest() {
+    const el = $("server-test-result");
+    $("add-server-error").textContent = "";
+    el.innerHTML = '<span class="spinner"></span> Testing...';
+    try {
+        el.innerHTML = renderTestResult(await api("/api/probe/test", {
+            method: "POST", body: JSON.stringify(addFormServer()),
+        }));
+    } catch (e) {
+        el.innerHTML = `<span style="color:var(--danger)">Failed: ${escHtml(e.message)}</span>`;
+    }
+}
+
+async function probePrereq() {
+    const box = $("prereq-result");
+    $("add-server-error").textContent = "";
+    box.innerHTML = '<div class="prereq-pending"><span class="spinner"></span> Probing host (read-only)...</div>';
+    try {
+        renderPrereqs(box, await api("/api/probe/prereq-check", {
+            method: "POST", body: JSON.stringify(addFormServer()),
+        }));
+    } catch (e) {
+        box.innerHTML = `<div class="prereq-error">${escHtml(e.message)}</div>`;
+    }
 }
 
 async function loadSSHKeys() {
@@ -542,19 +600,14 @@ async function loadSSHKeys() {
 async function addServer() {
     $("add-server-error").textContent = "";
     try {
-        await api("/api/servers", {
+        const added = await api("/api/servers", {
             method: "POST",
-            body: JSON.stringify({
-                name: $("new-srv-name").value,
-                hostname: $("new-srv-host").value,
-                port: parseInt($("new-srv-port").value) || 22,
-                username: $("new-srv-user").value,
-                ssh_key_name: $("new-srv-key").value,
-                use_sudo: $("new-srv-sudo").checked,
-            }),
+            body: JSON.stringify(addFormServer()),
         });
         await loadServers();
-        $("server-form-area").innerHTML = '<div class="empty-state">Server added</div>';
+        // Straight to the server's own page: testing and the prerequisite check
+        // are the usual next step, and they live there.
+        selectServer(added.id);
     } catch (e) {
         $("add-server-error").textContent = e.message;
     }
@@ -564,11 +617,29 @@ async function testServer(id) {
     const el = $("server-test-result");
     el.innerHTML = '<span class="spinner"></span> Testing...';
     try {
-        await api(`/api/servers/${id}/test`, { method: "POST" });
-        el.innerHTML = '<span style="color:var(--success)">Connection successful</span>';
+        el.innerHTML = renderTestResult(await api(`/api/servers/${id}/test`, { method: "POST" }));
     } catch (e) {
         el.innerHTML = `<span style="color:var(--danger)">Failed: ${escHtml(e.message)}</span>`;
     }
+}
+
+// Which host key the handshake settled on, and whether a stronger one was
+// already stored for this host. A weaker choice is worth seeing but never
+// blocks: the connection is verified either way.
+function renderTestResult(res) {
+    let html = '<span style="color:var(--success)">Connection successful</span>';
+    if (res.host_key_algorithm) {
+        html += `<div style="color:var(--text-secondary);margin-top:4px">`
+            + `Host key: <code>${escHtml(res.host_key_algorithm)}</code></div>`;
+    }
+    if (res.stronger_available) {
+        html += `<div style="color:var(--warning,#d29922);margin-top:4px">`
+            + `Negotiated <code>${escHtml(res.host_key_algorithm)}</code> although this host also `
+            + `offers <code>${escHtml(res.stronger_available)}</code>, which is stronger. `
+            + `Not a problem for this connection — but if the host still carries an old `
+            + `<code>ssh-rsa</code> key, consider removing it from its sshd config.</div>`;
+    }
+    return html;
 }
 
 async function removeServer(id) {
@@ -577,64 +648,7 @@ async function removeServer(id) {
     $("server-form-area").innerHTML = '<div class="empty-state">Server removed</div>';
 }
 
-async function saveServerConfig(id) {
-    const srv = activeServers.find((s) => s.id === id);
-    if (!srv) return;
-    const name = prompt("Save as (name):", srv.hostname);
-    if (!name) return;
-    try {
-        await api("/api/saved-servers", {
-            method: "POST",
-            body: JSON.stringify({
-                name,
-                hostname: srv.hostname,
-                port: srv.port,
-                username: srv.username,
-                ssh_key_name: srv.ssh_key_name,
-                use_sudo: srv.use_sudo,
-            }),
-        });
-        loadSavedServers();
-    } catch (e) {
-        alert("Save failed: " + e.message);
-    }
-}
-
-async function loadSavedServers() {
-    try {
-        const servers = await api("/api/saved-servers");
-        savedServers = servers;
-        const el = $("saved-server-list");
-        if (!servers.length) {
-            el.innerHTML = "None";
-            return;
-        }
-        el.innerHTML = servers
-            .map(
-                (s) => `
-            <div style="display:flex;align-items:center;gap:8px;padding:4px 0">
-                <span style="flex:1">${escHtml(s.name)} (${escHtml(s.hostname)})</span>
-                <button class="btn-icon" data-action="load-saved-server" data-id="${escHtml(s.id)}" title="Load">&#x25B6;</button>
-                <button class="btn-icon" data-action="edit-saved-server" data-id="${escHtml(s.id)}" title="Edit">&#x270E;</button>
-                <button class="btn-icon" data-action="delete-saved-server" data-id="${escHtml(s.id)}" title="Delete">&times;</button>
-            </div>`
-            )
-            .join("");
-    } catch {
-        $("saved-server-list").innerHTML = "None";
-    }
-}
-
-async function loadSavedServer(id) {
-    try {
-        await api(`/api/saved-servers/${id}/load`, { method: "POST" });
-        await loadServers();
-    } catch (e) {
-        alert(e.message);
-    }
-}
-
-const SUDO_HINT = "Needed when the SSH user isn't root. Requires passwordless sudo for tcpdump on that host.";
+const SUDO_HINT = "Needed when the SSH user isn't root. Requires passwordless sudo scoped to tcpdump on that host — not blanket NOPASSWD: ALL. Check prerequisites prints the exact rule.";
 
 function sudoOption(id, checked) {
     return `
@@ -647,20 +661,25 @@ function sudoOption(id, checked) {
         </div>`;
 }
 
-async function editSavedServer(id) {
-    const srv = savedServers.find((s) => s.id === id);
+async function editServer(id) {
+    const srv = activeServers.find((s) => s.id === id);
     if (!srv) return;
-    const keys = await loadSSHKeys();
+    const [keys, usernames] = await Promise.all([loadSSHKeys(), loadUsernames()]);
     const opts = keys
         .map((k) => `<option value="${escHtml(k)}"${k === srv.ssh_key_name ? " selected" : ""}>${escHtml(k)}</option>`)
         .join("");
+    const userOpts = usernames.map((u) => `<option value="${escHtml(u)}"></option>`).join("");
     $("server-form-area").innerHTML = `
-        <h3>Edit saved server</h3>
-        <div class="form-group"><label>Name</label><input type="text" id="edit-srv-name" value="${escHtml(srv.name)}"></div>
+        <h3>Edit ${escHtml(srv.name || srv.hostname)}</h3>
+        <div class="form-group"><label>Name <span class="hint">(optional — labels captures from this host)</span></label><input type="text" id="edit-srv-name" value="${escHtml(srv.name)}"></div>
         <div class="form-group"><label>Hostname / IP</label><input type="text" id="edit-srv-host" value="${escHtml(srv.hostname)}"></div>
         <div class="form-row">
             <div class="form-group"><label>Port</label><input type="number" id="edit-srv-port" value="${escHtml(srv.port)}"></div>
-            <div class="form-group"><label>Username</label><input type="text" id="edit-srv-user" value="${escHtml(srv.username)}"></div>
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="edit-srv-user" value="${escHtml(srv.username)}" list="known-usernames" autocomplete="off">
+                <datalist id="known-usernames">${userOpts}</datalist>
+            </div>
         </div>
         <div class="form-group">
             <label>SSH Key</label>
@@ -668,16 +687,17 @@ async function editSavedServer(id) {
         </div>
         <div class="form-group">${sudoOption("edit-srv-sudo", srv.use_sudo)}</div>
         <div class="form-actions">
-            <button class="btn btn-sm btn-primary" data-action="save-saved-server-edit" data-id="${escHtml(srv.id)}">Save changes</button>
+            <button class="btn btn-sm btn-primary" data-action="save-server-edit" data-id="${escHtml(srv.id)}">Save changes</button>
+            <button class="btn btn-sm btn-secondary" data-action="select-server" data-id="${escHtml(srv.id)}">Cancel</button>
         </div>
         <div id="edit-server-error" class="error-msg"></div>
     `;
 }
 
-async function saveSavedServerEdit(id) {
+async function saveServerEdit(id) {
     $("edit-server-error").textContent = "";
     try {
-        await api(`/api/saved-servers/${id}`, {
+        await api(`/api/servers/${id}`, {
             method: "PUT",
             body: JSON.stringify({
                 name: $("edit-srv-name").value,
@@ -688,17 +708,11 @@ async function saveSavedServerEdit(id) {
                 use_sudo: $("edit-srv-sudo").checked,
             }),
         });
-        await loadSavedServers();
-        $("server-form-area").innerHTML = '<div class="empty-state">Saved server updated</div>';
+        await loadServers();
+        selectServer(id);
     } catch (e) {
         $("edit-server-error").textContent = e.message;
     }
-}
-
-async function deleteSavedServer(id) {
-    if (!confirm("Delete this saved server?")) return;
-    await api(`/api/saved-servers/${id}`, { method: "DELETE" });
-    loadSavedServers();
 }
 
 // --- capture ---
@@ -1570,64 +1584,108 @@ async function adminDeleteKey(name) {
     }
 }
 
+// Driven by the servers that exist, not by a typed hostname: the hosts worth
+// trusting are the ones something already connects to. Keys are shown and
+// dropped per host rather than per row, because a host's keys are one set --
+// removing a single row leaves the others still verifying it.
 async function loadAdminKnownHosts() {
+    const el = $("admin-known-hosts");
     try {
-        const hosts = await api("/api/admin/known-hosts");
-        const el = $("admin-known-hosts");
+        const hosts = await api("/api/admin/host-trust");
         if (!hosts.length) {
-            el.innerHTML = '<span style="color:var(--text-muted)">No known hosts</span>';
+            el.innerHTML = '<span style="color:var(--text-muted)">'
+                + "No servers configured yet — add one under Servers and its host will appear here."
+                + "</span>";
             return;
         }
         el.innerHTML = `<table class="admin-table">
-            <thead><tr><th>Hostname</th><th>Port</th><th>Key Type</th><th>Added</th><th></th></tr></thead>
-            <tbody>${hosts.map((h) => `
+            <thead><tr><th>Host</th><th>Used by</th><th>Host keys</th><th></th></tr></thead>
+            <tbody>${hosts.map((h) => {
+                const endpoint = `${escHtml(h.hostname)}:${h.port}`;
+                const trusted = h.key_types.length > 0;
+                // The stored-at time is shown because it is the only way to tell a
+                // rescan apart from keys that were never removed: the same key types
+                // come back either way, and only the timestamp moves.
+                const status = trusted
+                    ? `<span style="color:var(--success)">Trusted — ${escHtml(h.key_types.join(", "))}</span>`
+                      + `<br><span style="color:var(--text-muted);font-size:0.75rem">`
+                      + `stored ${escHtml(formatStoredAt(h.added_at))}</span>`
+                    : '<span style="color:var(--warning,#d29922)">Not verified</span>';
+                const used = h.configured
+                    ? escHtml(h.labels)
+                    : '<span style="color:var(--text-muted)">no server uses this host</span>';
+                return `
                 <tr>
-                    <td>${escHtml(h.hostname)}</td>
-                    <td>${h.port}</td>
-                    <td>${escHtml(h.key_type)}</td>
-                    <td>${escHtml(h.added_at || "")}</td>
-                    <td><button class="btn btn-sm btn-danger" data-action="delete-known-host" data-id="${h.id}">Remove</button></td>
-                </tr>`).join("")}
+                    <td>${endpoint}</td>
+                    <td>${used}</td>
+                    <td>${status}</td>
+                    <td style="white-space:nowrap">
+                        <button class="btn btn-sm btn-secondary" data-action="trust-host"
+                            data-id="${endpoint}">${trusted ? "Rescan" : "Trust keys"}</button>
+                        ${trusted ? `<button class="btn btn-sm btn-danger" data-action="forget-host"
+                            data-id="${endpoint}">Forget</button>` : ""}
+                    </td>
+                </tr>`;
+            }).join("")}
             </tbody>
         </table>`;
     } catch (e) {
-        $("admin-known-hosts").innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
+        el.innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
     }
 }
 
-async function adminScanHost() {
+function formatStoredAt(iso) {
+    if (!iso) return "unknown";
+    const when = new Date(iso);
+    if (isNaN(when)) return iso;
+    const secs = Math.round((Date.now() - when) / 1000);
+    if (secs < 10) return "just now";
+    if (secs < 90) return `${secs}s ago`;
+    if (secs < 5400) return `${Math.round(secs / 60)} min ago`;
+    return when.toLocaleString();
+}
+
+// "host:port" as carried on the buttons. rsplit, so IPv6 literals survive.
+function splitEndpoint(endpoint) {
+    const i = String(endpoint).lastIndexOf(":");
+    return { hostname: endpoint.slice(0, i), port: parseInt(endpoint.slice(i + 1)) || 22 };
+}
+
+async function adminTrustHost(endpoint) {
     const msgEl = $("admin-host-msg");
-    msgEl.textContent = "";
-    msgEl.className = "error-msg";
-    const hostname = $("admin-scan-hostname").value.trim();
-    const port = parseInt($("admin-scan-port").value) || 22;
-    if (!hostname) {
-        msgEl.textContent = "Hostname required";
-        return;
-    }
-    msgEl.textContent = "Scanning...";
     msgEl.className = "success-msg";
+    msgEl.textContent = `Asking ${endpoint} for its host keys...`;
     try {
         const result = await api("/api/admin/known-hosts/scan", {
             method: "POST",
-            body: JSON.stringify({ hostname, port }),
+            body: JSON.stringify(splitEndpoint(endpoint)),
         });
-        msgEl.textContent = `Found ${result.keys.length} key(s)`;
-        msgEl.className = "success-msg";
+        // Said plainly, because the rows that reappear look identical to ones
+        // that were never removed -- these were just fetched from the host.
+        msgEl.textContent =
+            `Fetched ${result.keys.length} key(s) from ${endpoint} and stored them now.`;
         loadAdminKnownHosts();
     } catch (e) {
-        msgEl.textContent = e.message;
         msgEl.className = "error-msg";
+        msgEl.textContent = e.message;
     }
 }
 
-async function adminDeleteKnownHost(hostId) {
-    if (!confirm("Remove this known host key?")) return;
+async function adminForgetHost(endpoint) {
+    if (!confirm(`Forget the stored host keys for ${endpoint}?\n\n`
+        + "Connections to it will stop being verified until you trust it again.")) return;
+    const msgEl = $("admin-host-msg");
     try {
-        await api(`/api/admin/known-hosts/${hostId}`, { method: "DELETE" });
+        const result = await api("/api/admin/known-hosts/forget", {
+            method: "POST",
+            body: JSON.stringify(splitEndpoint(endpoint)),
+        });
+        msgEl.className = "success-msg";
+        msgEl.textContent = `Removed ${result.removed} key(s) for ${endpoint}`;
         loadAdminKnownHosts();
     } catch (e) {
-        $("admin-host-msg").textContent = e.message;
+        msgEl.className = "error-msg";
+        msgEl.textContent = e.message;
     }
 }
 
@@ -1650,7 +1708,6 @@ function initStaticHandlers() {
     $("btn-save-settings")?.addEventListener("click", saveSettings);
     $("btn-admin-create-user")?.addEventListener("click", adminCreateUser);
     $("btn-admin-upload-key")?.addEventListener("click", adminUploadKey);
-    $("btn-admin-scan-host")?.addEventListener("click", adminScanHost);
 }
 
 // The containers themselves exist from page load even though their contents
@@ -1663,15 +1720,13 @@ function initEventDelegation() {
     delegate("server-form-area", {
         "test-server": (id) => testServer(id),
         "prereq-check": (id) => prereqCheck(id),
-        "save-server-config": (id) => saveServerConfig(id),
         "remove-server": (id) => removeServer(id),
         "add-server": () => addServer(),
-        "save-saved-server-edit": (id) => saveSavedServerEdit(id),
-    });
-    delegate("saved-server-list", {
-        "load-saved-server": (id) => loadSavedServer(id),
-        "edit-saved-server": (id) => editSavedServer(id),
-        "delete-saved-server": (id) => deleteSavedServer(id),
+        "probe-test": () => probeTest(),
+        "probe-prereq": () => probePrereq(),
+        "edit-server": (id) => editServer(id),
+        "save-server-edit": (id) => saveServerEdit(id),
+        "select-server": (id) => selectServer(id),
     });
     delegate("capture-list", {
         "stop-capture": (id) => stopCapture(id),
@@ -1686,7 +1741,8 @@ function initEventDelegation() {
         "delete-key": (id) => adminDeleteKey(id),
     });
     delegate("admin-known-hosts", {
-        "delete-known-host": (id) => adminDeleteKnownHost(id),
+        "trust-host": (id) => adminTrustHost(id),
+        "forget-host": (id) => adminForgetHost(id),
     });
     $("packet-tbody")?.addEventListener("click", (e) => {
         const row = e.target.closest("tr[data-frame]");

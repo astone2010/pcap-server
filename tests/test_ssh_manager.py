@@ -4,6 +4,8 @@ that must never reach a shell command."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from backend.ssh_manager import (
@@ -11,7 +13,9 @@ from backend.ssh_manager import (
     _is_safe_tcpdump_path,
     _shell_quote,
     evaluate_prereqs,
+    host_key_strength,
     parse_prereq_output,
+    weaker_host_key_than_available,
 )
 
 
@@ -416,3 +420,239 @@ def test_evaluate_prereqs_selinux_absent_produces_no_check():
 def test_evaluate_prereqs_on_path_warns_when_only_absolute():
     checks = evaluate_prereqs(make_facts(on_path=""), use_sudo=False)
     assert _check(checks, "tcpdump on the SSH PATH")["status"] == "warn"
+
+
+# --- the sudoers rule the operator is told to paste as root ------------------
+#
+# This text is instructions for a root shell. It must grant exactly one binary
+# and must install through visudo, which validates before replacing the file --
+# a broken file in /etc/sudoers.d/ breaks sudo for everyone on the host.
+
+
+def _privilege_fix(**overrides) -> str:
+    facts = make_facts(sudo_present=True, sudo_nopasswd=False, **overrides)
+    checks = evaluate_prereqs(facts, use_sudo=True, username="pcapuser")
+    return _check(checks, "Capture privilege")["fix"]
+
+
+def _granted_rules(fix: str) -> list[str]:
+    """The sudoers rules inside the remedy's quoted echo arguments.
+
+    Prose is deliberately excluded: the remedy *names* `NOPASSWD: ALL` to warn
+    against it, so searching the whole blob for that string proves nothing.
+    What matters is what the rules actually grant.
+    """
+    return re.findall(r"echo '([^']*NOPASSWD:[^']*)'", fix)
+
+
+def test_sudoers_remedy_scopes_every_granted_rule_to_tcpdump_alone():
+    fix = _privilege_fix()
+    rules = _granted_rules(fix)
+    assert rules, f"no sudoers rule found in remedy: {fix!r}"
+    for rule in rules:
+        assert rule.endswith("/usr/sbin/tcpdump"), f"rule grants more than tcpdump: {rule!r}"
+        assert not rule.rstrip().endswith("NOPASSWD: ALL")
+
+
+def test_sudoers_remedy_installs_through_visudo_not_tee():
+    """visudo validates and refuses to install a malformed file; a bare
+    `tee` into /etc/sudoers.d/ leaves the host with sudo broken for everyone."""
+    fix = _privilege_fix()
+    assert "visudo -f /etc/sudoers.d/pcap-server" in fix
+    assert "| sudo tee /etc/sudoers.d" not in fix
+
+
+def test_sudoers_remedy_names_the_real_user_not_a_group_that_does_not_exist():
+    assert "pcapuser ALL=" in _privilege_fix()
+    assert "%pcap" not in _privilege_fix()
+
+
+def test_sudoers_remedy_without_a_username_creates_the_group_it_references():
+    """The group form is only correct if the group is made first -- otherwise
+    the rule silently matches nobody and captures keep failing."""
+    checks = evaluate_prereqs(
+        make_facts(sudo_present=True, sudo_nopasswd=False), use_sudo=True
+    )
+    fix = _check(checks, "Capture privilege")["fix"]
+    assert "%pcap ALL=(root) NOPASSWD: /usr/sbin/tcpdump" in fix
+    assert "groupadd -f pcap" in fix
+
+
+def test_no_privilege_path_remedy_is_also_scoped_and_uses_visudo():
+    checks = evaluate_prereqs(make_facts(), use_sudo=False, username="pcapuser")
+    fix = _check(checks, "Capture privilege")["fix"]
+    assert "setcap cap_net_raw" in fix
+    assert "| sudo tee /etc/sudoers.d" not in fix
+    for rule in _granted_rules(fix):
+        assert rule.endswith("/usr/sbin/tcpdump")
+
+
+# --- username validation ------------------------------------------------------
+#
+# The username is interpolated into the sudoers rule above -- text the operator
+# is told to run as root. A username carrying sudoers syntax could widen that
+# rule into a blanket grant, so the characters sudoers reads are rejected at
+# the model boundary rather than escaped at each use.
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "x ALL=(ALL) NOPASSWD: ALL #",   # comments out the tcpdump scope
+        "x ALL=(ALL) NOPASSWD: ALL",
+        "root, x",                        # a second user in the same rule
+        "x!authenticate",
+        "x\nroot ALL=(ALL) NOPASSWD: ALL",
+        "x ALL=(root) NOPASSWD: /bin/sh",
+        "a b",
+        "-flag",
+        "",
+        "   ",
+    ],
+)
+def test_server_auth_rejects_usernames_carrying_sudoers_syntax(hostile):
+    from pydantic import ValidationError
+
+    from backend.models import ServerAuth
+
+    with pytest.raises(ValidationError):
+        ServerAuth(hostname="example.com", username=hostile, ssh_key_name="k")
+
+
+@pytest.mark.parametrize(
+    "name", ["root", "pcapuser", "first.last", "svc_pcap", "net-admin", "user@REALM", "u1"]
+)
+def test_server_auth_accepts_real_login_names(name):
+    from backend.models import ServerAuth
+
+    assert ServerAuth(hostname="example.com", username=name, ssh_key_name="k").username == name
+
+
+def test_a_rejected_username_can_never_reach_the_sudoers_rule():
+    """The end-to-end statement: there is no ServerAuth whose username widens
+    the printed grant, because the model refuses to construct one."""
+    from pydantic import ValidationError
+
+    from backend.models import ServerAuth
+
+    with pytest.raises(ValidationError):
+        ServerAuth(
+            hostname="example.com",
+            username="x ALL=(ALL) NOPASSWD: ALL #",
+            ssh_key_name="k",
+        )
+
+
+# --- host key algorithm strength ----------------------------------------------
+#
+# Which algorithm a handshake settles on is invisible otherwise, and a host that
+# still carries an ssh-rsa key will use it happily. Surfacing a weaker-than-
+# available choice is a warning only: the connection is verified either way.
+
+
+def test_ed25519_outranks_every_other_host_key():
+    for weaker in ["ssh-dss", "ssh-rsa", "ecdsa-sha2-nistp521", "rsa-sha2-512"]:
+        assert host_key_strength("ssh-ed25519") > host_key_strength(weaker)
+
+
+def test_ssh_rsa_outranks_only_dss():
+    """ssh-rsa signs with SHA-1 whatever the key size, and OpenSSH 8.8 turned it
+    off by default -- it sits above ssh-dss and below everything else."""
+    assert host_key_strength("ssh-rsa") > host_key_strength("ssh-dss")
+    for stronger in ["ecdsa-sha2-nistp256", "rsa-sha2-256", "ssh-ed25519"]:
+        assert host_key_strength("ssh-rsa") < host_key_strength(stronger)
+
+
+def test_unknown_algorithm_sorts_below_everything_known():
+    """An algorithm this list has never heard of must not be treated as the
+    strongest on offer and silence the warning."""
+    assert host_key_strength("nonsense-algo") == -1
+    assert host_key_strength("nonsense-algo") < host_key_strength("ssh-dss")
+
+
+def test_warns_when_a_stronger_key_was_on_offer():
+    assert weaker_host_key_than_available("ssh-rsa", ["ssh-rsa", "ssh-ed25519"]) == "ssh-ed25519"
+
+
+def test_no_warning_when_the_strongest_was_negotiated():
+    assert weaker_host_key_than_available("ssh-ed25519", ["ssh-rsa", "ssh-ed25519"]) == ""
+
+
+def test_no_warning_when_the_host_offers_only_one_algorithm():
+    assert weaker_host_key_than_available("ssh-rsa", ["ssh-rsa"]) == ""
+
+
+def test_names_the_strongest_alternative_not_merely_a_better_one():
+    stronger = weaker_host_key_than_available(
+        "ssh-rsa", ["ssh-rsa", "ecdsa-sha2-nistp256", "ssh-ed25519"]
+    )
+    assert stronger == "ssh-ed25519"
+
+
+@pytest.mark.parametrize("negotiated,available", [("", ["ssh-ed25519"]), ("ssh-rsa", [])])
+def test_no_warning_without_both_halves_of_the_comparison(negotiated, available):
+    """asyncssh may not report the algorithm, and a host may have no stored
+    keys. Neither is a reason to invent a warning."""
+    assert weaker_host_key_than_available(negotiated, available) == ""
+
+
+# --- getcap discovery and its install hint ------------------------------------
+
+
+def test_probe_searches_sbin_for_getcap_not_just_the_path():
+    """getcap is installed into /sbin on Debian and Ubuntu, which a non-login
+    SSH session for a non-root user does not have on PATH -- the same reason
+    tcpdump already needed a fallback search. Trusting `command -v getcap`
+    alone reported "getcap is not installed" on hosts that had it."""
+    from backend.ssh_manager import _PREREQ_SCRIPT
+
+    assert "/sbin/getcap" in _PREREQ_SCRIPT
+    assert "/usr/sbin/getcap" in _PREREQ_SCRIPT
+
+
+@pytest.mark.parametrize(
+    "os_id,expected_package",
+    [
+        ("debian", "libcap2-bin"),
+        ("ubuntu", "libcap2-bin"),
+        ("fedora", "libcap"),
+        ("rocky", "libcap"),
+        ("opensuse", "libcap-progs"),
+        ("alpine", "libcap"),
+        ("arch", "libcap"),
+    ],
+)
+def test_getcap_install_hint_names_the_right_package_per_family(os_id, expected_package):
+    from backend.ssh_manager import getcap_install_hint
+
+    assert expected_package in getcap_install_hint({"ID": os_id})
+
+
+def test_getcap_hint_is_empty_where_file_capabilities_do_not_exist():
+    """FreeBSD has no Linux file capabilities, so there is nothing to suggest
+    installing -- an install command there would just be wrong."""
+    from backend.ssh_manager import getcap_install_hint
+
+    assert getcap_install_hint({"ID": "freebsd"}) == ""
+
+
+def test_getcap_hint_falls_back_for_an_unrecognised_distro():
+    from backend.ssh_manager import getcap_install_hint
+
+    assert "getcap" in getcap_install_hint({"ID": "some-unknown-linux"})
+
+
+def test_install_hint_still_defaults_to_tcpdump():
+    from backend.ssh_manager import install_hint
+
+    assert install_hint({"ID": "debian"}) == "sudo apt-get install tcpdump"
+
+
+def test_capability_check_offers_a_way_to_install_getcap():
+    checks = evaluate_prereqs(
+        make_facts(caps="", caps_unavailable=True, os_release={"ID": "debian"}),
+        use_sudo=False, username="pcapuser",
+    )
+    check = _check(checks, "Capability check")
+    assert check["status"] == "warn"
+    assert "libcap2-bin" in check["fix"]

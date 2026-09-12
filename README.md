@@ -9,10 +9,10 @@ in your browser.
 - **Remote capture** — run tcpdump on remote servers over SSH
 - **Packet analysis** — Wireshark-style packet list and protocol detail views
 - **Multi-user** — scrypt password hashing, TOTP two-factor auth, trusted devices
-- **Admin panel** — manage users, configure settings, scan SSH host keys
-- **SSH host key verification** — Trust On First Use (TOFU) with known hosts database
-- **Persistent servers** — servers you add are scoped to your account and last until you delete them, surviving restarts
-- **Saved servers** — store connection profiles per user, editable after creation
+- **Admin panel** — manage users, configure settings, trust SSH host keys
+- **SSH host key verification** — per host, driven by the servers you have configured; the negotiated algorithm is reported, and a weaker one than the host offered is flagged
+- **Persistent servers** — one list, scoped to your account, editable in place and lasting until you delete them, surviving restarts
+- **Probe before you commit** — test the connection and run the prerequisite check from the add form, before the server is saved
 - **sudo support** — run tcpdump via `sudo -n` per server, for non-root SSH users
 - **Interface discovery** — pick the capture interface from a list read off the target host
 - **BPF filtering** — full Berkeley Packet Filter syntax selects the traffic, with an in-app cheatsheet
@@ -245,8 +245,43 @@ after a package update if you want to be sure.
 ### If setcap isn't available: passwordless sudo, scoped to tcpdump only
 
 Some hosts don't have `libcap2-bin`/`getcap` installed, or you'd rather use
-sudo. Grant it to the SSH user pcap-server connects as — **not** broad sudo
-access, just this one binary, without a password:
+sudo.
+
+**Why it has to be passwordless.** pcap-server authenticates to your hosts with
+SSH keys and nothing else — it never asks you for, stores, or transmits a login
+password for a target host, and there is no prompt in a capture for one to be
+typed into. Captures run over a non-interactive SSH session, so when `sudo`
+asks for a password there is nobody there to answer and no password on hand to
+send. That is why the grant has to be `NOPASSWD` — and exactly why it should be
+scoped to one binary instead of the whole account. pcap-server invokes
+`sudo -n` ("never prompt") to keep this honest: a host that still wants a
+password fails immediately with a clear error rather than hanging until the
+capture times out.
+
+If you would rather not open a `NOPASSWD` grant at all, use the `setcap` route
+above — it needs no sudo and no password, and it grants less.
+
+**Scope the grant to tcpdump. Do not make the account blanket-passwordless.**
+Searching for "passwordless sudo" turns up this rule almost everywhere, and it
+is the wrong one here:
+
+```
+# DON'T: every command, as root, no password. Far more than capturing needs.
+pcapuser ALL=(ALL) NOPASSWD: ALL
+```
+
+That grants unrestricted root for every purpose, permanently, to an account
+whose private key is sitting in pcap-server's key store. What captures actually
+need is one binary:
+
+```
+# DO: this one binary, nothing else.
+pcapuser ALL=(root) NOPASSWD: /usr/sbin/tcpdump
+```
+
+Both let `sudo -n tcpdump` run unprompted, so pcap-server works either way —
+the difference is entirely in what *else* becomes possible if that account is
+ever compromised. Take the second one. The full steps:
 
 ```bash
 # 1. Find the exact tcpdump path first -- use it below, not a bare "tcpdump".
@@ -278,13 +313,26 @@ sudo chmod 0440 /etc/sudoers.d/pcap-server
 sudo chown root:root /etc/sudoers.d/pcap-server
 ```
 
-pcap-server invokes `sudo -n`, so a host that still demands a password fails
-immediately with a clear error rather than hanging. Tick **Run tcpdump with
-sudo** on the server in the UI to actually use it.
+To do it in one line without an editor — piping through `visudo` rather than
+`tee`, so the file is still validated before it replaces anything:
 
-(**Check prerequisites** generates this same rule for you, scoped to a `%pcap`
-group rather than one named user, if you'd rather grant it to a group and add
-users to that group instead of editing sudoers per-account.)
+```bash
+echo 'pcapuser ALL=(root) NOPASSWD: /usr/sbin/tcpdump' \
+  | sudo EDITOR='tee' visudo -f /etc/sudoers.d/pcap-server
+```
+
+Then tick **Run tcpdump with sudo** on the server in the UI to actually use it.
+
+**Check prerequisites** prints this exact command for you, with the username and
+the discovered tcpdump path already filled in. To grant it to a group instead
+of a named account, create the group first — a rule naming a group that doesn't
+exist matches nobody and captures keep failing with the same error:
+
+```bash
+sudo groupadd -f pcap && sudo usermod -aG pcap pcapuser
+echo '%pcap ALL=(root) NOPASSWD: /usr/sbin/tcpdump' \
+  | sudo EDITOR='tee' visudo -f /etc/sudoers.d/pcap-server
+```
 
 **Understand what this grants, even scoped this way.** `tcpdump` can run
 arbitrary commands as root via its `-z` flag and read any file via `-r`, so

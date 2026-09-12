@@ -201,12 +201,26 @@ class CaptureManager:
         self._captures[capture_id] = info
         self._persist(info)
 
-        process = await self._ssh.run_tcpdump(
-            server,
-            args,
-            remote_path,
-            duration=duration,
-        )
+        # From here the capture counts against max_concurrent_captures. Only
+        # _monitor ever ends a RUNNING capture, and it does not exist yet, so a
+        # failure to launch has to close the record itself -- otherwise every
+        # unreachable host leaks a slot permanently, and after
+        # max_concurrent_captures of them nothing can start again until the
+        # container restarts and _restore() sweeps them.
+        try:
+            process = await self._ssh.run_tcpdump(
+                server,
+                args,
+                remote_path,
+                duration=duration,
+            )
+        except BaseException as exc:
+            info.status = CaptureStatus.FAILED
+            info.stopped_at = datetime.now(timezone.utc)
+            info.error = _describe_failure(exc, "")
+            self._persist(info)
+            raise
+
         self._processes[capture_id] = process
 
         task = asyncio.create_task(self._monitor(capture_id, server, process, remote_path, local_path))

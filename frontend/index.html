@@ -126,15 +126,11 @@
             <div class="servers-layout">
                 <div class="server-sidebar">
                     <div class="server-sidebar-header">
-                        <h3>Active Servers</h3>
+                        <h3>Servers</h3>
                         <button id="btn-add-server" class="btn btn-sm btn-secondary">+ Add</button>
                     </div>
                     <div id="server-list" class="server-list">
                         <div class="empty-state" style="padding:20px;font-size:0.8125rem">No servers added</div>
-                    </div>
-                    <div class="saved-servers-section">
-                        <h4>Saved Servers</h4>
-                        <div id="saved-server-list" style="font-size:0.8125rem;color:var(--text-muted)">None</div>
                     </div>
                 </div>
                 <div id="server-form-area" class="server-form">
@@ -332,6 +328,15 @@
                 </div>
                 <div class="admin-section">
                     <h3>SSH Keys</h3>
+                    <p class="field-hint" style="margin-bottom:10px">
+                        The <em>private</em> keys pcap-server logs in with — your identity to the
+                        target hosts, chosen per server on the Servers tab. Upload the private
+                        key file (the one without <code>.pub</code>) whose public half is already
+                        in that host's <code>~/.ssh/authorized_keys</code>. Passwords are never
+                        used: key authentication is the only method, which is why capturing as a
+                        non-root user needs passwordless sudo. Keys are encrypted at rest under
+                        the master key.
+                    </p>
                     <div id="admin-ssh-keys" class="admin-table-container"></div>
                     <div class="admin-inline-form" style="margin-top:12px">
                         <input type="file" id="admin-key-file" style="font-size:0.8125rem">
@@ -341,12 +346,23 @@
                 </div>
                 <div class="admin-section">
                     <h3>Known Hosts</h3>
+                    <p class="field-hint" style="margin-bottom:10px">
+                        SSH host-key verification, per configured host. These are the
+                        <em>host's</em> identity — proof the machine answering is the one you
+                        meant — not the login keys under SSH Keys above. Trusting a host pins
+                        what it answers with, so an impostor on that address is refused instead
+                        of being handed your key. An unverified host still connects; it just
+                        isn't checked.
+                    </p>
+                    <p class="field-hint" style="margin-bottom:10px">
+                        A host usually answers with <strong>several keys — one per algorithm</strong>
+                        (<code>ssh-ed25519</code> is the modern default, <code>ecdsa-sha2-nistp256</code>
+                        and <code>ssh-rsa</code> are kept for older clients). Whichever the two ends
+                        negotiate is the one checked, so all of them are stored together and
+                        trusted or forgotten as a set. Rescanning re-fetches them from the host
+                        and updates the stored time.
+                    </p>
                     <div id="admin-known-hosts" class="admin-table-container"></div>
-                    <div class="admin-inline-form" style="margin-top:12px">
-                        <input type="text" id="admin-scan-hostname" placeholder="Hostname" style="width:180px">
-                        <input type="number" id="admin-scan-port" placeholder="22" value="22" style="width:70px">
-                        <button id="btn-admin-scan-host" class="btn btn-sm btn-secondary">Scan keys</button>
-                    </div>
                     <div id="admin-host-msg" class="error-msg"></div>
                 </div>
             </div>

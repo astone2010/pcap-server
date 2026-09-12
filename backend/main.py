@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -53,7 +54,20 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 APP_VERSION = "0.1.0-dev.9"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
-app = FastAPI(title="pcap-server", version=APP_VERSION)
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Shutdown only; there is no startup work to do here.
+
+    capture_manager is built further down this module, so it is resolved when
+    the app shuts down rather than captured now -- by then the module has
+    finished importing. This replaced @app.on_event("shutdown"), which
+    starlette 1.x removed.
+    """
+    yield
+    await capture_manager.shutdown()
+
+
+app = FastAPI(title="pcap-server", version=APP_VERSION, lifespan=_lifespan)
 
 db = Database(DATA_DIR / "pcap-server.db")
 
@@ -96,11 +110,6 @@ if _dropped_sessions:
     logger.info("invalidated %d session(s) carried over from a previous run", _dropped_sessions)
 
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    await capture_manager.shutdown()
-
-
 # --- auth helpers ---
 
 class LoginRequest(BaseModel):
@@ -117,15 +126,6 @@ class RegisterRequest(BaseModel):
 
 class TOTPSetupRequest(BaseModel):
     code: str
-
-
-class SaveServerRequest(BaseModel):
-    name: str
-    hostname: str
-    port: int = 22
-    username: str
-    ssh_key_name: str
-    use_sudo: bool = False
 
 
 class SettingUpdate(BaseModel):
@@ -573,19 +573,69 @@ async def admin_list_known_hosts(user: dict = Depends(require_admin)):
     return db.list_known_hosts()
 
 
-@app.post("/api/admin/known-hosts/scan")
-async def admin_scan_host(request: Request, user: dict = Depends(require_admin)):
-    body = await request.json()
-    hostname = body.get("hostname", "").strip()
-    port = int(body.get("port", 22))
+def _endpoint_from_body(body: dict) -> tuple[str, int]:
+    """The (hostname, port) pair both host-key endpoints take.
+
+    Shared so the two cannot drift apart. A non-numeric port used to reach
+    int() unguarded and surface as a 500; it is a bad request.
+    """
+    hostname = str(body.get("hostname", "")).strip()
     if not hostname or any(c in hostname for c in " ;|&$`\\\n\r"):
         raise HTTPException(400, "invalid hostname")
+    try:
+        port = int(body.get("port", 22))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "invalid port")
     if not (1 <= port <= 65535):
         raise HTTPException(400, "invalid port")
+    return hostname, port
+
+
+@app.post("/api/admin/known-hosts/scan")
+async def admin_scan_host(request: Request, user: dict = Depends(require_admin)):
+    hostname, port = _endpoint_from_body(await request.json())
     keys = await ssh_manager.scan_host_keys(hostname, port, user["id"])
     if not keys:
         raise HTTPException(502, "no host keys found")
     return {"ok": True, "keys": keys}
+
+
+@app.get("/api/admin/host-trust")
+async def admin_host_trust(user: dict = Depends(require_admin)):
+    """Every configured host and whether its keys are trusted.
+
+    Driven by the servers that exist rather than a typed-in hostname: the
+    endpoints worth trusting are exactly the ones something connects to, and
+    an admin should not have to retype a host already configured.
+    """
+    known = db.list_known_hosts()
+    by_endpoint: dict[tuple[str, int], list[dict]] = {}
+    for entry in known:
+        by_endpoint.setdefault((entry["hostname"], entry["port"]), []).append(entry)
+
+    hosts = []
+    for endpoint in db.list_server_endpoints():
+        keys = by_endpoint.pop((endpoint["hostname"], endpoint["port"]), [])
+        hosts.append({
+            "hostname": endpoint["hostname"],
+            "port": endpoint["port"],
+            "labels": ", ".join(endpoint["labels"]),
+            "configured": True,
+            "key_types": sorted(k["key_type"] for k in keys),
+            "added_at": min((k["added_at"] for k in keys), default=""),
+        })
+    # Keys for hosts no server points at any more -- still verified against, so
+    # still worth showing and being able to drop.
+    for (hostname, port), keys in sorted(by_endpoint.items()):
+        hosts.append({
+            "hostname": hostname,
+            "port": port,
+            "labels": "",
+            "configured": False,
+            "key_types": sorted(k["key_type"] for k in keys),
+            "added_at": min(k["added_at"] for k in keys),
+        })
+    return hosts
 
 
 @app.delete("/api/admin/known-hosts/{host_id}")
@@ -593,6 +643,20 @@ async def admin_delete_known_host(host_id: int, user: dict = Depends(require_adm
     if not db.delete_known_host(host_id):
         raise HTTPException(404, "known host not found")
     return {"ok": True}
+
+
+@app.post("/api/admin/known-hosts/forget")
+async def admin_forget_host(request: Request, user: dict = Depends(require_admin)):
+    """Drop every key for one endpoint at once.
+
+    Per-key removal reads as broken: the remaining keys still verify the host,
+    and the next scan brings the removed one back with them.
+    """
+    hostname, port = _endpoint_from_body(await request.json())
+    removed = db.forget_known_host(hostname, port)
+    if not removed:
+        raise HTTPException(404, "no stored keys for that host")
+    return {"ok": True, "removed": removed}
 
 
 # --- servers (persistent, per-user) ---
@@ -722,7 +786,7 @@ async def test_server(server_id: str, user: dict = Depends(get_current_user)):
     srv = _require_server(server_id, user["id"])
     try:
         result = await ssh_manager.test_connection(srv)
-        return {"ok": True, "result": result}
+        return {"ok": True, **result}
     except ConnectionError as exc:
         raise HTTPException(502, str(exc))
     except FileNotFoundError as exc:
@@ -731,58 +795,76 @@ async def test_server(server_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(502, "connection failed")
 
 
-# --- saved servers (persistent, per-user) ---
-
-@app.get("/api/saved-servers")
-async def list_saved_servers(user: dict = Depends(get_current_user)):
-    return db.list_saved_servers(user["id"])
-
-
-@app.post("/api/saved-servers")
-async def save_server(req: SaveServerRequest, user: dict = Depends(get_current_user)):
-    await _reject_self_target(req.hostname)
-    key_path = (SSH_KEYS_DIR / req.ssh_key_name).resolve()
-    if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
-        raise HTTPException(400, "invalid key path")
-    server_id = str(uuid.uuid4())
-    db.save_server(server_id, user["id"], req.name, req.hostname, req.port, req.username, req.ssh_key_name, req.use_sudo)
-    return {"ok": True, "id": server_id}
-
-
-@app.put("/api/saved-servers/{server_id}")
-async def update_saved_server(server_id: str, req: SaveServerRequest, user: dict = Depends(get_current_user)):
+@app.put("/api/servers/{server_id}")
+async def update_server(server_id: str, auth: ServerAuth, user: dict = Depends(get_current_user)):
     # Checked on edit too: otherwise a benign server could be repointed at the host.
-    await _reject_self_target(req.hostname)
-    key_path = (SSH_KEYS_DIR / req.ssh_key_name).resolve()
-    if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
-        raise HTTPException(400, "invalid key path")
-    updated = db.update_saved_server(
-        server_id, user["id"], req.name, req.hostname, req.port, req.username, req.ssh_key_name, req.use_sudo
+    await _reject_self_target(auth.hostname)
+    _require_key(auth.ssh_key_name)
+    updated = db.update_active_server(
+        server_id, user["id"], auth.name, auth.hostname, auth.port,
+        auth.username, auth.ssh_key_name, auth.use_sudo,
     )
     if not updated:
-        raise HTTPException(404, "saved server not found")
-    return {"ok": True}
+        raise HTTPException(404, "server not found")
+    return _server_from_row(db.get_active_server(server_id, user["id"]))
 
 
-@app.delete("/api/saved-servers/{server_id}")
-async def delete_saved_server(server_id: str, user: dict = Depends(get_current_user)):
-    if not db.delete_saved_server(server_id, user["id"]):
-        raise HTTPException(404, "saved server not found")
-    return {"ok": True}
+@app.get("/api/usernames")
+async def list_usernames(user: dict = Depends(get_current_user)):
+    """SSH usernames already used, so the add form can offer them back."""
+    return db.list_usernames(user["id"])
 
 
-@app.post("/api/saved-servers/{server_id}/load")
-async def load_saved_server(server_id: str, user: dict = Depends(get_current_user)):
-    saved = db.get_saved_server(server_id, user["id"])
-    if not saved:
-        raise HTTPException(404, "saved server not found")
-    # Profiles stored before this check existed are caught here.
-    await _reject_self_target(saved["hostname"])
-    db.add_active_server(
-        saved["id"], user["id"], saved["name"], saved["hostname"], saved["port"],
-        saved["username"], saved["ssh_key_name"], bool(saved["use_sudo"]),
-    )
-    return _server_from_row(db.get_active_server(saved["id"], user["id"]))
+# --- ad-hoc probes ---
+#
+# Same two checks as the per-server endpoints, but against details typed into
+# the add form rather than a stored row: a server that cannot be reached should
+# be discovered before it is saved, not after.
+
+@app.post("/api/probe/test")
+async def probe_test(auth: ServerAuth, user: dict = Depends(get_current_user)):
+    await _reject_self_target(auth.hostname)
+    _require_key(auth.ssh_key_name)
+    try:
+        result = await ssh_manager.test_connection(auth)
+        return {"ok": True, **result}
+    except ConnectionError as exc:
+        raise HTTPException(502, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception:
+        raise HTTPException(502, "connection failed")
+
+
+@app.post("/api/probe/prereq-check")
+async def probe_prereq_check(auth: ServerAuth, user: dict = Depends(get_current_user)):
+    await _reject_self_target(auth.hostname)
+    _require_key(auth.ssh_key_name)
+    try:
+        result = await ssh_manager.check_prerequisites(auth)
+    except ConnectionError as exc:
+        raise HTTPException(502, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception:
+        logger.exception("prerequisite check failed for %s", auth.hostname)
+        raise HTTPException(502, "prerequisite check failed")
+
+    # Nothing is stored: there is no server row to attach a path to yet. The
+    # path is returned so the check that runs after saving can confirm it.
+    discovered = result.get("tcpdump_path", "")
+    if discovered:
+        try:
+            ServerAuth(hostname=auth.hostname, username=auth.username,
+                       ssh_key_name=auth.ssh_key_name, tcpdump_path=discovered)
+        except Exception:
+            logger.warning("discarding implausible tcpdump path from %s", auth.hostname)
+            discovered = ""
+    return {
+        "checks": result["checks"],
+        "tcpdump_path": discovered,
+        "os": result["facts"]["os_release"].get("PRETTY_NAME", ""),
+    }
 
 
 # --- ssh keys ---

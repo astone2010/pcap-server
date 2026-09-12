@@ -21,6 +21,45 @@ KEEPALIVE_COUNT_MAX = 3     # missed keepalives before the connection is dropped
 FETCH_TIMEOUT = 300        # seconds for the pcap download before it is abandoned
 DOWNLOAD_CHUNK = 64 * 1024  # bytes read per SFTP round trip
 
+# Host key algorithms, weakest first. The rank is what "strongest" is measured
+# against; anything unlisted sorts below everything known rather than above it.
+#
+# ssh-rsa is last among the usable ones because it signs with SHA-1 regardless
+# of the key's size -- OpenSSH disabled it by default in 8.8. ssh-dss is worse
+# still: 1024-bit DSA, removed entirely in OpenSSH 7.0.
+_HOST_KEY_RANK = [
+    "ssh-dss",
+    "ssh-rsa",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "rsa-sha2-256",
+    "rsa-sha2-512",
+    "ssh-ed25519",
+]
+
+
+def host_key_strength(algorithm: str) -> int:
+    """Where an algorithm sits in _HOST_KEY_RANK; -1 if it isn't known."""
+    try:
+        return _HOST_KEY_RANK.index(algorithm)
+    except ValueError:
+        return -1
+
+
+def weaker_host_key_than_available(negotiated: str, available: list[str]) -> str:
+    """The strongest offered algorithm, when it beats the negotiated one.
+
+    Empty when the connection already took the best on offer, so a caller can
+    treat any non-empty result as the thing worth warning about.
+    """
+    if not negotiated or not available:
+        return ""
+    best = max(available, key=host_key_strength)
+    if host_key_strength(best) > host_key_strength(negotiated):
+        return best
+    return ""
+
 
 class RemoteCapture:
     """A running tcpdump and the connection carrying it, closed as one unit.
@@ -177,16 +216,43 @@ class SSHManager:
 
         return conn
 
-    async def test_connection(self, server: ServerAuth) -> str:
+    async def test_connection(self, server: ServerAuth) -> dict:
+        """Connect, and report which host key the handshake actually settled on.
+
+        Which algorithm is negotiated is invisible otherwise, and a host that
+        still has an ssh-rsa key will happily use it with a client that offers
+        nothing better. Reporting it turns that into something an operator can
+        see; it is never a reason to refuse the connection.
+        """
         try:
             conn = await self._connect(server)
             async with conn:
                 result = await conn.run("echo ok", check=True, timeout=10)
-                return result.stdout.strip()
+                negotiated = self._negotiated_host_key(conn)
+                stored = [e["key_type"] for e in self._db.get_known_hosts(server.hostname, server.port)]
+                return {
+                    "output": result.stdout.strip(),
+                    "host_key_algorithm": negotiated,
+                    "stronger_available": weaker_host_key_than_available(negotiated, stored),
+                }
         except (ConnectionError, FileNotFoundError):
             raise
         except Exception:
             raise ConnectionError("SSH connection failed")
+
+    @staticmethod
+    def _negotiated_host_key(conn) -> str:
+        """asyncssh names this differently across versions, and it is only ever
+        informational -- never fail a working connection over reading it."""
+        try:
+            key = conn.get_server_host_key()
+        except Exception:
+            return ""
+        algorithm = getattr(key, "algorithm", "") if key else ""
+        # asyncssh returns the algorithm as wire bytes on most versions.
+        if isinstance(algorithm, (bytes, bytearray)):
+            algorithm = algorithm.decode("ascii", "replace")
+        return algorithm
 
     async def list_interfaces(self, server: ServerAuth) -> list[str]:
         # /sys/class/net needs no privileges, unlike `tcpdump -D` on most hosts.
@@ -214,7 +280,9 @@ class SSHManager:
         facts = parse_prereq_output(raw)
         return {
             "facts": facts,
-            "checks": evaluate_prereqs(facts, bool(getattr(server, "use_sudo", False))),
+            "checks": evaluate_prereqs(
+                facts, bool(getattr(server, "use_sudo", False)), server.username
+            ),
             "tcpdump_path": facts["tcpdump_path"],
         }
 
@@ -390,8 +458,19 @@ if [ -z "$TD" ]; then
 fi
 if [ -n "$TD" ]; then
     echo "VERSION=$("$TD" --version 2>&1 | head -1)"
-    if command -v getcap >/dev/null 2>&1; then
-        echo "CAPS=$(getcap "$TD" 2>/dev/null)"
+    # Same sbin fallback as tcpdump above: getcap is installed into /sbin on
+    # Debian and Ubuntu, which a non-login SSH session for a non-root user
+    # does not have on PATH. Trusting command -v alone reported "getcap is not
+    # installed" on hosts where it was installed all along.
+    GC=$(command -v getcap 2>/dev/null)
+    if [ -z "$GC" ]; then
+        for p in /sbin/getcap /usr/sbin/getcap /usr/bin/getcap /bin/getcap \
+                 /usr/local/sbin/getcap /usr/local/bin/getcap; do
+            if [ -x "$p" ]; then GC="$p"; break; fi
+        done
+    fi
+    if [ -n "$GC" ]; then
+        echo "CAPS=$("$GC" "$TD" 2>/dev/null)"
     else
         echo "CAPS_UNAVAILABLE=1"
     fi
@@ -480,26 +559,54 @@ def parse_prereq_output(raw: str) -> dict:
 # probe, because a template encodes a guess that goes stale while a probe reads
 # the truth off the host.
 _INSTALL_HINTS = {
-    ("debian", "ubuntu", "raspbian", "linuxmint", "pop", "devuan"): "sudo apt-get install tcpdump",
-    ("rhel", "centos", "rocky", "almalinux", "fedora", "ol"): "sudo dnf install tcpdump",
-    ("opensuse", "opensuse-leap", "opensuse-tumbleweed", "sles", "sled"): "sudo zypper install tcpdump",
-    ("alpine",): "sudo apk add tcpdump",
-    ("arch", "manjaro", "endeavouros"): "sudo pacman -S tcpdump",
-    ("freebsd",): "sudo pkg install tcpdump",
+    ("debian", "ubuntu", "raspbian", "linuxmint", "pop", "devuan"): "sudo apt-get install {package}",
+    ("rhel", "centos", "rocky", "almalinux", "fedora", "ol"): "sudo dnf install {package}",
+    ("opensuse", "opensuse-leap", "opensuse-tumbleweed", "sles", "sled"): "sudo zypper install {package}",
+    ("alpine",): "sudo apk add {package}",
+    ("arch", "manjaro", "endeavouros"): "sudo pacman -S {package}",
+    ("freebsd",): "sudo pkg install {package}",
+}
+
+# getcap ships under a different name per family, unlike tcpdump. FreeBSD has no
+# Linux file capabilities at all, so there is nothing there to suggest.
+_GETCAP_PACKAGES = {
+    ("debian", "ubuntu", "raspbian", "linuxmint", "pop", "devuan"): "libcap2-bin",
+    ("rhel", "centos", "rocky", "almalinux", "fedora", "ol"): "libcap",
+    ("opensuse", "opensuse-leap", "opensuse-tumbleweed", "sles", "sled"): "libcap-progs",
+    ("alpine",): "libcap",
+    ("arch", "manjaro", "endeavouros"): "libcap",
+    ("freebsd",): "",
 }
 
 
-def install_hint(os_release: dict) -> str:
+def _by_os_family(os_release: dict, table: dict):
     ids = []
     for key in ("ID", "ID_LIKE"):
         ids += os_release.get(key, "").lower().split()
-    for names, cmd in _INSTALL_HINTS.items():
+    for names, value in table.items():
         if any(i in names for i in ids):
-            return cmd
-    return "install tcpdump using this host's package manager"
+            return value
+    return None
 
 
-def evaluate_prereqs(facts: dict, use_sudo: bool) -> list[dict]:
+def install_hint(os_release: dict, package: str = "tcpdump") -> str:
+    command = _by_os_family(os_release, _INSTALL_HINTS)
+    if command:
+        return command.format(package=package)
+    return f"install {package} using this host's package manager"
+
+
+def getcap_install_hint(os_release: dict) -> str:
+    """How to get getcap on this host, or "" where the concept doesn't apply."""
+    package = _by_os_family(os_release, _GETCAP_PACKAGES)
+    if package is None:
+        return "install the package providing getcap using this host's package manager"
+    if not package:
+        return ""
+    return install_hint(os_release, package)
+
+
+def evaluate_prereqs(facts: dict, use_sudo: bool, username: str = "") -> list[dict]:
     """One entry per check: status ok | warn | fail, plus what to run on a miss.
 
     Remediation is always text for the operator. Nothing here executes it.
@@ -555,9 +662,8 @@ def evaluate_prereqs(facts: dict, use_sudo: bool) -> list[dict]:
             "demanding a password. pcap-server runs non-interactively and cannot supply one."
             + (f" This user is in: {sudo_group}." if sudo_group else
                " This user is in none of sudo/wheel/admin."),
-            f"Grant passwordless sudo for tcpdump only:\n"
-            f"  echo '{_sudoers_line(path)}' | sudo tee /etc/sudoers.d/pcap-server\n"
-            f"  sudo chmod 0440 /etc/sudoers.d/pcap-server\n"
+            f"Grant passwordless sudo for tcpdump only — not NOPASSWD: ALL:\n"
+            f"{_sudoers_remedy(path, username)}\n"
             f"Or avoid sudo altogether:\n"
             f"  sudo setcap cap_net_raw,cap_net_admin+eip {path}")
     elif use_sudo:
@@ -572,12 +678,18 @@ def evaluate_prereqs(facts: dict, use_sudo: bool) -> list[dict]:
             f"Preferred — grant the capability, no sudo required:\n"
             f"  sudo setcap cap_net_raw,cap_net_admin+eip {path}\n"
             f"Or tick 'Run tcpdump with sudo' on this server and add:\n"
-            f"  echo '{_sudoers_line(path)}' | sudo tee /etc/sudoers.d/pcap-server")
+            f"{_sudoers_remedy(path, username)}")
 
     if facts["caps_unavailable"] and not has_caps and uid != 0:
+        getcap_hint = getcap_install_hint(facts["os_release"])
         add("Capability check", "warn",
-            "getcap is not installed, so file capabilities could not be read. tcpdump may "
-            "already be permitted; this check cannot confirm it.")
+            "getcap is not installed, so file capabilities could not be read. getcap reports "
+            "whether tcpdump already carries cap_net_raw, which would let it capture with no "
+            "sudo at all. Captures are unaffected either way -- this check just cannot tell "
+            "you which privilege route is already in place.",
+            (f"To let this check read capabilities:\n  {getcap_hint}\n"
+             f"Only needed for the check itself -- setcap works without it."
+             if getcap_hint else ""))
 
     # Writable /tmp for the intermediate pcap.
     if facts["tmp_writable"] is True:
@@ -598,5 +710,30 @@ def evaluate_prereqs(facts: dict, use_sudo: bool) -> list[dict]:
     return checks
 
 
-def _sudoers_line(tcpdump_path: str) -> str:
-    return f"%pcap ALL=(root) NOPASSWD: {tcpdump_path}"
+def _sudoers_line(tcpdump_path: str, username: str = "") -> str:
+    """The narrowest rule that lets a capture run: this one binary, nothing else.
+
+    Never the blanket `NOPASSWD: ALL` that a search for "passwordless sudo"
+    turns up -- that would hand unrestricted root to an account whose key is
+    sitting in this app's key store, to buy a privilege only tcpdump needs.
+    """
+    who = username if username else "%pcap"
+    return f"{who} ALL=(root) NOPASSWD: {tcpdump_path}"
+
+
+def _sudoers_remedy(tcpdump_path: str, username: str = "") -> str:
+    """Copy-pasteable steps that install the scoped rule without risking sudo.
+
+    Piped through `visudo`, not written with `tee`: visudo validates before
+    installing, and a syntactically broken file dropped into /etc/sudoers.d/
+    breaks sudo for everyone on the host until someone with existing root
+    fixes it by hand.
+    """
+    line = _sudoers_line(tcpdump_path, username)
+    steps = ""
+    if not username:
+        steps = "  sudo groupadd -f pcap && sudo usermod -aG pcap <user>\n"
+    return (
+        steps
+        + f"  echo '{line}' | sudo EDITOR='tee' visudo -f /etc/sudoers.d/pcap-server"
+    )

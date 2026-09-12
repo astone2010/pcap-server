@@ -205,3 +205,107 @@ async def test_capture_limit_exceeded_message_is_actionable(manager):
     req = CaptureRequest(server_id="s1", interface="eth0")
     with pytest.raises(CaptureLimitExceeded, match="3"):
         await mgr.start(req, make_server(), user_id="u1")
+
+
+# --- start() failing to launch: the leaked concurrency slot -------------------
+#
+# start() registers the capture as RUNNING before run_tcpdump, and only
+# _monitor ever ends a RUNNING capture. When the launch itself raised, no
+# monitor was created, so the record stayed RUNNING for the life of the
+# process and held a slot against max_concurrent_captures. Every unreachable
+# host burned one, and after max_concurrent_captures of them nothing could
+# start again until a restart swept them.
+
+
+class ExplodingSSHManager(FakeSSHManager):
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self._error = error
+
+    async def run_tcpdump(self, server, args, remote_path, *, duration=None):
+        self.run_tcpdump_calls += 1
+        raise self._error
+
+
+@pytest.fixture()
+async def exploding_manager(tmp_path):
+    def build(error):
+        ssh = ExplodingSSHManager(error)
+        settings = make_settings(max_concurrent=2)
+        return CaptureManager(ssh, tmp_path, lambda k: settings[k], FakeCaptureDB(), vault=None), ssh
+    yield build
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionError("SSH connection failed"),
+        FileNotFoundError("SSH key not found: alice-key"),
+        RuntimeError("sudo: a password is required"),
+    ],
+    ids=["unreachable", "missing-key", "sudo-refused"],
+)
+async def test_failed_launch_does_not_hold_a_concurrency_slot(exploding_manager, error):
+    mgr, _ = exploding_manager(error)
+    req = CaptureRequest(server_id="s1", interface="eth0")
+
+    with pytest.raises(type(error)):
+        await mgr.start(req, make_server(), user_id="u1")
+
+    assert mgr.active_count() == 0
+
+
+async def test_failed_launch_is_recorded_as_failed_not_left_running(exploding_manager):
+    mgr, _ = exploding_manager(ConnectionError("SSH connection failed"))
+    req = CaptureRequest(server_id="s1", interface="eth0")
+
+    with pytest.raises(ConnectionError):
+        await mgr.start(req, make_server(), user_id="u1")
+
+    info = next(iter(mgr.captures.values()))
+    assert info.status == CaptureStatus.FAILED
+    assert "SSH connection failed" in info.error
+    # Stamped, so the row does not read as a capture still in progress.
+    assert info.stopped_at is not None
+
+
+async def test_repeated_failed_launches_never_exhaust_the_limit(exploding_manager):
+    """The consecutive-capture symptom: the limit is 2, so without releasing
+    the slot the third attempt would be refused with CaptureLimitExceeded
+    instead of the real reason the host cannot be reached."""
+    mgr, _ = exploding_manager(ConnectionError("SSH connection failed"))
+    req = CaptureRequest(server_id="s1", interface="eth0")
+
+    for _ in range(5):
+        with pytest.raises(ConnectionError):
+            await mgr.start(req, make_server(), user_id="u1")
+
+    assert mgr.active_count() == 0
+
+
+async def test_a_good_capture_still_starts_after_failed_launches(exploding_manager, tmp_path):
+    mgr, _ = exploding_manager(ConnectionError("SSH connection failed"))
+    req = CaptureRequest(server_id="s1", interface="eth0")
+    for _ in range(3):
+        with pytest.raises(ConnectionError):
+            await mgr.start(req, make_server(), user_id="u1")
+
+    # The host comes back; the next attempt must not be refused by the limiter.
+    mgr._ssh = FakeSSHManager()
+    try:
+        info = await mgr.start(req, make_server(), user_id="u1")
+        assert info.status == CaptureStatus.RUNNING
+    finally:
+        await mgr.shutdown()
+
+
+async def test_failed_launch_is_persisted_so_a_restart_does_not_resurrect_it(exploding_manager):
+    mgr, _ = exploding_manager(ConnectionError("SSH connection failed"))
+    req = CaptureRequest(server_id="s1", interface="eth0")
+
+    with pytest.raises(ConnectionError):
+        await mgr.start(req, make_server(), user_id="u1")
+
+    rows = mgr._db.list_captures()
+    assert len(rows) == 1
+    assert rows[0]["status"] == CaptureStatus.FAILED.value

@@ -43,6 +43,25 @@ class ServerAuth(BaseModel):
             raise ValueError("invalid hostname")
         return v
 
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        """Constrained to a real login name's characters.
+
+        The prerequisite check prints a sudoers rule naming this user for the
+        operator to paste as root. Everything sudoers gives meaning to --
+        whitespace, `#`, `,`, `=`, `(`, `)`, `:`, `!` -- is excluded here, so a
+        username can never extend that rule into a broader grant than the one
+        binary it names.
+        """
+        v = v.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._@-]{0,63}", v):
+            raise ValueError(
+                "username must be 1-64 characters of letters, digits, dot, "
+                "underscore, hyphen or @, and cannot start with a hyphen"
+            )
+        return v
+
     @field_validator("ssh_key_name")
     @classmethod
     def validate_key_name(cls, v: str) -> str:
