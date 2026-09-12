@@ -15,7 +15,8 @@ in your browser.
 - **Probe before you commit** — test the connection and run the prerequisite check from the add form, before the server is saved
 - **sudo support** — run tcpdump via `sudo -n` per server, for non-root SSH users
 - **Interface discovery** — pick the capture interface from a list read off the target host
-- **BPF filtering** — full Berkeley Packet Filter syntax selects the traffic, with an in-app cheatsheet
+- **BPF filtering** — full Berkeley Packet Filter syntax selects the traffic, with an in-app cheatsheet and clickable examples
+- **Display filtering** — full Wireshark display-filter syntax in the viewer, with its own cheatsheet, clickable examples, and a filter tshark rejects reported rather than shown as an empty list
 - **Prerequisite check** — read-only probe for tcpdump, privilege, PATH and SELinux; never installs anything
 - **View flags** — MAC columns and timestamp format, each documenting what it does
 - **Optional name resolution** — off by default, because resolving addresses from a capture queries DNS
@@ -101,6 +102,30 @@ Shell metacharacters are rejected in the filter, which is passed to tcpdump as a
 single quoted argument after `--`. `-z`, `-W`, `-G`, `-C`, `-r`, `-F`, `-V` and
 `-Z` are permanently refused: tcpdump may be running under `sudo`, and those turn
 a capture into code execution or file reads as root.
+
+## Two filters, two languages
+
+The one thing worth getting straight before you use either.
+
+| | Where | When it runs | Syntax | Example |
+| --- | --- | --- | --- | --- |
+| **Capture filter** | Capture tab | tcpdump, on the remote host, as packets go past | BPF | `tcp port 443` |
+| **Display filter** | Viewer | tshark, when the list is drawn | Wireshark display syntax | `tcp.port == 443` |
+
+The capture filter decides **what is recorded**, and anything it excludes is
+gone for good. The display filter decides **what you see** out of what was
+already recorded, so it costs nothing to change your mind.
+
+Display filters name a protocol field with a dot and compare it with an
+operator — `ip.addr == 10.0.0.1`, `frame.len > 1000`,
+`http.request.method == "GET"` — or use a bare protocol name on its own, like
+`dns`. Combine with `and`, `or`, `not`, or with `&&`, `||`, `!`. Both boxes
+offer clickable examples underneath them, and the Viewer has a full cheatsheet
+behind **What goes in the display filter?**
+
+A display filter tshark cannot parse is reported back with tshark's own message
+and the position it objected to. An empty packet list therefore always means the
+filter was valid and nothing matched it.
 
 ## Checking a server before you capture
 

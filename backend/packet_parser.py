@@ -188,7 +188,11 @@ async def get_packet_list(
 
     stdout, stderr, rc = await _run_tool(cmd, source)
     if rc != 0:
-        logger.warning("tshark stderr: %s", stderr.decode()[:500])
+        logger.warning("tshark stderr: %s", stderr.decode(errors="replace")[:500])
+        if display_filter:
+            # A valid filter that matches nothing still exits 0, so a non-zero
+            # exit with a filter present means the filter is the problem.
+            raise DisplayFilterError(_filter_rejection(stderr))
 
     packets = []
     for line in stdout.decode(errors="replace").splitlines():
@@ -274,7 +278,59 @@ def _flatten_fields(d: dict, prefix: str = "") -> list[dict]:
     return result
 
 
+class DisplayFilterError(ValueError):
+    """The display filter was rejected -- by us, or by tshark itself.
+
+    Distinct from "nothing matched", which is a legitimate empty result. Both
+    used to reach the user as the same thing: a mistyped field name produced an
+    empty packet list reading "No packets match", so a typo was indistinguishable
+    from a filter that genuinely selected nothing.
+    """
+
+
+# Rejected on the way in. `&` and `|` are deliberately NOT here: the display
+# filter reaches tshark through create_subprocess_exec as a single argv element,
+# with no shell anywhere on the path, and Wireshark's syntax needs both -- `&&`
+# and `||` are the operators most people type, and `&` is bitwise matching such
+# as `tcp.flags & 0x02`. Rejecting them turned correct filter syntax into
+# "contains forbidden characters".
+#
+# The capture filter is a different matter and keeps the stricter rule: it goes
+# to tcpdump inside a command string over SSH, where a shell does parse it.
+_FILTER_FORBIDDEN = set(";$`\\")
+_FILTER_MAX_LEN = 1024
+
+
 def _validate_display_filter(f: str) -> None:
-    forbidden = set(";|&$`\\")
-    if any(c in forbidden for c in f):
-        raise ValueError("display filter contains forbidden characters")
+    if len(f) > _FILTER_MAX_LEN:
+        raise DisplayFilterError(
+            f"display filter is too long (limit {_FILTER_MAX_LEN} characters)"
+        )
+    found = sorted(set(f) & _FILTER_FORBIDDEN)
+    if found:
+        raise DisplayFilterError(
+            "display filter cannot contain " + " ".join(repr(c) for c in found)
+        )
+
+
+def _filter_rejection(stderr: bytes) -> str:
+    """tshark's own complaint about a filter, tidied for display.
+
+    It writes something like:
+
+        tshark: Constant expression is invalid.
+            tcp.porrt == 80
+            ^~~~~~~~~~~~~~~
+
+    The caret line is the useful part, so it is kept; the "Running as user"
+    banner and the tool name prefix are not.
+    """
+    lines = [
+        line.rstrip()
+        for line in stderr.decode(errors="replace").splitlines()
+        if line.strip() and "Running as user" not in line
+    ]
+    if not lines:
+        return "tshark rejected this display filter"
+    lines[0] = lines[0].removeprefix("tshark: ")
+    return "\n".join(lines)[:400]

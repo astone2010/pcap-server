@@ -41,7 +41,12 @@ from backend.models import (
     ServerInfo,
     UsernameRequest,
 )
-from backend.packet_parser import ALLOWED_VIEW_FLAGS, get_packet_detail, get_packet_list
+from backend.packet_parser import (
+    ALLOWED_VIEW_FLAGS,
+    DisplayFilterError,
+    get_packet_detail,
+    get_packet_list,
+)
 from backend.localnet import SELF_CAPTURE_EXPLANATION, describe_if_local
 from backend.ssh_manager import SSHManager
 from backend.vault import CaptureVault, StartupRefused
@@ -1117,6 +1122,10 @@ async def list_packets(
             resolve_names=resolve_names,
         )
         return {"packets": packets, "total": info.packet_count}
+    except DisplayFilterError as exc:
+        # The filter is wrong, not the capture. Structured so the UI can put the
+        # message under the filter box instead of blanking the packet list.
+        raise HTTPException(400, {"code": "bad_display_filter", "reason": str(exc)})
     except Exception:
         logger.exception("packet list failed")
         raise HTTPException(500, "failed to list packets")

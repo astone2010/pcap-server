@@ -1,7 +1,7 @@
 # Dev Skills gate state
 Track: work commit
 Version: 0.1.0-dev.10 (unchanged -- this commit does not bump anything)
-Updated: 2026-09-12 (TOTP enforcement)
+Updated: 2026-09-12 (filter UX)
 
 🔢 VERSION    ⬜ not owed on a work commit. No refs touched; main.py, the
                 compose file and the CHANGELOG heading all still read
@@ -40,6 +40,15 @@ Updated: 2026-09-12 (TOTP enforcement)
                 are always the user's to run. Until
                 `git ls-remote --tags origin v0.1.0-dev.10` shows it, dev.10 is
                 an unfinished Gate 6.
+
+Security note on the filter change:
+  * The display filter's character rule was LOOSENED to allow & and |. Justified
+    by the call path, not by convenience: the filter reaches tshark through
+    create_subprocess_exec as one argv element with no shell involved, which is
+    now asserted by a test that runs a probe and checks argv rather than being
+    claimed in a comment. ; $ ` and backslash stay rejected, a length cap was
+    added, and the capture filter keeps the stricter rule because it does travel
+    inside a shell command string over SSH.
 
 Closed this session:
   * TOTP enrolment is now enforced on get_current_user, so all 24 protected

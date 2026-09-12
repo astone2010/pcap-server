@@ -1389,3 +1389,64 @@ body {
 }
 
 .enc-notice-bad strong { color: var(--danger); }
+
+/* --- filter suggestions and errors ------------------------------------- */
+/* Chips rather than a wall of prose: the fastest way to learn a filter
+   language is to run one and edit it. */
+.filter-help-row {
+    padding: 0 16px 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.filter-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.filter-suggestions-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-right: 2px;
+}
+
+.filter-chip {
+    font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 0.72rem;
+    line-height: 1.4;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated, var(--bg-secondary));
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.filter-chip:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.filter-chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+/* tshark's own complaint, caret line included, so the whitespace has to
+   survive. */
+.filter-error {
+    font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    overflow-x: auto;
+    color: var(--danger);
+    border-left: 2px solid var(--danger);
+    padding: 6px 10px;
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+    border-radius: 0 4px 4px 0;
+}

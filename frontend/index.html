@@ -167,6 +167,7 @@
                 <div class="form-group bpf-filter">
                     <label>BPF filter <span class="hint">&mdash; this is how you capture specific traffic</span></label>
                     <input type="text" id="cap-bpf" placeholder="e.g. tcp port 80 and host 10.0.0.1">
+                    <div id="bpf-suggestions" class="filter-suggestions"></div>
                 </div>
                 <button id="btn-start-capture" class="btn btn-primary btn-sm">Start capture</button>
             </div>
@@ -256,6 +257,63 @@
                     <input type="text" id="display-filter" placeholder="Display filter (e.g. tcp, ip.addr == 10.0.0.1)">
                     <button id="btn-apply-filter" class="btn btn-sm btn-secondary">Apply</button>
                     <button id="btn-download-capture" class="btn btn-sm btn-secondary">Download .pcap</button>
+                </div>
+                <div class="filter-help-row">
+                    <div id="display-filter-suggestions" class="filter-suggestions"></div>
+                    <div id="display-filter-error" class="filter-error" hidden></div>
+                    <details class="explainer">
+                        <summary>What goes in the display filter?</summary>
+                        <div class="explainer-body">
+                            <p>
+                                <strong>This is not the same language as the BPF filter on the
+                                Capture tab</strong>, and that is the single thing most worth
+                                knowing here. They run at different times and they are different
+                                syntaxes.
+                            </p>
+                            <table class="explainer-table">
+                                <tr>
+                                    <td><strong>BPF filter</strong><br><span class="hint">Capture tab</span></td>
+                                    <td>Decides <strong>what is recorded</strong>. Applied by tcpdump
+                                        on the remote host as the packets go past. Anything it excludes
+                                        is gone for good.</td>
+                                    <td><code>tcp port 443</code></td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Display filter</strong><br><span class="hint">here</span></td>
+                                    <td>Decides <strong>what you see</strong> out of what was already
+                                        recorded. Applied by tshark when the list is drawn, so it costs
+                                        nothing to change your mind.</td>
+                                    <td><code>tcp.port == 443</code></td>
+                                </tr>
+                            </table>
+                            <p>
+                                The shape of the difference: BPF says <code>tcp port 443</code>,
+                                display filter says <code>tcp.port == 443</code>. Display filters
+                                name a protocol field with a dot and compare it with an operator.
+                                A bare protocol name on its own also works &mdash; <code>dns</code>
+                                shows every DNS packet.
+                            </p>
+                            <table class="explainer-table">
+                                <tr><td><code>ip.addr == 10.0.0.1</code></td><td>either direction, one host</td></tr>
+                                <tr><td><code>ip.src == 10.0.0.1</code></td><td>from that host only (<code>ip.dst</code> for the other way)</td></tr>
+                                <tr><td><code>tcp.port == 443</code></td><td>one TCP port, either end</td></tr>
+                                <tr><td><code>http or dns</code></td><td>combine with <code>and</code>, <code>or</code>, <code>not</code></td></tr>
+                                <tr><td><code>tcp.flags.syn == 1 and tcp.flags.ack == 0</code></td><td>connection attempts</td></tr>
+                                <tr><td><code>tcp.analysis.retransmission</code></td><td>what Wireshark flagged as a retransmission</td></tr>
+                                <tr><td><code>frame.len &gt; 1000</code></td><td>numeric comparison on any field</td></tr>
+                                <tr><td><code>http.request.method == "GET"</code></td><td>string values go in quotes</td></tr>
+                                <tr><td><code>dns.qry.name contains "example"</code></td><td><code>contains</code> for substrings, <code>matches</code> for regex</td></tr>
+                                <tr><td><code>!(arp or icmp)</code></td><td><code>!</code> negates, brackets group</td></tr>
+                            </table>
+                            <p class="explainer-note">
+                                <code>&amp;&amp;</code>, <code>||</code> and <code>!</code> work as
+                                well as the word forms. A filter this tool cannot run is reported
+                                back with tshark's own message and the position it objected to,
+                                rather than an empty packet list &mdash; an empty list here always
+                                means the filter was valid and nothing matched it.
+                            </p>
+                        </div>
+                    </details>
                 </div>
                 <div class="view-options" style="padding:8px 16px">
                     <div class="flag-groups">

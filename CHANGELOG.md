@@ -29,6 +29,29 @@
   an array of `{loc, msg, type}`; only the `msg` fields are written for a person
   to read.
 
+### Fixed
+
+- **A mistyped display filter looked exactly like one that matched nothing.**
+  Both produced an empty packet list reading "No packets match", so a typo in a
+  field name was indistinguishable from a correct filter selecting no packets.
+  tshark exits non-zero on an expression it cannot parse and zero when a valid
+  filter matches nothing, so the two are told apart now: a rejected filter comes
+  back with tshark's own message and the caret line pointing at the token it
+  objected to, shown under the filter box, with the previous packet list left in
+  place.
+
+### Changed
+
+- **The display filter no longer refuses valid Wireshark syntax.** `&` and `|`
+  were rejected as shell metacharacters, which ruled out `&&`, `||` and bitwise
+  matching such as `tcp.flags & 0x02` — the operators most people type. The
+  display filter reaches tshark through `create_subprocess_exec` as a single
+  argument with no shell anywhere on the path, so those characters are text for
+  tshark to parse, not commands; there is now a test asserting exactly that
+  rather than an assurance in a comment. `;`, `$`, backtick and backslash stay
+  rejected, and the capture filter keeps the stricter rule, because that one
+  does travel inside a command string over SSH.
+
 ### Security
 
 - **Two-factor authentication is now enforced by the API, not only by the UI.**
@@ -44,6 +67,16 @@
   than an opaque 403.
 
 ### Added
+
+- **Both filters now offer clickable examples**, and the display filter has real
+  documentation. The BPF examples existed only inside the "Where are the tcpdump
+  flags?" explainer, and the display filter had nothing at all beyond its
+  placeholder text — so the two filters people most need help with were the two
+  with the least of it. The viewer gains a cheatsheet whose first point is the
+  one that actually trips people up: the display filter is not the same language
+  as the capture filter. `tcp port 443` versus `tcp.port == 443`, applied at
+  different times, for different purposes.
+
 
 - **Running captures report how many packets they have taken.** `tcpdump -v`
   under `-w` prints its running total to stderr once a second, and the monitor

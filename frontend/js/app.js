@@ -37,6 +37,11 @@ async function api(path, options = {}) {
         // bootstrap already routes there off /api/auth/status, so reaching this
         // means a stale tab or a call that ran before the gate -- send them to
         // the enrolment screen rather than showing an opaque 403.
+        if (detail && typeof detail === "object" && detail.code === "bad_display_filter") {
+            const err = new Error(detail.reason);
+            err.badDisplayFilter = true;
+            throw err;
+        }
         if (detail && typeof detail === "object" && detail.code === "totp_setup_required") {
             showTotpSetup().catch(() => {});
             throw new Error(detail.reason);
@@ -365,6 +370,8 @@ function enterApp() {
     }
     initTabs();
     initFlagPicker();
+    renderFilterSuggestions("bpf-suggestions", BPF_SUGGESTIONS);
+    renderFilterSuggestions("display-filter-suggestions", DISPLAY_SUGGESTIONS);
     loadServers();
     loadCaptures();
     setInterval(refreshRunningCaptures, 3000);
@@ -1138,6 +1145,7 @@ async function viewCapture(id) {
     renderPacketLegend();
     setViewerLabel(id);
     $("display-filter").value = "";
+    showDisplayFilterError("");
     $("packet-detail-tree").innerHTML = '<div class="empty-state" style="font-size:0.75rem">Click a packet above</div>';
     $("hex-dump").textContent = "";
 
@@ -1201,6 +1209,51 @@ function applyTimeColumnWidth(flags) {
     }
 }
 
+// Clickable starting points for both filters. The BPF examples existed only
+// buried inside the "Where are the tcpdump flags?" explainer, and the display
+// filter had nothing at all beyond its placeholder -- so the two filters people
+// most needed help with were the two with the least of it.
+const BPF_SUGGESTIONS = [
+    ["host 10.0.0.1", "one host, both directions"],
+    ["tcp port 443", "one TCP port"],
+    ["port 53", "DNS, TCP and UDP"],
+    ["net 192.168.1.0/24", "a whole subnet"],
+    ["icmp or arp", "protocols by name"],
+    ["not port 22", "everything except SSH"],
+    ["tcp[tcpflags] & tcp-syn != 0", "connection attempts"],
+];
+
+const DISPLAY_SUGGESTIONS = [
+    ["ip.addr == 10.0.0.1", "one host, either direction"],
+    ["tcp.port == 443", "one TCP port"],
+    ["dns", "a protocol on its own"],
+    ["http.request", "requests only"],
+    ["tcp.flags.syn == 1 and tcp.flags.ack == 0", "connection attempts"],
+    ["tcp.analysis.retransmission", "retransmissions"],
+    ["frame.len > 1000", "large frames"],
+    ["!(arp or icmp)", "everything except noise"],
+];
+
+function renderFilterSuggestions(containerId, suggestions) {
+    const el = $(containerId);
+    if (!el) return;
+    el.innerHTML = '<span class="filter-suggestions-label">Try:</span>'
+        + suggestions
+            .map(([expr, why]) =>
+                `<button type="button" class="filter-chip" data-action="use-filter"
+                         data-id="${escHtml(expr)}" title="${escHtml(why)}">${escHtml(expr)}</button>`)
+            .join("");
+}
+
+function showDisplayFilterError(message) {
+    const el = $("display-filter-error");
+    if (!el) return;
+    // textContent, not innerHTML: this carries tshark's own output, including
+    // the caret line that points at the offending token.
+    el.textContent = message || "";
+    el.hidden = !message;
+}
+
 async function loadPackets(captureId, filter = "") {
     const tbody = $("packet-tbody");
     const flags = getSelectedFlags();
@@ -1210,6 +1263,10 @@ async function loadPackets(captureId, filter = "") {
     const span = showMac ? 9 : 7;
     const mac = showMac ? "" : " hidden";
 
+    // Kept so a rejected filter can put the packets back. The spinner replaces
+    // them before the request goes out, and a filter the server refuses would
+    // otherwise leave a spinner that never resolves where the list used to be.
+    const previousRows = tbody.innerHTML;
     tbody.innerHTML = `<tr><td colspan="${span}" style="text-align:center;padding:20px"><span class="spinner"></span> Loading...</td></tr>`;
 
     try {
@@ -1220,6 +1277,7 @@ async function loadPackets(captureId, filter = "") {
             resolve_names: resolveNamesEnabled() ? "true" : "false",
         });
         const data = await api(`/api/captures/${captureId}/packets?${query}`);
+        showDisplayFilterError("");
         if (!data.packets.length) {
             tbody.innerHTML = `<tr><td colspan="${span}" style="text-align:center;padding:20px;color:var(--text-muted)">No packets match</td></tr>`;
             return;
@@ -1241,8 +1299,25 @@ async function loadPackets(captureId, filter = "") {
             )
             .join("");
     } catch (e) {
+        if (e.badDisplayFilter) {
+            // The capture is fine and the previous list is still meaningful, so
+            // put it back and show the complaint under the box that caused it.
+            tbody.innerHTML = previousRows;
+            showDisplayFilterError(e.message);
+            return;
+        }
         tbody.innerHTML = `<tr><td colspan="${span}" style="color:var(--danger);padding:20px">${escHtml(e.message)}</td></tr>`;
     }
+}
+
+function useFilterSuggestion(expr, el) {
+    // Which box the chip belongs to is decided by where it sits, so one handler
+    // serves both filters.
+    const inBpf = el.closest("#bpf-suggestions") !== null;
+    const box = $(inBpf ? "cap-bpf" : "display-filter");
+    box.value = expr;
+    box.focus();
+    if (!inBpf) applyDisplayFilter();
 }
 
 function applyDisplayFilter() {
@@ -1916,6 +1991,12 @@ function initEventDelegation() {
     });
     delegate("admin-ssh-keys", {
         "delete-key": (id) => adminDeleteKey(id),
+    });
+    delegate("bpf-suggestions", {
+        "use-filter": (expr, el) => useFilterSuggestion(expr, el),
+    });
+    delegate("display-filter-suggestions", {
+        "use-filter": (expr, el) => useFilterSuggestion(expr, el),
     });
     delegate("admin-usernames", {
         "rename-username": (id) => adminRenameUsername(id),
