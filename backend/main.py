@@ -250,13 +250,21 @@ def _require_secure_transport(request: Request) -> None:
 # submitting a form. frame-ancestors stops the page being framed for clickjacking,
 # and base-uri stops a injected <base> silently re-pointing every relative URL.
 #
-# script-src still needs 'unsafe-inline' because the UI uses 33 inline onclick
-# handlers, and an attribute handler cannot carry a nonce. Moving those to
-# addEventListener is what would let this become a genuinely strict policy; it
-# is a mechanical change, tracked as follow-up.
+# script-src no longer needs 'unsafe-inline': every onclick/onchange attribute
+# in the UI was moved to addEventListener (delegate()/initStaticHandlers() in
+# app.js), so the only inline script left is the theme-flash-prevention
+# snippet in index.html's <head>, which has to run before app.js is even
+# loaded. That one is pinned by content hash instead -- a hash is legitimate
+# CSP script-src source syntax alongside 'self' and nonces, not a bypass, and
+# it means changing that snippet's content one character breaks the hash and
+# the browser silently drops it. index.html documents how to recompute it.
+#
+# style-src keeps 'unsafe-inline': this UI still uses inline style="" for
+# layout throughout, which is a separate, much larger change not attempted
+# here.
 _CSP = "; ".join([
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'sha256-Oo/SPLxOcyb+avwLL/t3VBebRknOuRMijJxJ7+/q8l8='",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",          # data: for the TOTP QR code
     "font-src 'self'",

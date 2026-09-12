@@ -89,6 +89,24 @@ function showBlockingAlert(title, reason, detail) {
 function show(id) { document.getElementById(id).hidden = false; }
 function hide(id) { document.getElementById(id).hidden = true; }
 function $(id) { return document.getElementById(id); }
+
+// Event delegation for dynamically-rendered lists: a data-action/data-id
+// pair on the element instead of an inline onclick="", and one listener per
+// container attached once here rather than re-attached on every re-render.
+// An onclick="" attribute in markup is inline script -- the browser has to
+// execute it, so script-src has to allow inline execution for it to run at
+// all. This (plus initStaticHandlers for the fixed elements in index.html)
+// is what lets script-src drop 'unsafe-inline' entirely.
+function delegate(containerId, handlers) {
+    const container = $(containerId);
+    if (!container) return;
+    container.addEventListener("click", (e) => {
+        const el = e.target.closest("[data-action]");
+        if (!el || !container.contains(el)) return;
+        const handler = handlers[el.dataset.action];
+        if (handler) handler(el.dataset.id, el, e);
+    });
+}
 const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
 // Quotes must be escaped too — this value gets interpolated into attributes.
@@ -376,7 +394,7 @@ function renderServerList() {
     el.innerHTML = activeServers
         .map(
             (s) => `
-        <div class="server-item" data-id="${escHtml(s.id)}" onclick="selectServer('${escHtml(s.id)}')">
+        <div class="server-item" data-action="select-server" data-id="${escHtml(s.id)}">
             <div class="name">${escHtml(s.name || s.hostname)}</div>
             <div class="detail">${escHtml(s.username)}@${escHtml(s.hostname)}:${s.port}</div>
         </div>`
@@ -399,10 +417,10 @@ function selectServer(id) {
         </div>
         <div class="form-group"><label>SSH Key</label><input type="text" value="${escHtml(srv.ssh_key_name)}" disabled></div>
         <div class="form-actions">
-            <button class="btn btn-sm btn-secondary" onclick="testServer('${escHtml(srv.id)}')">Test connection</button>
-            <button class="btn btn-sm btn-secondary" onclick="prereqCheck('${escHtml(srv.id)}')">Check prerequisites</button>
-            <button class="btn btn-sm btn-secondary" onclick="saveServerConfig('${escHtml(srv.id)}')">Save to profile</button>
-            <button class="btn btn-sm btn-danger" onclick="removeServer('${escHtml(srv.id)}')">Remove</button>
+            <button class="btn btn-sm btn-secondary" data-action="test-server" data-id="${escHtml(srv.id)}">Test connection</button>
+            <button class="btn btn-sm btn-secondary" data-action="prereq-check" data-id="${escHtml(srv.id)}">Check prerequisites</button>
+            <button class="btn btn-sm btn-secondary" data-action="save-server-config" data-id="${escHtml(srv.id)}">Save to profile</button>
+            <button class="btn btn-sm btn-danger" data-action="remove-server" data-id="${escHtml(srv.id)}">Remove</button>
         </div>
         <div id="server-test-result" style="margin-top:8px;font-size:0.8125rem"></div>
         <div id="prereq-result"></div>
@@ -505,7 +523,7 @@ function showAddServer() {
             </div>
             <div class="form-group">${sudoOption("new-srv-sudo", false)}</div>
             <div class="form-actions">
-                <button class="btn btn-sm btn-primary" onclick="addServer()">Add server</button>
+                <button class="btn btn-sm btn-primary" data-action="add-server">Add server</button>
             </div>
             <div id="add-server-error" class="error-msg"></div>
         `;
@@ -595,9 +613,9 @@ async function loadSavedServers() {
                 (s) => `
             <div style="display:flex;align-items:center;gap:8px;padding:4px 0">
                 <span style="flex:1">${escHtml(s.name)} (${escHtml(s.hostname)})</span>
-                <button class="btn-icon" onclick="loadSavedServer('${escHtml(s.id)}')" title="Load">&#x25B6;</button>
-                <button class="btn-icon" onclick="editSavedServer('${escHtml(s.id)}')" title="Edit">&#x270E;</button>
-                <button class="btn-icon" onclick="deleteSavedServer('${escHtml(s.id)}')" title="Delete">&times;</button>
+                <button class="btn-icon" data-action="load-saved-server" data-id="${escHtml(s.id)}" title="Load">&#x25B6;</button>
+                <button class="btn-icon" data-action="edit-saved-server" data-id="${escHtml(s.id)}" title="Edit">&#x270E;</button>
+                <button class="btn-icon" data-action="delete-saved-server" data-id="${escHtml(s.id)}" title="Delete">&times;</button>
             </div>`
             )
             .join("");
@@ -649,7 +667,7 @@ async function editSavedServer(id) {
         </div>
         <div class="form-group">${sudoOption("edit-srv-sudo", srv.use_sudo)}</div>
         <div class="form-actions">
-            <button class="btn btn-sm btn-primary" onclick="saveSavedServerEdit('${escHtml(srv.id)}')">Save changes</button>
+            <button class="btn btn-sm btn-primary" data-action="save-saved-server-edit" data-id="${escHtml(srv.id)}">Save changes</button>
         </div>
         <div id="edit-server-error" class="error-msg"></div>
     `;
@@ -881,18 +899,18 @@ function renderCaptures() {
             const statusClass = `status-${c.status}`;
             let actions = "";
             if (c.status === "running") {
-                actions = `<button class="btn btn-sm btn-secondary" onclick="stopCapture('${c.id}')">Stop</button>`;
+                actions = `<button class="btn btn-sm btn-secondary" data-action="stop-capture" data-id="${c.id}">Stop</button>`;
             } else if (c.status === "completed") {
                 // Downloads are refused over plain HTTP, so say why here rather
                 // than letting the button fail with a 403 when clicked.
                 const dl = secureTransport
-                    ? `<button class="btn btn-sm btn-secondary" onclick="downloadCaptureById('${c.id}')">Download</button>`
+                    ? `<button class="btn btn-sm btn-secondary" data-action="download-capture" data-id="${c.id}">Download</button>`
                     : `<button class="btn btn-sm btn-secondary" disabled
                          title="Downloads require HTTPS. A pcap can contain credentials, so it is not sent over an unencrypted connection.">Download (HTTPS only)</button>`;
-                actions = `<button class="btn btn-sm btn-primary" onclick="viewCapture('${c.id}')">View</button>
+                actions = `<button class="btn btn-sm btn-primary" data-action="view-capture" data-id="${c.id}">View</button>
                            ${dl}`;
             }
-            actions += ` <button class="btn btn-sm btn-danger" onclick="deleteCapture('${c.id}')">Delete</button>`;
+            actions += ` <button class="btn btn-sm btn-danger" data-action="delete-capture" data-id="${c.id}">Delete</button>`;
             return `
             <div class="capture-item">
                 <div class="info">
@@ -1098,7 +1116,7 @@ async function loadPackets(captureId, filter = "") {
         tbody.innerHTML = data.packets
             .map(
                 (p) => `
-            <tr class="${packetClass(p)}" data-frame="${p.number}" onclick="selectPacket(${p.number})">
+            <tr class="${packetClass(p)}" data-frame="${p.number}">
                 <td class="col-no">${p.number}</td>
                 <td class="col-time" title="${escHtml(p.timestamp)}">${escHtml(p.timestamp)}</td>
                 <td class="col-src" title="${escHtml(p.source)}">${escHtml(p.source)}</td>
@@ -1445,7 +1463,7 @@ async function loadAdminUsers() {
                     <td>${u.is_admin ? "Yes" : "No"}</td>
                     <td>${u.totp_confirmed ? "Yes" : "No"}</td>
                     <td>${escHtml(u.created_at || "")}</td>
-                    <td>${!u.is_admin ? `<button class="btn btn-sm btn-danger" onclick="adminDeleteUser('${escHtml(u.id)}')">Delete</button>` : ""}</td>
+                    <td>${!u.is_admin ? `<button class="btn btn-sm btn-danger" data-action="delete-user" data-id="${escHtml(u.id)}">Delete</button>` : ""}</td>
                 </tr>`).join("")}
             </tbody>
         </table>`;
@@ -1502,7 +1520,7 @@ async function loadAdminSSHKeys() {
             <tbody>${keys.map((k) => `
                 <tr>
                     <td>${escHtml(k)}</td>
-                    <td><button class="btn btn-sm btn-danger" onclick="adminDeleteKey('${escHtml(k)}')">Delete</button></td>
+                    <td><button class="btn btn-sm btn-danger" data-action="delete-key" data-id="${escHtml(k)}">Delete</button></td>
                 </tr>`).join("")}
             </tbody>
         </table>`;
@@ -1567,7 +1585,7 @@ async function loadAdminKnownHosts() {
                     <td>${h.port}</td>
                     <td>${escHtml(h.key_type)}</td>
                     <td>${escHtml(h.added_at || "")}</td>
-                    <td><button class="btn btn-sm btn-danger" onclick="adminDeleteKnownHost(${h.id})">Remove</button></td>
+                    <td><button class="btn btn-sm btn-danger" data-action="delete-known-host" data-id="${h.id}">Remove</button></td>
                 </tr>`).join("")}
             </tbody>
         </table>`;
@@ -1612,7 +1630,72 @@ async function adminDeleteKnownHost(hostId) {
     }
 }
 
+// --- event wiring ---
+
+// The fixed buttons/inputs that exist in index.html from page load, each
+// with a stable id. Dynamically-rendered content is wired separately, via
+// delegate() in initEventDelegation, since it doesn't exist yet at boot.
+function initStaticHandlers() {
+    $("btn-register")?.addEventListener("click", doRegister);
+    $("btn-login")?.addEventListener("click", doLogin);
+    $("btn-confirm-totp")?.addEventListener("click", confirmTotp);
+    $("theme-toggle")?.addEventListener("click", toggleTheme);
+    $("btn-logout")?.addEventListener("click", doLogout);
+    $("btn-add-server")?.addEventListener("click", showAddServer);
+    $("btn-start-capture")?.addEventListener("click", startCapture);
+    $("btn-apply-filter")?.addEventListener("click", applyDisplayFilter);
+    $("btn-download-capture")?.addEventListener("click", downloadCapture);
+    $("resolve-names")?.addEventListener("change", onResolveNamesToggled);
+    $("btn-save-settings")?.addEventListener("click", saveSettings);
+    $("btn-admin-create-user")?.addEventListener("click", adminCreateUser);
+    $("btn-admin-upload-key")?.addEventListener("click", adminUploadKey);
+    $("btn-admin-scan-host")?.addEventListener("click", adminScanHost);
+}
+
+// The containers themselves exist from page load even though their contents
+// are replaced with innerHTML later, so delegation set up once here survives
+// every re-render without needing to be re-attached.
+function initEventDelegation() {
+    delegate("server-list", {
+        "select-server": (id) => selectServer(id),
+    });
+    delegate("server-form-area", {
+        "test-server": (id) => testServer(id),
+        "prereq-check": (id) => prereqCheck(id),
+        "save-server-config": (id) => saveServerConfig(id),
+        "remove-server": (id) => removeServer(id),
+        "add-server": () => addServer(),
+        "save-saved-server-edit": (id) => saveSavedServerEdit(id),
+    });
+    delegate("saved-server-list", {
+        "load-saved-server": (id) => loadSavedServer(id),
+        "edit-saved-server": (id) => editSavedServer(id),
+        "delete-saved-server": (id) => deleteSavedServer(id),
+    });
+    delegate("capture-list", {
+        "stop-capture": (id) => stopCapture(id),
+        "view-capture": (id) => viewCapture(id),
+        "download-capture": (id) => downloadCaptureById(id),
+        "delete-capture": (id) => deleteCapture(id),
+    });
+    delegate("admin-user-list", {
+        "delete-user": (id) => adminDeleteUser(id),
+    });
+    delegate("admin-ssh-keys", {
+        "delete-key": (id) => adminDeleteKey(id),
+    });
+    delegate("admin-known-hosts", {
+        "delete-known-host": (id) => adminDeleteKnownHost(id),
+    });
+    $("packet-tbody")?.addEventListener("click", (e) => {
+        const row = e.target.closest("tr[data-frame]");
+        if (row) selectPacket(Number(row.dataset.frame));
+    });
+}
+
 // --- boot ---
 
 applyTheme(currentTheme());
+initStaticHandlers();
+initEventDelegation();
 checkAuth();

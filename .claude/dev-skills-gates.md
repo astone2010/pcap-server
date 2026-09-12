@@ -423,8 +423,82 @@ simulate N already-running captures. Async fixture teardown calls
 manager.shutdown() to cancel the one real monitor task each test does
 spin up, same cleanup path production uses.
 
-Next: CSP unsafe-inline (33 inline onclick handlers -> addEventListener,
-mechanical) -- the last item on the punch list.
+---
+
+## Fix: CSP script-src unsafe-inline (session 4, continued -- last punch-list item)
+
+32 inline onclick/onchange attributes found (14 static in index.html, 18 in
+app.js's dynamically-rendered template strings) -- close enough to the
+punch list's "33" that it's the same set, likely off by one from a handler
+added/removed since that note was written. All 32 converted:
+
+- Static elements (buttons/checkbox that exist in index.html from page
+  load): given stable ids, wired via addEventListener in a new
+  initStaticHandlers().
+- Dynamically-rendered content (server list, saved-server list, capture
+  list, admin tables, packet rows): onclick="fn('${id}')" replaced with
+  data-action/data-id attributes, resolved by a new delegate(containerId,
+  handlers) helper -- ONE listener per container, attached once at boot on
+  the container element itself (which exists from page load even though
+  its innerHTML is replaced on every re-render), not re-attached per item.
+  This is the standard pattern for CSP-safe dynamic content and avoids the
+  alternative (re-querying and re-attaching listeners after every single
+  innerHTML assignment across 7 different render functions).
+
+The one remaining wrinkle: index.html's <head> has a genuine inline
+<script> block (the theme-flash-prevention snippet) that has to run before
+first paint, before app.js is even loaded -- can't move to the external
+file without the flash returning. Pinned by SHA-256 content hash instead
+of 'unsafe-inline' (legitimate CSP script-src source syntax, same family
+as 'self' and nonces, not a bypass). Documented at both the CSP definition
+in main.py and directly above the inline script in index.html, including
+the one-liner to recompute the hash -- changing that snippet by even one
+character silently breaks it and the browser drops the script with no JS
+error, only a CSP console message.
+
+style-src keeps 'unsafe-inline' deliberately -- inline style="" attributes
+are used throughout this UI for layout, and removing that is a separate,
+much larger change nobody asked for here.
+
+Track: work commit (frontend hardening, no version bump)
+🔒 SECURITY   ✅ 0 Critical, 0 High -- CSP tightening, not a new risk;
+  data-id values preserve the exact escaping (escHtml or raw) each
+  original onclick string already used, no regression either direction.
+
+VERIFIED FOR REAL, live, in an actual browser: installed the Playwright
+Python package into .venv (throwaway, like tshark/openssh-server before
+it) and pointed it at this container's pre-installed Chromium build
+(/opt/pw-browsers -- the pip-installed Playwright's pinned browser version
+didn't match, so used executable_path directly). Started the real app
+with uvicorn, drove it through a full flow with zero CSP console
+violations and zero real console errors: register -> TOTP setup (computed
+a real valid code with pyotp against the QR secret shown on screen) ->
+confirm -> reached the app -> theme toggle (proves the SHA-256-pinned
+inline script executed AND its dataset value drives the button, all with
+no CSP block) -> admin tab -> uploaded a real ed25519 SSH key -> added a
+server -> selected it via the delegated server-item click -> clicked a
+delegated per-server action button -> created and deleted an admin user
+via the admin-user-list delegation -> deleted the uploaded key via the
+admin-ssh-keys delegation -> saved a server to a profile via a JS
+prompt() dialog -> loaded/edited/saved/deleted it via the
+saved-server-list delegation. Every container's delegate() wiring was
+exercised at least once; capture-list and packet-tbody delegation use the
+identical mechanism and weren't separately live-tested since they need a
+reachable SSH target. Test server, generated keys, and the throwaway
+playwright package were all removed afterward -- nothing from this
+verification is part of the diff.
+
+Landed: backend/main.py (_CSP script-src hash + comment rewrite),
+frontend/index.html (14 static handlers converted, hash-pinning comment
+added), frontend/js/app.js (delegate() helper, initStaticHandlers(),
+initEventDelegation(), 18 template-string conversions). No new test file
+-- this is frontend JS/HTML with no existing test harness coverage in this
+repo (the harness built this session is Python/pytest only); the live
+browser verification above is the closest equivalent for this change.
+
+This closes the punch list from the prior session's handoff: concurrent
+captures bounded, SSH keys sealed at rest, CSP script-src hardened. All
+three verified live, not just unit-tested in isolation.
 
 ---
 

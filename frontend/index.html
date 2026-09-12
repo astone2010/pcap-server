@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>pcap-server</title>
     <link rel="stylesheet" href="/css/style.css">
+    <!-- This inline script is pinned in the CSP by content hash (see _CSP in
+         backend/main.py), not 'unsafe-inline' -- it must run before first
+         paint, before app.js has even loaded, so it can't move to the
+         external file without the theme flashing wrong on every load.
+         Changing so much as a character here breaks the hash and the browser
+         silently drops the script; recompute it with:
+           python3 -c "import hashlib,base64;print('sha256-'+base64.b64encode(hashlib.sha256(open('frontend/index.html',encoding='utf-8').read().split('<script>',1)[1].split('</script>',1)[0].encode()).digest()).decode())" -->
     <script>
         // Applied before first paint so the page never flashes the wrong theme.
         try {
@@ -37,7 +44,7 @@
                 <label>Password (min 8 characters)</label>
                 <input type="password" id="reg-password" autocomplete="new-password" placeholder="Choose a strong password">
             </div>
-            <button class="btn btn-primary" onclick="doRegister()">Create admin account</button>
+            <button id="btn-register" class="btn btn-primary">Create admin account</button>
             <div id="reg-error" class="error-msg"></div>
         </div>
 
@@ -58,7 +65,7 @@
                     <span>Trust this device for 30 days</span>
                 </label>
             </div>
-            <button class="btn btn-primary" onclick="doLogin()">Sign in</button>
+            <button id="btn-login" class="btn btn-primary">Sign in</button>
             <div id="login-error" class="error-msg"></div>
         </div>
         <div class="auth-footer">
@@ -86,7 +93,7 @@
             <label>Enter code from app to confirm</label>
             <input type="text" id="totp-confirm-code" inputmode="numeric" maxlength="6">
         </div>
-        <button class="btn btn-primary" onclick="confirmTotp()">Confirm &amp; enable MFA</button>
+        <button id="btn-confirm-totp" class="btn btn-primary">Confirm &amp; enable MFA</button>
         <div id="totp-error" class="error-msg"></div>
     </div>
 </div>
@@ -103,8 +110,8 @@
            title="Release notes for the running version"></a>
         <a id="repo-link" class="repo-link" href="#" target="_blank" rel="noopener noreferrer"
            title="Source on GitHub">GitHub</a>
-        <button id="theme-toggle" class="btn btn-sm btn-secondary" onclick="toggleTheme()"></button>
-        <button class="btn btn-sm btn-secondary" onclick="doLogout()">Logout</button>
+        <button id="theme-toggle" class="btn btn-sm btn-secondary"></button>
+        <button id="btn-logout" class="btn btn-sm btn-secondary">Logout</button>
     </div>
     <div class="tab-bar">
         <div class="tab active" data-tab="servers">Servers</div>
@@ -120,7 +127,7 @@
                 <div class="server-sidebar">
                     <div class="server-sidebar-header">
                         <h3>Active Servers</h3>
-                        <button class="btn btn-sm btn-secondary" onclick="showAddServer()">+ Add</button>
+                        <button id="btn-add-server" class="btn btn-sm btn-secondary">+ Add</button>
                     </div>
                     <div id="server-list" class="server-list">
                         <div class="empty-state" style="padding:20px;font-size:0.8125rem">No servers added</div>
@@ -165,7 +172,7 @@
                     <label>BPF filter <span class="hint">&mdash; this is how you capture specific traffic</span></label>
                     <input type="text" id="cap-bpf" placeholder="e.g. tcp port 80 and host 10.0.0.1">
                 </div>
-                <button class="btn btn-primary btn-sm" onclick="startCapture()">Start capture</button>
+                <button id="btn-start-capture" class="btn btn-primary btn-sm">Start capture</button>
             </div>
 
             <details class="explainer">
@@ -242,8 +249,8 @@
                 <div class="packet-toolbar">
                     <span id="viewer-capture-label" style="font-size:0.8125rem;white-space:nowrap;color:var(--text-secondary)"></span>
                     <input type="text" id="display-filter" placeholder="Display filter (e.g. tcp, ip.addr == 10.0.0.1)">
-                    <button class="btn btn-sm btn-secondary" onclick="applyDisplayFilter()">Apply</button>
-                    <button class="btn btn-sm btn-secondary" onclick="downloadCapture()">Download .pcap</button>
+                    <button id="btn-apply-filter" class="btn btn-sm btn-secondary">Apply</button>
+                    <button id="btn-download-capture" class="btn btn-sm btn-secondary">Download .pcap</button>
                 </div>
                 <div class="view-options" style="padding:8px 16px">
                     <div class="flag-groups">
@@ -263,7 +270,7 @@
                         </div>
                     </div>
                     <label class="resolve-names" title="Sends a reverse-DNS query for every address in the capture">
-                        <input type="checkbox" id="resolve-names" onchange="onResolveNamesToggled()">
+                        <input type="checkbox" id="resolve-names">
                         <span>Resolve hostnames</span>
                         <span class="resolve-warn">performs DNS lookups for addresses in this capture</span>
                     </label>
@@ -310,7 +317,7 @@
                 <div class="admin-section">
                     <h3>Settings</h3>
                     <div id="admin-settings" class="admin-settings-grid"></div>
-                    <button class="btn btn-sm btn-primary" style="margin-top:12px" onclick="saveSettings()">Save settings</button>
+                    <button id="btn-save-settings" class="btn btn-sm btn-primary" style="margin-top:12px">Save settings</button>
                     <div id="settings-msg" class="error-msg"></div>
                 </div>
                 <div class="admin-section">
@@ -319,7 +326,7 @@
                     <div class="admin-inline-form" style="margin-top:12px">
                         <input type="text" id="admin-new-username" placeholder="Username" style="width:140px">
                         <input type="password" id="admin-new-password" placeholder="Password" style="width:140px">
-                        <button class="btn btn-sm btn-secondary" onclick="adminCreateUser()">Add user</button>
+                        <button id="btn-admin-create-user" class="btn btn-sm btn-secondary">Add user</button>
                     </div>
                     <div id="admin-user-msg" class="error-msg"></div>
                 </div>
@@ -328,7 +335,7 @@
                     <div id="admin-ssh-keys" class="admin-table-container"></div>
                     <div class="admin-inline-form" style="margin-top:12px">
                         <input type="file" id="admin-key-file" style="font-size:0.8125rem">
-                        <button class="btn btn-sm btn-secondary" onclick="adminUploadKey()">Upload key</button>
+                        <button id="btn-admin-upload-key" class="btn btn-sm btn-secondary">Upload key</button>
                     </div>
                     <div id="admin-key-msg" class="error-msg"></div>
                 </div>
@@ -338,7 +345,7 @@
                     <div class="admin-inline-form" style="margin-top:12px">
                         <input type="text" id="admin-scan-hostname" placeholder="Hostname" style="width:180px">
                         <input type="number" id="admin-scan-port" placeholder="22" value="22" style="width:70px">
-                        <button class="btn btn-sm btn-secondary" onclick="adminScanHost()">Scan keys</button>
+                        <button id="btn-admin-scan-host" class="btn btn-sm btn-secondary">Scan keys</button>
                     </div>
                     <div id="admin-host-msg" class="error-msg"></div>
                 </div>
