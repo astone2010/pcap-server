@@ -10,8 +10,20 @@
          paint, before app.js has even loaded, so it can't move to the
          external file without the theme flashing wrong on every load.
          Changing so much as a character here breaks the hash and the browser
-         silently drops the script; recompute it with:
-           python3 -c "import hashlib,base64;print('sha256-'+base64.b64encode(hashlib.sha256(open('frontend/index.html',encoding='utf-8').read().split('<script>',1)[1].split('</script>',1)[0].encode()).digest()).decode())" -->
+         silently drops the script -- no error, nothing fails, the page just
+         flashes the wrong theme on every load.
+
+         So do not recompute it by hand. Run:
+
+             .venv/bin/python -m pytest tests/test_main.py -k csp
+
+         test_csp_hash_matches_the_inline_script hashes whatever is actually in
+         this file and prints the exact value to paste into _CSP when it does
+         not match. A command used to live here instead, and it was wrong: it
+         split on the first script tag in the file, which was the one inside
+         this very comment, so it hashed the comment. A comment cannot carry a
+         reliable recipe for reading the file the comment is in. The test can.
+     -->
     <script>
         // Applied before first paint so the page never flashes the wrong theme.
         try {

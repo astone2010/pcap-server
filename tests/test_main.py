@@ -11,6 +11,8 @@ SystemExit(1) on a refused vault.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import uuid
 from types import SimpleNamespace
 
@@ -346,3 +348,31 @@ def test_the_concurrency_limit_is_still_a_429(secure_client, enrolled, monkeypat
     monkeypatch.setattr(main.capture_manager, "start", refuse)
     resp = secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
     assert resp.status_code == 429
+
+
+def test_csp_hash_matches_the_inline_script():
+    """The pinned hash must be the hash of the script actually in the page.
+
+    script-src carries no 'unsafe-inline', so the pre-paint theme script runs
+    only if its hash is listed exactly. A drift between the two is invisible
+    server-side and nearly invisible client-side -- the browser drops the script
+    without failing anything, and the page just flashes the wrong theme on every
+    load. Nothing else in the suite would notice, which is how it would ship.
+
+    Comments are stripped before extracting, because the comment above the
+    script contains the literal tags a naive split would land on.
+    """
+    import re
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "frontend" / "index.html").read_text(encoding="utf-8")
+    body = re.search(r"<script>(.*?)</script>", re.sub(r"<!--.*?-->", "", html, flags=re.S), re.S)
+    assert body, "no inline <script> found in index.html"
+
+    digest = base64.b64encode(hashlib.sha256(body.group(1).encode()).digest()).decode()
+    expected = f"'sha256-{digest}'"
+    assert expected in main._CSP, (
+        f"CSP does not list the inline script's hash.\n"
+        f"  script-src expects: {expected}\n"
+        f"  update _CSP in backend/main.py to match"
+    )
