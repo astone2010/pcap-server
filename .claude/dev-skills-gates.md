@@ -235,5 +235,20 @@ Environment this session: docker present, no tcpdump/tshark/gh. Fresh venv,
 clean `pip install -r backend/requirements.txt` (no cryptography/RECORD
 conflict this time -- different container than the one that hit that).
 
-Next: tests/test_vault.py (StartupRefused / WrongKey-vs-damage / migrate_plaintext
-/ stored_path / source_for), per the file-by-file plan above.
+Landed: tests/test_vault.py -- 30 tests, all passing (58 total with
+test_crypto.py). Covers StartupRefused with no key and no override, the
+truthy/falsy ALLOW_UNENCRYPTED_CAPTURES spellings, refusal when encrypted
+captures exist with no key, the WrongKey-vs-damaged-file distinction in
+_key_opens_existing (damage detection required truncating INSIDE the first
+chunk, not just the tail -- next() only pulls one item, so a tail cut past
+an intact first chunk never raises), unlock() leaving the vault locked on a
+wrong passphrase, stored_path's .enc suffix logic, source_for dispatching
+on magic bytes rather than filename (misnamed files both directions), and
+migrate_plaintext's verify-then-unlink (success, verification-failure
+leaves the original untouched, multi-file). Used a minimal FakeDB stub
+(get_setting/set_setting only) rather than backend.database.Database, to
+keep vault tests isolated from the heavier main.py import chain.
+
+Next: tests/test_auth.py (hash_password/verify_password round-trip + legacy
+salt$hash format, needs_rehash, hash_token, idle timeout session deletion,
+_LAST_SEEN_WRITE_INTERVAL throttle, RateLimiter lockout + window expiry).
