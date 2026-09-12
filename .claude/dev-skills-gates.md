@@ -263,12 +263,28 @@ keying/reset/update_config plus window expiry via a monkeypatched
 time.monotonic (no real sleeping). Used a minimal FakeSessionDB stub
 (same pattern as vault's FakeDB) rather than backend.database.Database.
 
-Next: tests/test_main.py -- the _client_ip regression test (ignores
-X-Forwarded-For unless _TRUST_PROXY_HEADERS, takes the RIGHTMOST entry --
-this is the actual vulnerability fixed in dev.8, so it's the highest-value
-single test left), read-only-over-HTTP middleware incl. the 4
-_INSECURE_ALLOWED_PATHS, CSP + security headers, HSTS only on real https.
-Import note from the plan still applies: backend.main runs Database/vault/
-delete_all_sessions at module scope and SystemExit(1)s on a refused vault,
-so conftest.py must set DATA_DIR/CAPTURES_DIR/SSH_KEYS_DIR to tmp dirs and
-a master key BEFORE import, session-scoped.
+Landed: tests/conftest.py + tests/test_main.py -- 23 tests, all passing
+(112 total). conftest.py sets DATA_DIR/CAPTURES_DIR/SSH_KEYS_DIR to a fresh
+tempfile.mkdtemp() tree and a synthetic PCAP_MASTER_KEY as plain
+module-level code (not a fixture -- collection imports test modules, which
+import backend.main, before any fixture runs, so a fixture would be too
+late); verified with a standalone import smoke test before writing the
+real suite. test_main.py covers: _client_ip against a hand-built
+SimpleNamespace fake Request (no ASGI needed for a pure function) --
+ignores X-Forwarded-For by default, uses the RIGHTMOST entry when
+_TRUST_PROXY_HEADERS is set (this exact bug was the live rate-limiter
+bypass, tested directly as "a spoofed leftmost entry does not win"),
+skips unparseable entries, falls back to client.host; _is_secure_transport
+incl. all three loopback spellings and forwarded-proto trust gating;
+then, via a real TestClient, security headers present on every response,
+CSP value matches _CSP exactly, HSTS absent over http / present over
+https, the read-only-over-HTTP middleware blocking a mutating endpoint
+unauthenticated (proves the block happens in middleware, before auth even
+runs) while the 4 _INSECURE_ALLOWED_PATHS stay open and HTTPS is unaffected.
+
+Next: tests/test_localnet.py (describe_if_local, table-driven: HOST_ALIASES,
+loopback, own address, gateway, and the documented case it cannot catch),
+then tests/test_ssh_manager.py's hostile-input suite, then
+tests/test_packet_parser.py with pytest.mark.skipif for real-tshark cases
+(reported as skipped, never silently omitted), then the scaffolding:
+scripts/check.sh, .github/workflows/check.yml.
