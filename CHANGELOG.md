@@ -1,8 +1,40 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-dev.12 — 2026-09-12
+
+### Added
+
+- **A capture filter library, on its own Filters tab.** Around eighty BPF
+  expressions grouped by what you are actually looking for rather than by port
+  number: Active Directory (Kerberos, LDAP, SMB, RPC, WinRM), name resolution
+  and core services, web, mail, remote access, databases, network
+  infrastructure, voice, TCP flag matching, and size-based filters. Searchable
+  by name, port or expression, and choosing one drops it into the Capture form.
+  Ports are written out rather than relying on tcpdump's service-name lookup,
+  which resolves through the target's `/etc/services` and can differ per host.
+- **Timestamps in your own time zone.** A `-tz` view flag renders each packet's
+  time as a full local date and time. tshark cannot do this itself — its
+  `frame.time` is the capture host's local time, and the container runs on UTC
+  with no idea where the reader is — so the server sends epoch seconds and the
+  browser formats them. `-tttt` still shows the server's UTC.
+
+### Fixed
+
+- **`-e` showed two empty columns on most captures.** `tcpdump -i any` writes a
+  Linux cooked capture, which has no Ethernet header at all, so `eth.src` and
+  `eth.dst` are empty on every frame — and `any` is the default interface, so
+  the MAC flag did nothing for the captures people actually take. The cooked
+  field is requested alongside the Ethernet one now and whichever the frame has
+  wins. A cooked header records no destination address, so that column is
+  honestly empty. The flag stays — it earns its place on a capture from a named
+  interface, where both addresses are real — and its help now says which case is
+  which instead of leaving you to guess why the columns were blank.
+- **The view-flag picker described a state that could not occur.** It said
+  "dotted ones are on by default" when nothing is on by default.
 
 ### Changed
+
+- **The light theme is called Flashbang.**
 
 - **The packet viewer gives its height to packets.** On an 800px window the
   chrome above the packet list came to 309px of a 721px viewer — a toolbar, a
@@ -133,6 +165,19 @@ packet rows instead of 12.
   configured with it are untouched.
 
 ### Documentation
+
+- **The README was reordered around the reader rather than the feature list.**
+  It opened with twenty-four bullets and then interleaved concepts with
+  operational detail. It now runs: what it does, quick start, your first
+  capture, the two filters, security, capture privilege on the target, running
+  it, reference, architecture. A contents line sits at the top.
+- **The README has a Security section**, which it did not before: what is
+  encrypted and under which key, how startup fails closed, what degrades over
+  plain HTTP, how sign-in works, exactly what runs on the target host, and a
+  plain list of what none of it protects against.
+- The architecture document no longer describes the TOTP gap as open — it was
+  closed earlier in this same set of changes — and now records the display
+  filter's character rule and the local-time flag.
 
 - **`docs/architecture.md`** — the first full account of how the app is built
   and what each security measure defends against: the module layout and why

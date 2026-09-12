@@ -1,72 +1,60 @@
 # Dev Skills gate state
 Track: release sequence
-Version: 0.1.0-dev.11
+Version: 0.1.0-dev.12
 Updated: 2026-09-12
 
-🔢 VERSION    ✅ 0.1.0-dev.11 in backend/main.py, docker-compose.yml and the
+🔢 VERSION    ✅ 0.1.0-dev.12 in backend/main.py, docker-compose.yml and the
                 CHANGELOG heading. Previous version confirmed tagged on the
-                remote: v0.1.0-dev.10 at c3df2cb, read with git ls-remote, not
-                from a local tag list. Repo and release-notes links present in
-                main.py.
-🔨 BUILD      ✅ 399 tests green, no skips -- tshark, capinfos and tcpdump are
-                all installed in this container, so the suites that need them
-                ran rather than reporting SKIPPED. Booted under uvicorn (uvloop)
-                with a seeded encrypted capture and driven end to end in
-                Chromium across three suites: the viewer and capture rename, the
-                filter UX, and the stored-username list. That browser pass is
-                not optional here -- it caught a stale function name this
-                session that every one of the 399 tests was blind to.
-🔒 SECURITY   ✅ 0 Critical, 0 High. pip-audit clean, no dependency changes.
-                Fixed this release: TOTP was enforced by the frontend only, so
-                any client ignoring needs_totp_setup held a session with one
-                factor and the whole API behind it -- the check now sits on
-                get_current_user, which all 24 protected routes and require_admin
-                share. Also bounded the tcpdump progress parser and its stderr
-                buffer, both fed by the host under investigation.
-                Deliberately loosened, with reasoning: the display filter now
-                accepts & and |, because it reaches tshark through
-                create_subprocess_exec as one argv element with no shell on the
-                path. That property is asserted by a test that inspects argv
-                rather than claimed in a comment. ; $ ` and backslash stay
-                refused, a length cap was added, and the capture filter keeps
-                the stricter rule because it does travel in a shell string.
-📄 DOCS       ✅ CHANGELOG entry for 0.1.0-dev.11 with date, covering fixed,
-                added, changed, security and documentation. docs/architecture.md
-                written this release and linked from the README. README gains a
-                two-filters comparison, the new feature lines, a roadmap, and no
-                longer claims -v is refused.
-📦 RELEASE    ✅ commit approved by the user, who also asked for the tag.
+                remote with git ls-remote: v0.1.0-dev.11 at 77186a9. Repo and
+                release-notes links present in main.py.
+🔨 BUILD      ✅ 404 tests green, no skips -- tshark, capinfos and tcpdump are
+                all present, so the suites needing them ran. Booted under
+                uvicorn (uvloop) with a seeded encrypted capture and driven in
+                Chromium across five suites: the viewer and capture rename, the
+                filter UX, the stored-username list, the viewer layout, and a
+                new one covering the theme name, the filter library and the
+                local-time flag. That last runs the browser in America/Denver so
+                a bug that silently rendered UTC would show up as a failure.
+🔒 SECURITY   ✅ 0 Critical, 0 High. pip-audit clean; no dependency changes.
+                The only new input path this release is the -tz view flag, which
+                goes through the same ALLOWED_VIEW_FLAGS check that rejects an
+                unknown flag with a 400 before tshark runs. The filter library
+                is static data rendered through escHtml, and the expressions it
+                inserts land in the capture-filter box and face the same
+                server-side validation as a typed one. The extra tshark field
+                (sll.src.eth) is a constant in the argument list.
+                Carried from earlier in this session and still standing: TOTP is
+                now enforced on get_current_user rather than by the frontend
+                alone; the tcpdump progress parser and its stderr buffer are
+                bounded; the display filter's character rule was loosened to
+                allow & and | with a test that inspects argv to prove no shell
+                is involved.
+📄 DOCS       ✅ CHANGELOG entry for 0.1.0-dev.12 with date. README reordered
+                around the reader -- what it does, quick start, first capture,
+                the two filters, security, capture privilege, running it,
+                reference -- with a contents line and a new Security section.
+                docs/architecture.md corrected (it still described the TOTP gap
+                as open after it had been closed) and extended with the
+                display-filter rule, the timestamp decision and the MAC columns.
+📦 RELEASE    ✅ commit approved by the user, who asked for the tag.
                 PR step ➖ N/A -- the repo has no branch to merge into: the
-                default branch is the initial commit and every release from
-                dev.1 to dev.10 was tagged on a claude/* branch.
-🚀 SHIP       ✅ v0.1.0-dev.11 verified on all four counts, not assumed:
-                the tag is on the remote at 77186a9 (git ls-remote) and matches
-                HEAD; the Release workflow run 10 completed with conclusion
-                success; the GitHub Release v0.1.0-dev.11 is published as a
-                prerelease. The ghcr.io image is published by that same
-                successful run -- the run is the evidence, the image bytes were
-                not pulled from here.
-
---- work since the tag, not released ---
-
-Track: work commit
-🔒 SECURITY   ✅ presentation only: HTML structure, CSS, and two localStorage
-                reads/writes, each wrapped so a private window or blocked site
-                data cannot stop the viewer rendering. No new input handling,
-                no new endpoint, no dependency change.
-🔨 BUILD      ✅ 399 tests green; four browser suites pass, including a new
-                layout suite that measures the split rather than eyeballing it.
+                default branch is the initial commit, and every release from
+                dev.1 to dev.11 was tagged on a claude/* branch.
+🚀 SHIP       ⏳ awaiting the tag. Tag pushes are always the user's to run.
+                Stays ⏳ until `git ls-remote --tags origin v0.1.0-dev.12`
+                confirms it, the release workflow completes, and the ghcr.io
+                image and GitHub Release are verified.
 
 Outstanding, needs the repository owner:
   * The repo's DEFAULT BRANCH is claude/hopeful-allen-qmo0ch, the initial
-    commit, and every commit since sits on claude/admiring-wright-k20ptf.
-    GitHub renders the landing page and README from the default branch, so
-    none of this work is visible at the repository root. A settings change.
+    commit. Everything since sits on claude/admiring-wright-k20ptf. GitHub
+    renders the landing page and README from the default branch, so none of
+    this work -- the reworked README included -- is visible at the repository
+    root. A settings change: Settings, Branches, switch the default.
   * v0.1.0-dev.8 has a CHANGELOG entry but no tag on the remote. Every other
-    version from dev.1 to dev.10 is tagged. An unfinished release predating
-    this session.
+    version from dev.1 to dev.11 is tagged.
 
 Not started, agreed as next:
   * Full API hardening pass: per-route auth and authz audit, pydantic bodies in
     place of raw request.json(), rate limiting on the probe endpoints,
-    consistent error shapes. The TOTP fix in this release is the first piece.
+    consistent error shapes. The TOTP enforcement was the first piece of it.

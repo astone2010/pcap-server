@@ -216,12 +216,16 @@ required on the target: there is no password to give it.
 | Trusted devices | Separate 48-byte token, also stored as a digest, with its own expiry |
 | Login throttling | Per-client-IP, five attempts then a fifteen-minute lockout, both adjustable at runtime |
 
-**TOTP enrolment is currently enforced by the frontend, not the API.** A first
-login returns `needs_totp_setup: true` and the UI acts on it, but no route
-checks `totp_confirmed`, so a client that ignores the flag holds a valid session
-without ever enrolling. Closing that is part of the API hardening pass on the
-roadmap; until then, treat the second factor as protecting the browser flow
-rather than the API surface.
+**TOTP is enforced by the API, not only by the frontend.** It used to be the
+other way round: a first login returned `needs_totp_setup: true` and the UI
+acted on it, but no route checked `totp_confirmed`, so a client that ignored the
+flag held a session backed by a password alone with the whole API behind it. The
+check now lives on `get_current_user`, the dependency every protected route
+already shares, so a route added later cannot forget it. Enrolment opts out
+visibly by depending on `get_session_user` instead — the same session lookup
+without the second-factor requirement — and `/api/auth/status` stays open,
+because a half-enrolled account has to be able to reach the screen that finishes
+enrolment.
 
 Session `last_seen` is written at most once a minute rather than on every
 request. On a single-writer database, touching a row per API call is both
@@ -255,7 +259,15 @@ fails here instead of quietly handing root a `-z`.
 after `--`, so a filter beginning with a dash is read as an expression rather
 than an option, and a filter can never become part of the command.
 
-**Display filters** reject `; | & $ \` \` before reaching `tshark`.
+**Display filters** reject `;`, `$`, backtick and backslash, and are capped in
+length. `&` and `|` are deliberately allowed: a display filter reaches tshark
+through `create_subprocess_exec` as one argv element with no shell anywhere on
+the path, so shell operators in it are text for tshark to reject as bad filter
+syntax rather than commands — and Wireshark's own `&&`, `||` and bitwise
+matching need them. A test runs a probe command and inspects `argv` to assert
+that property rather than leaving it as a claim in a comment. The capture filter
+keeps the stricter rule, because that one does travel inside a command string
+over SSH where a shell parses it.
 
 **tcpdump paths** must be absolute and end in `/tcpdump`.
 
@@ -265,6 +277,25 @@ than an option, and a filter can never become part of the command.
 under investigation. The progress-count pattern is bounded to twelve digits, so
 a flood of digits cannot hand `int()` a quadratic parse, and the retained buffer
 is capped, so a chatty or malicious host cannot grow it without limit.
+
+### MAC address columns
+
+The `-e` view flag asks for `eth.src`, `eth.dst` and `sll.src.eth` together.
+`tcpdump -i any` produces a Linux cooked capture, which has no Ethernet header
+at all, so the Ethernet fields are empty on every frame of the captures taken
+with the default interface. Whichever field the frame actually carries wins. A
+cooked header records the sender's address but no destination, so that column is
+genuinely empty there; on a capture from a named interface both are real, which
+is where the flag earns its place.
+
+### Timestamps
+
+The viewer can render a packet's time in the reader's own time zone. tshark
+cannot do this: `frame.time` is the capture host's local time, and this
+container runs on UTC with no knowledge of where the person reading the capture
+is. So the `-tz` flag asks tshark for `frame.time_epoch` and the browser formats
+it, which is the only place the answer exists. The other timestamp modes are
+unchanged, and `-tttt` still shows the server's UTC.
 
 ---
 
@@ -392,7 +423,6 @@ subprocess handling get driven in a real browser against a real server.
   avoids sudo entirely and is preferred.
 - The single-writer SQLite database is fine for the concurrency this tool sees
   and would not be for much more.
-- TOTP enrolment is enforced by the UI, not by the API (see Authentication).
 
 ---
 

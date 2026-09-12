@@ -146,8 +146,10 @@ function applyTheme(theme) {
     document.documentElement.dataset.theme = theme;
     const btn = $("theme-toggle");
     if (btn) {
-        btn.textContent = theme === "light" ? "Dark" : "Light";
-        btn.title = `Switch to the ${theme === "light" ? "dark" : "light"} theme`;
+        btn.textContent = theme === "light" ? "Dark" : "Flashbang";
+        btn.title = theme === "light"
+            ? "Switch to the dark theme"
+            : "Switch to the light theme, known here as Flashbang";
     }
     try {
         localStorage.setItem("theme", theme);
@@ -372,6 +374,7 @@ function enterApp() {
     initFlagPicker();
     loadUsernameList();
     applyDrawerState();
+    renderFilterLibrary();
     renderFilterSuggestions("bpf-suggestions", BPF_SUGGESTIONS);
     renderFilterSuggestions("display-filter-suggestions", DISPLAY_SUGGESTIONS);
     loadServers();
@@ -789,22 +792,242 @@ async function saveServerEdit(id) {
     }
 }
 
+// --- capture filter library ---
+//
+// The expressions people actually reach for, grouped so they can be found by
+// the name of the thing rather than by remembering a port number. Everything
+// here is BPF -- a capture filter, applied by tcpdump on the remote host. The
+// viewer's display filter is a different language and lives behind its own
+// help drawer.
+//
+// Ports are written out rather than relying on tcpdump's service-name lookup:
+// `port domain` resolves through /etc/services on the target, which is one more
+// thing that can differ between hosts and quietly change what gets recorded.
+const FILTER_LIBRARY = [
+    {
+        group: "Hosts and networks",
+        note: "Substitute your own addresses. `host` matches either direction; `src` and `dst` pin it.",
+        filters: [
+            ["Traffic to or from a host", "host 10.0.0.1"],
+            ["From a host only", "src host 10.0.0.1"],
+            ["To a host only", "dst host 10.0.0.1"],
+            ["Between two hosts", "host 10.0.0.1 and host 10.0.0.2"],
+            ["A whole subnet", "net 192.168.1.0/24"],
+            ["Leaving a subnet", "src net 192.168.1.0/24 and not dst net 192.168.1.0/24"],
+            ["Everything except one host", "not host 10.0.0.1"],
+            ["Exclude your own SSH session", "not (tcp port 22 and host 10.0.0.1)"],
+            ["One MAC address", "ether host 00:11:22:33:44:55"],
+            ["IPv6 only", "ip6"],
+        ],
+    },
+    {
+        group: "Windows and Active Directory",
+        note: "Domain traffic. Kerberos and LDAP answer on both TCP and UDP, so both are matched.",
+        filters: [
+            ["Kerberos", "port 88"],
+            ["Kerberos password change", "port 464"],
+            ["LDAP", "port 389"],
+            ["LDAPS", "tcp port 636"],
+            ["Global Catalog", "tcp port 3268 or tcp port 3269"],
+            ["All AD authentication and directory", "port 88 or port 389 or tcp port 636 or tcp port 3268 or tcp port 3269"],
+            ["SMB / CIFS", "tcp port 445"],
+            ["SMB including legacy NetBIOS", "tcp port 445 or port 137 or port 138 or tcp port 139"],
+            ["RPC endpoint mapper", "tcp port 135"],
+            ["WinRM", "tcp port 5985 or tcp port 5986"],
+            ["RDP", "tcp port 3389"],
+            ["DFS and netlogon on one host", "host 10.0.0.10 and (tcp port 445 or port 88)"],
+        ],
+    },
+    {
+        group: "Name resolution and core services",
+        filters: [
+            ["DNS", "port 53"],
+            ["DNS to one resolver", "host 8.8.8.8 and port 53"],
+            ["DNS over TLS", "tcp port 853"],
+            ["mDNS", "udp port 5353"],
+            ["LLMNR", "udp port 5355"],
+            ["NetBIOS name service", "udp port 137"],
+            ["DHCP", "port 67 or port 68"],
+            ["DHCPv6", "port 546 or port 547"],
+            ["NTP", "udp port 123"],
+            ["Syslog", "udp port 514"],
+            ["SNMP", "udp port 161 or udp port 162"],
+            ["TFTP", "udp port 69"],
+        ],
+    },
+    {
+        group: "Web and APIs",
+        filters: [
+            ["HTTP", "tcp port 80"],
+            ["HTTPS", "tcp port 443"],
+            ["HTTP/3 and QUIC", "udp port 443"],
+            ["Web on any common port", "tcp port 80 or tcp port 443 or tcp port 8080 or tcp port 8443"],
+            ["Web traffic to one host", "host 10.0.0.20 and (tcp port 80 or tcp port 443)"],
+            ["Proxy ports", "tcp port 3128 or tcp port 8888"],
+        ],
+    },
+    {
+        group: "Mail",
+        filters: [
+            ["SMTP", "tcp port 25"],
+            ["SMTP submission", "tcp port 587 or tcp port 465"],
+            ["IMAP", "tcp port 143 or tcp port 993"],
+            ["POP3", "tcp port 110 or tcp port 995"],
+            ["All mail", "tcp port 25 or tcp port 465 or tcp port 587 or tcp port 143 or tcp port 993 or tcp port 110 or tcp port 995"],
+        ],
+    },
+    {
+        group: "Remote access and management",
+        filters: [
+            ["SSH", "tcp port 22"],
+            ["Telnet", "tcp port 23"],
+            ["FTP control and data", "tcp port 21 or tcp port 20"],
+            ["VNC", "tcp portrange 5900-5910"],
+            ["RDP", "tcp port 3389"],
+            ["IPMI", "udp port 623"],
+        ],
+    },
+    {
+        group: "Databases",
+        filters: [
+            ["MySQL and MariaDB", "tcp port 3306"],
+            ["PostgreSQL", "tcp port 5432"],
+            ["Microsoft SQL Server", "tcp port 1433"],
+            ["Oracle", "tcp port 1521"],
+            ["Redis", "tcp port 6379"],
+            ["MongoDB", "tcp port 27017"],
+            ["Elasticsearch", "tcp port 9200"],
+        ],
+    },
+    {
+        group: "Network infrastructure",
+        filters: [
+            ["ARP", "arp"],
+            ["ICMP", "icmp"],
+            ["ICMPv6", "icmp6"],
+            ["One VLAN", "vlan 100"],
+            ["Any tagged VLAN traffic", "vlan"],
+            ["Broadcast", "broadcast"],
+            ["Multicast", "multicast"],
+            ["IGMP", "igmp"],
+            ["BGP", "tcp port 179"],
+            ["OSPF", "proto 89"],
+            ["VRRP", "proto 112"],
+            ["LLDP", "ether proto 0x88cc"],
+        ],
+    },
+    {
+        group: "Voice and video",
+        filters: [
+            ["SIP", "port 5060 or port 5061"],
+            ["RTP and RTCP, typical range", "udp portrange 10000-20000"],
+            ["H.323", "tcp port 1720"],
+        ],
+    },
+    {
+        group: "TCP behaviour",
+        note: "Byte-level matching against the flags field. Useful for finding connection attempts and resets without recording the payload.",
+        filters: [
+            ["Connection attempts, SYN only", "tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0"],
+            ["Any SYN, including the reply", "tcp[tcpflags] & tcp-syn != 0"],
+            ["Resets", "tcp[tcpflags] & tcp-rst != 0"],
+            ["Connection setup and teardown only", "tcp[tcpflags] & (tcp-syn|tcp-fin|tcp-rst) != 0"],
+            ["Packets carrying payload", "tcp and (((ip[2:2] - ((ip[0]&0xf)<<2)) - ((tcp[12]&0xf0)>>2)) != 0)"],
+        ],
+    },
+    {
+        group: "Size and shape",
+        note: "Handy when you want evidence a conversation happened without recording what was said.",
+        filters: [
+            ["Small packets only", "less 128"],
+            ["Large packets only", "greater 1000"],
+            ["Headers only, any traffic", "less 96"],
+            ["Non-IP traffic", "not ip and not ip6"],
+        ],
+    },
+];
+
+let filterLibraryQuery = "";
+
+function renderFilterLibrary() {
+    const el = $("filter-library");
+    if (!el) return;
+    const q = filterLibraryQuery.trim().toLowerCase();
+    const groups = FILTER_LIBRARY
+        .map((g) => ({
+            ...g,
+            filters: g.filters.filter(([label, expr]) =>
+                !q || label.toLowerCase().includes(q) || expr.toLowerCase().includes(q)
+                   || g.group.toLowerCase().includes(q)),
+        }))
+        .filter((g) => g.filters.length);
+
+    if (!groups.length) {
+        el.innerHTML = `<div class="empty-state" style="padding:24px">Nothing matches "${escHtml(filterLibraryQuery)}"</div>`;
+        return;
+    }
+
+    el.innerHTML = groups
+        .map((g) => `
+        <section class="filter-group">
+            <h4>${escHtml(g.group)}</h4>
+            ${g.note ? `<p class="field-hint">${escHtml(g.note)}</p>` : ""}
+            <table class="filter-table">
+                ${g.filters.map(([label, expr]) => `
+                <tr>
+                    <td class="filter-label">${escHtml(label)}</td>
+                    <td class="filter-expr"><code>${escHtml(expr)}</code></td>
+                    <td class="filter-use">
+                        <button type="button" class="btn btn-sm btn-secondary"
+                                data-action="use-library-filter" data-id="${escHtml(expr)}">Use</button>
+                    </td>
+                </tr>`).join("")}
+            </table>
+        </section>`)
+        .join("");
+}
+
+// Straight into the Capture form, which is the only place a capture filter can
+// be used -- copying it to a clipboard would leave the user to paste it there
+// themselves.
+function useLibraryFilter(expr) {
+    const box = $("cap-bpf");
+    if (!box) return;
+    box.value = expr;
+    document.querySelector('.tab[data-tab="capture"]')?.click();
+    box.focus();
+    box.scrollIntoView({ block: "nearest" });
+}
+
 // --- capture ---
 
 // These change how the packet list is rendered. tcpdump's display flags are
 // meaningless for the capture itself, which is always written with -w.
+// The zone the reader is actually in, which the container has no way to know:
+// it runs on UTC, so tshark's own "local" time is UTC too.
+const LOCAL_ZONE = (() => {
+    try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || "your local time zone";
+    } catch {
+        return "your local time zone";
+    }
+})();
+
 const FLAG_HELP = {
-    "-e": "Show link-layer MAC addresses as extra columns",
+    "-e": "Show link-layer MAC addresses \u2014 worth turning on when you captured a "
+        + "named interface. A capture from \"any\" is Linux cooked and carries the "
+        + "sender's address but no destination, so that column stays empty",
+    "-tz": `Timestamp as a full date and time in ${LOCAL_ZONE}`,
     "-t": "Hide the timestamp column",
     "-tt": "Timestamp as raw seconds since the epoch",
     "-ttt": "Timestamp as the delta since the previous packet",
-    "-tttt": "Timestamp as a full date and time",
+    "-tttt": "Timestamp as a full date and time, UTC as the server sees it",
 };
 
 const ALLOWED_FLAGS = Object.keys(FLAG_HELP);
 
 // The ones people reach for normally; everything else is situational.
-const STANDARD_FLAGS = ["-e"];
+const STANDARD_FLAGS = ["-e", "-tz"];
 // Of those, the ones switched on before you touch anything.
 const DEFAULT_FLAGS = [];
 
@@ -836,7 +1059,7 @@ function initFlagPicker() {
 }
 
 // One timestamp format and one resolution mode at a time.
-const EXCLUSIVE_FLAG_GROUPS = [["-t", "-tt", "-ttt", "-tttt"]];
+const EXCLUSIVE_FLAG_GROUPS = [["-t", "-tt", "-ttt", "-tttt", "-tz"]];
 
 function toggleFlag(el) {
     const flag = el.dataset.flag;
@@ -1201,6 +1424,7 @@ const TIME_WIDTH_CLASS = {
     "-t": "time-hidden",
     "-tt": "time-epoch",
     "-tttt": "time-full",
+    "-tz": "time-full",
 };
 
 function applyTimeColumnWidth(flags) {
@@ -1303,10 +1527,36 @@ function showDisplayFilterError(message) {
     el.hidden = !message;
 }
 
+const LOCAL_TIME_FORMAT = (() => {
+    try {
+        return new Intl.DateTimeFormat(undefined, {
+            year: "numeric", month: "2-digit", day: "2-digit",
+            hour: "2-digit", minute: "2-digit", second: "2-digit",
+            hour12: false,
+        });
+    } catch {
+        return null;
+    }
+})();
+
+// tshark's frame.time is the capture host's local time, which in a container is
+// UTC. Formatting epoch seconds here is the only way to show the zone the
+// person reading the capture is actually in.
+function formatLocalTime(epochSeconds) {
+    const seconds = parseFloat(epochSeconds);
+    if (!isFinite(seconds)) return epochSeconds;
+    const when = new Date(seconds * 1000);
+    if (isNaN(when.getTime())) return epochSeconds;
+    const millis = String(when.getMilliseconds()).padStart(3, "0");
+    if (!LOCAL_TIME_FORMAT) return `${when.toISOString()} (UTC)`;
+    return `${LOCAL_TIME_FORMAT.format(when)}.${millis}`;
+}
+
 async function loadPackets(captureId, filter = "") {
     const tbody = $("packet-tbody");
     const flags = getSelectedFlags();
     const showMac = flags.includes("-e");
+    const localTime = flags.includes("-tz");
     document.querySelectorAll(".col-mac").forEach((el) => { el.hidden = !showMac; });
     applyTimeColumnWidth(flags);
     const span = showMac ? 9 : 7;
@@ -1338,7 +1588,7 @@ async function loadPackets(captureId, filter = "") {
                 (p) => `
             <tr class="${packetClass(p)}" data-frame="${p.number}">
                 <td class="col-no">${p.number}</td>
-                <td class="col-time" title="${escHtml(p.timestamp)}">${escHtml(p.timestamp)}</td>
+                <td class="col-time" title="${escHtml(localTime ? LOCAL_ZONE : p.timestamp)}">${escHtml(localTime ? formatLocalTime(p.timestamp) : p.timestamp)}</td>
                 <td class="col-src" title="${escHtml(p.source)}">${escHtml(p.source)}</td>
                 <td class="col-dst" title="${escHtml(p.destination)}">${escHtml(p.destination)}</td>
                 <td class="col-mac"${mac}>${escHtml(p.src_mac || "")}</td>
@@ -2084,6 +2334,13 @@ function initEventDelegation() {
     });
     document.querySelectorAll(".drawer-toggle").forEach((el) => {
         el.addEventListener("click", () => toggleDrawer(el.dataset.id));
+    });
+    $("filter-library-search")?.addEventListener("input", (e) => {
+        filterLibraryQuery = e.target.value;
+        renderFilterLibrary();
+    });
+    delegate("filter-library", {
+        "use-library-filter": (expr) => useLibraryFilter(expr),
     });
     delegate("bpf-suggestions", {
         "use-filter": (expr, el) => useFilterSuggestion(expr, el),

@@ -115,7 +115,15 @@ def test_filter_rejection_keeps_tsharks_message_and_drops_the_banner():
 
 
 def test_allowed_view_flags_contains_exactly_the_documented_set():
-    assert packet_parser.ALLOWED_VIEW_FLAGS == {"-e", "-t", "-tt", "-ttt", "-tttt"}
+    assert packet_parser.ALLOWED_VIEW_FLAGS == {"-e", "-t", "-tt", "-ttt", "-tttt", "-tz"}
+
+
+def test_local_time_asks_for_epoch_seconds_not_a_formatted_time():
+    """-tz renders in the reader's zone, which only the browser knows. tshark's
+    frame.time is the capture host's local time -- UTC in this container -- so
+    the server sends epoch seconds and the frontend formats them."""
+    assert packet_parser.VIEW_FLAG_TIME_FIELD["-tz"] == "frame.time_epoch"
+    assert packet_parser.VIEW_FLAG_TIME_FIELD["-tttt"] == "frame.time"
 
 
 def test_allowed_view_flags_matches_the_time_field_mapping_keys():
@@ -417,3 +425,70 @@ async def test_get_packet_count_still_fails_when_the_source_itself_breaks():
     from a tool that was fed nothing is not a trustworthy packet count."""
     with pytest.raises(RuntimeError, match="could not supply capture data"):
         await packet_parser.get_packet_count(UnreadableSource())
+
+
+# --- MAC columns on a cooked capture ------------------------------------------
+#
+# "tcpdump -i any" produces LINKTYPE_LINUX_SLL, which has no Ethernet header at
+# all: eth.src and eth.dst are both empty on every frame. Since "any" is the
+# default interface, -e showed two blank columns for most captures and read as
+# a flag that did nothing.
+
+
+def _build_cooked_pcap(num_packets: int = 1) -> bytes:
+    """A libpcap file with LINKTYPE_LINUX_SLL (113), as `-i any` writes."""
+    global_header = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 113)
+    sll = (
+        struct.pack(">HHH", 0, 1, 6)
+        + b"\x02\x00\x00\x00\x00\x01"
+        + b"\x00\x00"
+        + struct.pack(">H", 0x0800)
+    )
+    payload = b"ping"
+    udp = struct.pack(">HHHH", 12345, 53, 8 + len(payload), 0) + payload
+    ip = struct.pack(
+        ">BBHHHBBH4s4s",
+        0x45, 0, 20 + 8 + len(payload), 0, 0, 64, 17, 0,
+        bytes([10, 0, 0, 1]), bytes([10, 0, 0, 2]),
+    ) + udp
+    frame = sll + ip
+    records = b"".join(
+        struct.pack("<IIII", i, 0, len(frame), len(frame)) + frame
+        for i in range(num_packets)
+    )
+    return global_header + records
+
+
+def test_mac_takes_the_first_column_that_has_an_address():
+    assert packet_parser._mac(["", "", "aa:bb"], 1, 2) == "aa:bb"
+    assert packet_parser._mac(["", "cc:dd", "aa:bb"], 1, 2) == "cc:dd"
+    assert packet_parser._mac(["", "", ""], 1, 2) == ""
+    assert packet_parser._mac(["only"], 1, 2) == ""
+
+
+@needs_tshark
+async def test_mac_columns_are_populated_on_an_ethernet_capture():
+    packets = await packet_parser.get_packet_list(
+        BytesSource(_build_minimal_pcap()), view_flags=["-e"]
+    )
+    assert packets[0].src_mac == "02:00:00:00:00:01"
+    assert packets[0].dst_mac == "ff:ff:ff:ff:ff:ff"
+
+
+@needs_tshark
+async def test_the_source_mac_still_appears_on_an_any_interface_capture():
+    """The whole point: this is what the default interface produces."""
+    packets = await packet_parser.get_packet_list(
+        BytesSource(_build_cooked_pcap()), view_flags=["-e"]
+    )
+    assert packets[0].src_mac == "02:00:00:00:00:01"
+    # A cooked header carries no destination address, so this one is honestly
+    # empty rather than missing through a bug.
+    assert packets[0].dst_mac == ""
+
+
+@needs_tshark
+async def test_mac_columns_stay_empty_when_the_flag_is_off():
+    packets = await packet_parser.get_packet_list(BytesSource(_build_cooked_pcap()))
+    assert packets[0].src_mac == ""
+    assert packets[0].dst_mac == ""

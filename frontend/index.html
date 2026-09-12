@@ -117,6 +117,7 @@
         <div class="tab active" data-tab="servers">Servers</div>
         <div class="tab" data-tab="capture">Capture</div>
         <div class="tab" data-tab="viewer">Viewer</div>
+        <div class="tab" data-tab="filters">Filters</div>
         <div class="tab" data-tab="admin" id="admin-tab" hidden>Admin</div>
     </div>
     <div class="main-content">
@@ -294,7 +295,7 @@
                         <div class="flag-group">
                             <div class="flag-group-head">
                                 Standard view flags
-                                <span class="flag-group-note">the usual choices &mdash; dotted ones are on by default</span>
+                                <span class="flag-group-note">the two most views want</span>
                             </div>
                             <div id="flag-picker-standard" class="flag-picker"></div>
                         </div>
@@ -395,6 +396,27 @@
                     </div>
                     <div id="hex-dump" class="hex-dump"></div>
                 </div>
+            </div>
+        </div>
+
+        <!-- BPF capture filter library -->
+        <div id="panel-filters" class="panel">
+            <div class="filters-page">
+                <div class="filters-head">
+                    <div class="filters-intro">
+                        <h3>Capture filter library</h3>
+                        <p class="field-hint">
+                            Berkeley Packet Filter expressions for the traffic people actually
+                            go looking for. These are <strong>capture</strong> filters: they
+                            decide what tcpdump records on the remote host, and anything they
+                            exclude is gone for good. Choosing one drops it into the Capture
+                            form. To narrow a capture you already have, use the Viewer's
+                            display filter instead &mdash; different language, different job.
+                        </p>
+                    </div>
+                    <input type="search" id="filter-library-search" placeholder="Search by name, port or expression">
+                </div>
+                <div id="filter-library" class="filter-library"></div>
             </div>
         </div>
 

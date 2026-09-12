@@ -1582,3 +1582,79 @@ body {
 .packet-viewer.no-selection .packet-detail-hint { display: flex; }
 .packet-viewer.no-selection .resizer,
 .packet-viewer.no-selection .packet-detail-container { display: none; }
+
+/* --- capture filter library -------------------------------------------- */
+.filters-page {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+}
+
+.filters-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+}
+
+.filters-intro { flex: 1 1 420px; }
+.filters-intro h3 { font-size: 0.9375rem; margin-bottom: 6px; }
+.filters-intro .field-hint { max-width: 70ch; }
+
+#filter-library-search {
+    flex: 0 1 280px;
+    padding: 7px 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+}
+
+#filter-library-search:focus { border-color: var(--accent); outline: none; }
+
+/* Two columns where there is room: the list is long, and scrolling past
+   Databases to reach TCP behaviour is the whole problem with a single column. */
+.filter-library {
+    columns: 2;
+    column-gap: 24px;
+}
+
+@media (max-width: 1100px) { .filter-library { columns: 1; } }
+
+.filter-group {
+    break-inside: avoid;
+    display: inline-block;
+    width: 100%;
+    margin-bottom: 20px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+}
+
+.filter-group h4 {
+    font-size: 0.8125rem;
+    color: var(--accent);
+    margin-bottom: 6px;
+}
+
+.filter-group .field-hint { margin-bottom: 8px; }
+
+.filter-table { width: 100%; border-collapse: collapse; }
+
+.filter-table tr { border-top: 1px solid var(--border); }
+.filter-table tr:first-child { border-top: none; }
+
+.filter-table td { padding: 6px 4px; vertical-align: middle; }
+
+.filter-label { font-size: 0.75rem; color: var(--text-secondary); width: 40%; }
+
+.filter-expr code {
+    font-size: 0.7rem;
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+.filter-use { text-align: right; white-space: nowrap; width: 1%; }

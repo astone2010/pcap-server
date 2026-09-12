@@ -117,6 +117,11 @@ VIEW_FLAG_TIME_FIELD = {
     "-tt": "frame.time_epoch",
     "-ttt": "frame.time_delta",
     "-tttt": "frame.time",
+    # Epoch seconds, formatted into a real date and time by the browser. tshark's
+    # own frame.time is the capture host's local time, and this container runs on
+    # UTC with no idea what zone the operator reading the capture is in -- the
+    # browser is the only place that knows, so it does the formatting.
+    "-tz": "frame.time_epoch",
 }
 ALLOWED_VIEW_FLAGS = {"-e", "-t", *VIEW_FLAG_TIME_FIELD}
 
@@ -176,7 +181,13 @@ async def get_packet_list(
         "-e", "_ws.col.Info",
     ]
     if show_mac:
-        cmd += ["-e", "eth.src", "-e", "eth.dst"]
+        # sll.src.eth as well as eth.src: "tcpdump -i any" produces a Linux
+        # cooked capture, which has no Ethernet header, so eth.src and eth.dst
+        # are both empty on it. Since "any" is the default interface, -e showed
+        # two blank columns for most captures. The cooked header records the
+        # sender's address but no destination, so that column stays empty and
+        # the flag's help says why.
+        cmd += ["-e", "eth.src", "-e", "eth.dst", "-e", "sll.src.eth"]
     cmd += [
         "-E", "separator=\t",
         "-E", "quote=n",
@@ -214,11 +225,24 @@ async def get_packet_list(
             protocol=protocol.upper(),
             length=int(parts[5]) if parts[5] else 0,
             info=parts[6],
-            src_mac=parts[7] if show_mac and len(parts) > 7 else "",
-            dst_mac=parts[8] if show_mac and len(parts) > 8 else "",
+            src_mac=_mac(parts, 7, 9) if show_mac else "",
+            dst_mac=_mac(parts, 8) if show_mac else "",
         ))
 
     return packets
+
+
+def _mac(parts: list[str], *indexes: int) -> str:
+    """First address present at any of these column positions.
+
+    Ethernet and Linux-cooked captures record the address in different fields
+    and never both, so the columns are requested together and whichever one the
+    frame actually has wins.
+    """
+    for index in indexes:
+        if len(parts) > index and parts[index]:
+            return parts[index]
+    return ""
 
 
 async def get_packet_detail(source: PcapSource, frame_number: int) -> PacketDetail:
