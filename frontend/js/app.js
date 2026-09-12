@@ -1081,11 +1081,17 @@ function renderFilterLibrary() {
 // Straight into the Capture form, which is the only place a capture filter can
 // be used -- copying it to a clipboard would leave the user to paste it there
 // themselves.
+//
+// The library used to be a tab, so this had to switch tabs to show the field it
+// had just filled in. It now sits under that field, so there is no journey to
+// make: collapse the list and the answer is on screen above it, which is also
+// the only feedback that the click did anything.
 function useLibraryFilter(expr) {
     const box = $("cap-bpf");
     if (!box) return;
     box.value = expr;
-    document.querySelector('.tab[data-tab="capture"]')?.click();
+    const details = $("filter-library-details");
+    if (details) details.open = false;
     box.focus();
     box.scrollIntoView({ block: "nearest" });
 }

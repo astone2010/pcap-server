@@ -117,7 +117,6 @@
         <div class="tab active" data-tab="servers">Servers</div>
         <div class="tab" data-tab="capture">Capture</div>
         <div class="tab" data-tab="viewer">Viewer</div>
-        <div class="tab" data-tab="filters">Filters</div>
         <div class="tab" data-tab="admin" id="admin-tab" hidden>Admin</div>
     </div>
     <div class="main-content">
@@ -191,6 +190,30 @@
                 </div>
                 <button id="btn-start-capture" class="btn btn-primary btn-sm">Start capture</button>
             </div>
+
+            <!-- The filter library lives here rather than in a tab of its own:
+                 a capture filter is only ever useful while filling in the form
+                 above it, and a separate tab meant leaving the form, finding
+                 the filter, and being sent back. Collapsed by default because
+                 it is eighty-odd expressions and the field above is the answer
+                 for anyone who already knows what they want to type. -->
+            <details class="explainer" id="filter-library-details">
+                <summary>Browse the capture filter library</summary>
+                <div class="explainer-body">
+                    <p class="field-hint">
+                        Berkeley Packet Filter expressions for the traffic people actually
+                        go looking for, grouped by what you are hunting. These are
+                        <strong>capture</strong> filters: they decide what tcpdump records
+                        on the remote host, and anything they exclude is gone for good.
+                        Choosing one fills in the BPF field above. To narrow a capture you
+                        already have, use the Viewer's display filter instead &mdash;
+                        different language, different job.
+                    </p>
+                    <input type="search" id="filter-library-search"
+                           placeholder="Search by name, port or expression">
+                    <div id="filter-library" class="filter-library"></div>
+                </div>
+            </details>
 
             <details class="explainer">
                 <summary>Where are the tcpdump flags?</summary>
@@ -400,26 +423,6 @@
         </div>
 
         <!-- BPF capture filter library -->
-        <div id="panel-filters" class="panel">
-            <div class="filters-page">
-                <div class="filters-head">
-                    <div class="filters-intro">
-                        <h3>Capture filter library</h3>
-                        <p class="field-hint">
-                            Berkeley Packet Filter expressions for the traffic people actually
-                            go looking for. These are <strong>capture</strong> filters: they
-                            decide what tcpdump records on the remote host, and anything they
-                            exclude is gone for good. Choosing one drops it into the Capture
-                            form. To narrow a capture you already have, use the Viewer's
-                            display filter instead &mdash; different language, different job.
-                        </p>
-                    </div>
-                    <input type="search" id="filter-library-search" placeholder="Search by name, port or expression">
-                </div>
-                <div id="filter-library" class="filter-library"></div>
-            </div>
-        </div>
-
         <!-- admin panel -->
         <div id="panel-admin" class="panel">
             <div class="admin-layout">
