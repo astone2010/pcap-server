@@ -115,3 +115,100 @@ SESSION 3 RESUME NOTES (2026-09-12, fresh container):
   BUILD gate reproducible instead of a claim.
 - Branch rename RESOLVED: user chose claude/admiring-wright-k20ptf as canonical
   rather than let the harness's per-session branch name fork the history.
+
+========================================================================
+TEST HARNESS PLAN (researched 2026-09-12, NOT yet written -- next task)
+========================================================================
+Why: 5,327 lines of security-sensitive code, zero committed tests. Every check
+suite counted in the BUILD gate for dev.1-dev.8 was written ad-hoc in a
+container and died with it -- which is why the counts disagree (249 in this
+file, 460 in a later handoff) and why neither can be re-run to settle it.
+Gate 2 has nothing in the repo to execute, so it has been passing on assertion.
+Secondary gap: release.yml triggers only on `v*` tag push, so nothing compiles
+or tests before a tag. There is no PR/push build check at all.
+
+CONTAINER BLOCKER, hit and not yet cleared:
+  `pip install -r backend/requirements.txt` FAILS -- Debian's cryptography
+  41.0.7 has no RECORD file and cannot be uninstalled. Use a venv. `.venv/`
+  exists (gitignored) but has NO packages: the install was interrupted. First
+  action next session: .venv/bin/pip install -r backend/requirements.txt
+  Also note this container is Python 3.11; the image is 3.12.
+
+PLAN, per module. The code has been read -- do not re-read 5,300 lines.
+
+crypto.py
+  - envelope round-trip; seal_bytes/open_bytes, seal_file/open_stream
+  - Sealer: header() then seal() then finish(); reuse after finish raises
+  - WrongKey on a foreign kek_id, and on a corrupted wrapped-DEK tag
+  - CryptoError on a missing terminator (truncation detection), and on chunks
+    spliced between files (AAD is MAGIC||index, so index order is bound)
+  - _coerce_key across 32 raw bytes / 64 hex / base64, and its rejection path
+  - assert KDF_N == 1<<17 and SCRYPT_N == 1<<17 so cost cannot be quietly lowered
+
+vault.py
+  - StartupRefused: no key and no ALLOW_UNENCRYPTED_CAPTURES
+  - StartupRefused: encrypted captures present but no key configured
+  - THE DISTINCTION THAT MATTERS: WrongKey -> refuse to start; a damaged or
+    truncated file -> log loudly and start anyway (_key_opens_existing returns
+    True when nothing said "wrong key")
+  - migrate_plaintext: seals, verifies, only then unlinks; a failure leaves the
+    plaintext intact and no .partial behind
+  - stored_path suffix follows whether a cryptor exists
+  - source_for picks the reader by magic bytes, NOT by filename
+
+auth.py
+  - hash_password/verify_password round-trip; legacy bare salt$hash still verifies
+  - needs_rehash true for legacy and for lowered parameters
+  - hash_token: the DB stores only the digest, never the bearer token
+  - idle timeout DELETES the session (cannot be revived by a later request)
+  - _LAST_SEEN_WRITE_INTERVAL throttles the touch_session write
+  - RateLimiter: lockout at max_attempts, and the window expiring
+
+main.py  (FastAPI TestClient; no listening socket needed)
+  - REGRESSION TEST for _client_ip: X-Forwarded-For ignored unless
+    _TRUST_PROXY_HEADERS, and the RIGHTMOST entry used when it is. The bug this
+    replaces was unlimited password guessing against the login limiter.
+  - read-only-over-HTTP middleware, including the four _INSECURE_ALLOWED_PATHS
+    that must still work (login/logout/register/totp-confirm)
+  - security headers + CSP present on every response
+  - HSTS only when the transport is genuinely https
+  - NOTE: backend.main runs Database(), CaptureVault() and delete_all_sessions()
+    at module scope, and SystemExit(1)s on a refused vault. conftest.py must set
+    DATA_DIR / CAPTURES_DIR / SSH_KEYS_DIR to tmp dirs and provide a master key
+    BEFORE import, session-scoped.
+
+localnet.py
+  - describe_if_local, table-driven: HOST_ALIASES, loopback, an own address,
+    the default gateway -- and an explicit test for the documented case it
+    CANNOT catch (the host's LAN address on a bridged container), so the guard's
+    limit is asserted rather than assumed
+
+ssh_manager.py
+  - _is_safe_tcpdump_path rejects "/bin/sh -c curl|sh", traversal, relative
+    paths, and any basename that is not literally tcpdump
+  - parse_prereq_output against hostile probe output (injection, substitution,
+    non-printables, absurd lengths) -- output is remote and untrusted
+  - _shell_quote; _key_path traversal refusal
+  - evaluate_prereqs privilege matrix: root / cap_net_raw / sudo-nopasswd /
+    sudo-demands-password / sudo-absent / none-of-these
+
+packet_parser.py
+  - _validate_display_filter, ALLOWED_VIEW_FLAGS, _name_resolution_args run
+    anywhere with no tools
+  - anything needing real tshark: pytest.mark.skipif, REPORTED AS SKIPPED.
+    A harness that prints "all passed" while silently omitting the parser is
+    how today's situation comes back.
+
+Scaffolding
+  - requirements-dev.txt (pytest, pytest-asyncio, httpx) kept OUT of the
+    Dockerfile so the runtime image does not grow
+  - scripts/check.sh as the single entrypoint: prints a tool-availability
+    preamble (tshark/tcpdump/docker present or absent) and runs pytest with -r s
+    so skips are visible
+  - .github/workflows/check.yml on push and PR CALLING scripts/check.sh, not
+    reimplementing the checks inline -- otherwise CI and local drift apart and
+    can pass and fail independently
+
+Still impossible here regardless of the harness: `docker compose build` is
+untestable with no daemon, and the 10.0.0.230 prereq check needs LAN reach.
+Both stay on real hardware.
