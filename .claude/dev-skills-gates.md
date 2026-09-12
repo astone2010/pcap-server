@@ -326,9 +326,30 @@ all "fail" with the right remediation text, caps-unavailable warns only
 when it's actually relevant (not for root), tmp-writable true/false/
 unknown, and the three SELinux states plus "no check when absent".
 
-Next: tests/test_packet_parser.py with pytest.mark.skipif for real-tshark
-cases (reported as skipped, never silently omitted) -- _validate_display_filter,
-ALLOWED_VIEW_FLAGS, _name_resolution_args run anywhere with no tools. Then
-the scaffolding: requirements-dev.txt is already landed; still need
-scripts/check.sh (tool-availability preamble, pytest -r s) and
-.github/workflows/check.yml calling that script.
+Landed: tests/test_packet_parser.py -- 35 tests (202+35=237 total). Runs-
+anywhere half (29 tests, no tools): _validate_display_filter accepts
+benign filters and rejects each of the 6 forbidden characters individually
+plus realistic hostile strings built from them; ALLOWED_VIEW_FLAGS pinned
+to its exact documented set and checked against VIEW_FLAG_TIME_FIELD's
+keys; _name_resolution_args off-by-default, the exact on-args, and that
+the returned list is a copy (mutating it must not corrupt the shared
+constant for the next caller); _flatten_fields scalar/nested/list/empty;
+and one that proves get_packet_list rejects a hostile filter BEFORE any
+subprocess runs at all, via a PcapSource whose chunks() raises if ever
+iterated. Tool-dependent half (6 tests, pytest.mark.skipif on
+shutil.which("tshark"/"capinfos"), reported via -r s rather than silently
+omitted): a hand-built minimal libpcap file (one UDP packet, raw struct.pack,
+no scapy/fixture needed) fed through get_packet_list, get_packet_detail and
+get_packet_count end to end. VERIFIED FOR REAL this session: apt-get
+installed tshark 4.2.2 + capinfos in this container specifically to prove
+the 6 skippable tests actually pass and the hand-built pcap bytes are
+valid, not just that they skip cleanly when tools are absent (full suite:
+237 passed, 0 skipped, with tools present; the container's Dockerfile/image
+were not touched -- this was throwaway container tooling for verification
+only).
+
+Next: the scaffolding. requirements-dev.txt already landed. Still need
+scripts/check.sh (tool-availability preamble listing tshark/tcpdump/docker
+present-or-absent, then `pytest -r s` so skips stay visible) and
+.github/workflows/check.yml on push/PR calling that script rather than
+reimplementing the checks inline.
