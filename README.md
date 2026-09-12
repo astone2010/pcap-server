@@ -219,28 +219,82 @@ captures are — a key never exists as a plaintext file on disk, and one
 uploaded before encryption was enabled is sealed in place automatically the
 next time the container starts.
 
-## Running tcpdump with sudo
+## Granting capture privilege
 
-tcpdump usually needs root to open a capture interface. If the SSH user is not
-root, tick **Run tcpdump with sudo** on the server, and grant that user
-passwordless sudo for tcpdump only:
+tcpdump needs a privilege to open a capture interface that a plain SSH user
+doesn't have by default. There are two ways to grant it — try the first one
+before reaching for sudo, since it grants far less.
+
+### Preferred: a file capability, no sudo at all
+
+`cap_net_raw`/`cap_net_admin` on the tcpdump binary itself lets that one user
+capture without being root or touching sudo at all:
+
+```bash
+sudo setcap cap_net_raw,cap_net_admin+eip /usr/sbin/tcpdump   # use your host's real path
+```
+
+Run **Servers → Check prerequisites** in the UI first — it discovers the
+actual tcpdump path on that host (it's `/usr/sbin/tcpdump` on some distros,
+`/usr/bin/tcpdump` on others) and gives you the exact command to run, along
+with whether the capability is already set. This is a one-time step per host
+and survives a tcpdump package upgrade being reapplied by the package
+manager's postinst on most distros; verify with `getcap $(which tcpdump)`
+after a package update if you want to be sure.
+
+### If setcap isn't available: passwordless sudo, scoped to tcpdump only
+
+Some hosts don't have `libcap2-bin`/`getcap` installed, or you'd rather use
+sudo. Grant it to the SSH user pcap-server connects as — **not** broad sudo
+access, just this one binary, without a password:
+
+```bash
+# 1. Find the exact tcpdump path first -- use it below, not a bare "tcpdump".
+#    A bare command name in a sudoers NOPASSWD rule can be satisfied by
+#    anything earlier on $PATH, not just the real binary.
+which tcpdump
+#   e.g. /usr/sbin/tcpdump
+
+# 2. Write the rule with visudo -f, which validates syntax before saving --
+#    a malformed file dropped straight into /etc/sudoers.d/ with cat/tee can
+#    break sudo entirely for everyone on the host until it's fixed manually.
+sudo visudo -f /etc/sudoers.d/pcap-server
+```
+
+In the editor that opens, add one line (replace `pcapuser` with the actual
+SSH username this server config uses, and the path with what step 1 printed):
 
 ```
-# /etc/sudoers.d/pcap-server
-pcapuser ALL=(root) NOPASSWD: /usr/bin/tcpdump
+pcapuser ALL=(root) NOPASSWD: /usr/sbin/tcpdump
+```
+
+Save and exit; `visudo` will refuse to write the file at all if the syntax is
+wrong, rather than leaving a broken sudoers.d entry behind. Then lock down the
+permissions, since sudoers.d files are ignored if they're group- or
+world-writable:
+
+```bash
+sudo chmod 0440 /etc/sudoers.d/pcap-server
+sudo chown root:root /etc/sudoers.d/pcap-server
 ```
 
 pcap-server invokes `sudo -n`, so a host that still demands a password fails
-immediately with a clear error rather than hanging.
+immediately with a clear error rather than hanging. Tick **Run tcpdump with
+sudo** on the server in the UI to actually use it.
 
-**Understand what this grants.** `tcpdump` can run arbitrary commands as root
-via its `-z` flag and read any file via `-r`, so anyone who can open a shell as
-`pcapuser` on that host effectively has root there. pcap-server never sends
-those flags — `-z`, `-Z`, `-W`, `-G`, `-C`, `-r`, `-F` and `-V` are rejected by
-a server-side allowlist that refuses to start if one is ever added to it, and
-every argument is shell-quoted — but the sudoers grant itself is still a
-privilege boundary you are choosing to open. Prefer a dedicated, unprivileged
-account used only by pcap-server, and don't reuse it for anything else.
+(**Check prerequisites** generates this same rule for you, scoped to a `%pcap`
+group rather than one named user, if you'd rather grant it to a group and add
+users to that group instead of editing sudoers per-account.)
+
+**Understand what this grants, even scoped this way.** `tcpdump` can run
+arbitrary commands as root via its `-z` flag and read any file via `-r`, so
+anyone who can open a shell as that user on that host effectively has root
+there. pcap-server never sends those flags — `-z`, `-Z`, `-W`, `-G`, `-C`,
+`-r`, `-F` and `-V` are rejected by a server-side allowlist that refuses to
+start if one is ever added to it, and every argument is shell-quoted — but the
+sudoers grant itself is still a privilege boundary you are choosing to open.
+Use a dedicated, unprivileged account for this and nothing else — don't reuse
+a login you use for other purposes on that host.
 
 ## Architecture
 
