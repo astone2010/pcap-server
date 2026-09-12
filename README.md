@@ -496,6 +496,8 @@ These are configurable from the Admin tab by the admin user:
 | Device trust (days) | 30 | How long a trusted device skips MFA |
 | Rate limit attempts | 5 | Failed login attempts before lockout |
 | Rate limit lockout (minutes) | 15 | Lockout duration after too many failures |
+| Packet list requests per minute | 30 | Per-user cap on `/api/captures/{id}/packets` calls, which spawn tshark |
+| Capture start requests per minute | 10 | Per-user cap on `/api/captures` (POST), which opens an SSH connection |
 
 ### Sessions
 

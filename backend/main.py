@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from backend.auth import (
     RateLimiter,
+    SlidingWindowLimiter,
     check_device_trust,
     cleanup_expired_sessions,
     create_device_trust,
@@ -103,6 +104,16 @@ capture_manager = CaptureManager(ssh_manager, CAPTURES_DIR, db.get_setting_int, 
 rate_limiter = RateLimiter(
     max_attempts=db.get_setting_int("rate_limit_max_attempts"),
     lockout_minutes=db.get_setting_int("rate_limit_lockout_minutes"),
+)
+# Login has its own lockout-on-failure limiter above. These two throttle the
+# rate of two other authenticated actions that spawn real work per call --
+# tshark for packet listing, an SSH connection for capture start -- keyed per
+# user rather than per IP, since both require a session already.
+packet_rate_limiter = SlidingWindowLimiter(
+    max_per_minute=db.get_setting_int("rate_limit_packets_per_min"),
+)
+capture_start_rate_limiter = SlidingWindowLimiter(
+    max_per_minute=db.get_setting_int("rate_limit_captures_per_min"),
 )
 
 # A restart must not leave anyone signed in. Sessions live in SQLite on a
@@ -623,6 +634,10 @@ async def admin_update_setting(req: SettingUpdate, user: dict = Depends(require_
             db.get_setting_int("rate_limit_max_attempts"),
             db.get_setting_int("rate_limit_lockout_minutes"),
         )
+    elif req.key == "rate_limit_packets_per_min":
+        packet_rate_limiter.update_config(int_val)
+    elif req.key == "rate_limit_captures_per_min":
+        capture_start_rate_limiter.update_config(int_val)
     return {"ok": True}
 
 
@@ -1027,6 +1042,8 @@ async def list_captures(user: dict = Depends(get_current_user)):
 
 @app.post("/api/captures")
 async def start_capture(req: CaptureRequest, user: dict = Depends(get_current_user)):
+    if not capture_start_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many capture start requests, slow down")
     srv = _require_server(req.server_id, user["id"])
     try:
         info = await capture_manager.start(req, srv, user["id"])
@@ -1132,6 +1149,8 @@ async def list_packets(
     resolve_names: bool = Query(False),
     user: dict = Depends(get_current_user),
 ):
+    if not packet_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many packet list requests, slow down")
     view_flags = [f for f in flags.split(",") if f]
     unknown = set(view_flags) - ALLOWED_VIEW_FLAGS
     if unknown:

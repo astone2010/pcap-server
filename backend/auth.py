@@ -45,6 +45,33 @@ class RateLimiter:
         self.lockout_minutes = lockout_minutes
 
 
+class SlidingWindowLimiter:
+    """Throttles the *rate* of calls, not failures.
+
+    Unlike RateLimiter above, every call that passes counts against the
+    window -- there is no lockout to clear on success, just a cap on how
+    often a key may pass per minute.
+    """
+
+    def __init__(self, max_per_minute: int) -> None:
+        self.max_per_minute = max_per_minute
+        self._hits: dict[str, list[float]] = {}
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        cutoff = now - 60
+        recent = [t for t in self._hits.get(key, []) if t > cutoff]
+        if len(recent) >= self.max_per_minute:
+            self._hits[key] = recent
+            return False
+        recent.append(now)
+        self._hits[key] = recent
+        return True
+
+    def update_config(self, max_per_minute: int) -> None:
+        self.max_per_minute = max_per_minute
+
+
 # scrypt cost. The old format stored only salt$hash, so the parameters were
 # implicit and could never be raised without invalidating every existing
 # password. They are recorded in the hash now, so cost can follow the hardware.

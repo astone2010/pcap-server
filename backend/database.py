@@ -506,6 +506,8 @@ class Database:
         "device_trust_days": "30",
         "rate_limit_max_attempts": "5",
         "rate_limit_lockout_minutes": "15",
+        "rate_limit_packets_per_min": "30",
+        "rate_limit_captures_per_min": "10",
     }
 
     def get_setting(self, key: str) -> str:

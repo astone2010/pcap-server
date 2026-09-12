@@ -1,6 +1,6 @@
 """Tests for backend.auth -- password hashing/migration, the bearer-token
-digest boundary, idle-session deletion, the last-seen write throttle, and
-RateLimiter lockout behavior."""
+digest boundary, idle-session deletion, the last-seen write throttle,
+RateLimiter lockout behavior, and SlidingWindowLimiter's per-minute cap."""
 
 from __future__ import annotations
 
@@ -281,3 +281,57 @@ def test_rate_limiter_update_config_changes_thresholds():
     limiter.update_config(max_attempts=1, lockout_minutes=1)
     limiter.record_failure("1.2.3.4")
     assert limiter.is_locked("1.2.3.4") is True
+
+
+# --- SlidingWindowLimiter: per-minute cap, no lockout ------------------------
+
+
+def test_sliding_window_allows_up_to_the_limit():
+    limiter = auth.SlidingWindowLimiter(max_per_minute=3)
+    assert limiter.allow("user-1") is True
+    assert limiter.allow("user-1") is True
+    assert limiter.allow("user-1") is True
+
+
+def test_sliding_window_refuses_the_call_over_the_limit():
+    limiter = auth.SlidingWindowLimiter(max_per_minute=2)
+    assert limiter.allow("user-1") is True
+    assert limiter.allow("user-1") is True
+    assert limiter.allow("user-1") is False
+
+
+def test_sliding_window_does_not_lock_out_on_success():
+    """Unlike RateLimiter, there is no failure/reset distinction -- every
+    allowed call counts, and there is nothing to reset. A refused call must
+    not itself count twice against the window."""
+    limiter = auth.SlidingWindowLimiter(max_per_minute=1)
+    assert limiter.allow("user-1") is True
+    assert limiter.allow("user-1") is False
+    assert limiter.allow("user-1") is False
+
+
+def test_sliding_window_is_keyed_independently():
+    limiter = auth.SlidingWindowLimiter(max_per_minute=1)
+    assert limiter.allow("user-1") is True
+    assert limiter.allow("user-1") is False
+    assert limiter.allow("user-2") is True
+
+
+def test_sliding_window_expiry_via_monkeypatched_clock(monkeypatch):
+    limiter = auth.SlidingWindowLimiter(max_per_minute=1)
+    fake_now = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: fake_now[0])
+
+    assert limiter.allow("user-1") is True
+    assert limiter.allow("user-1") is False
+
+    # advance past the 60-second window
+    fake_now[0] += 61
+    assert limiter.allow("user-1") is True
+
+
+def test_sliding_window_update_config_changes_threshold():
+    limiter = auth.SlidingWindowLimiter(max_per_minute=5)
+    limiter.update_config(max_per_minute=1)
+    assert limiter.allow("user-1") is True
+    assert limiter.allow("user-1") is False

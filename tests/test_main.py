@@ -20,7 +20,7 @@ import pytest
 import pyotp
 from fastapi.testclient import TestClient
 
-from backend.auth import create_session_token
+from backend.auth import SlidingWindowLimiter, create_session_token
 
 from backend import main
 
@@ -348,6 +348,76 @@ def test_the_concurrency_limit_is_still_a_429(secure_client, enrolled, monkeypat
     monkeypatch.setattr(main.capture_manager, "start", refuse)
     resp = secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
     assert resp.status_code == 429
+
+
+# --- per-user rate limits on capture start and packet listing ---------------
+#
+# Both endpoints do real work per call -- capture start opens an SSH
+# connection, packet listing spawns tshark -- so each gets its own
+# SlidingWindowLimiter (backend/auth.py), keyed on the caller's user id. These
+# tests prove the limiter trips *before* that work happens, not just that a
+# 429 eventually comes back.
+
+
+def test_capture_start_rate_limit_returns_429_before_opening_ssh(secure_client, enrolled, monkeypatch):
+    server_id = _a_server(enrolled)
+    called = False
+
+    async def should_not_run(req, server, user_id):
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(main.capture_manager, "start", should_not_run)
+    monkeypatch.setattr(main, "capture_start_rate_limiter", SlidingWindowLimiter(max_per_minute=0))
+
+    resp = secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
+
+    assert resp.status_code == 429
+    assert called is False
+
+
+def test_packet_list_rate_limit_returns_429_before_spawning_tshark(secure_client, enrolled, monkeypatch):
+    called = False
+
+    def should_not_run(capture_id):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(main.capture_manager, "get", should_not_run)
+    monkeypatch.setattr(main, "packet_rate_limiter", SlidingWindowLimiter(max_per_minute=0))
+
+    resp = secure_client.get("/api/captures/some-capture-id/packets")
+
+    assert resp.status_code == 429
+    assert called is False
+
+
+def test_admin_settings_update_propagates_to_new_rate_limiters(secure_client, enrolled):
+    """admin_update_setting must route these two keys to the new limiters, the
+    same way it already routes rate_limit_max_attempts/lockout_minutes to
+    RateLimiter -- a typo in that if/elif silently leaves a limiter frozen at
+    its default forever, since these singletons are built once at import."""
+    original_packets = main.packet_rate_limiter.max_per_minute
+    original_captures = main.capture_start_rate_limiter.max_per_minute
+    try:
+        resp = secure_client.put(
+            "/api/admin/settings", json={"key": "rate_limit_packets_per_min", "value": "7"}
+        )
+        assert resp.status_code == 200
+        assert main.packet_rate_limiter.max_per_minute == 7
+
+        resp = secure_client.put(
+            "/api/admin/settings", json={"key": "rate_limit_captures_per_min", "value": "3"}
+        )
+        assert resp.status_code == 200
+        assert main.capture_start_rate_limiter.max_per_minute == 3
+    finally:
+        main.db.set_setting("rate_limit_packets_per_min", str(original_packets))
+        main.db.set_setting("rate_limit_captures_per_min", str(original_captures))
+        main.packet_rate_limiter.update_config(original_packets)
+        main.capture_start_rate_limiter.update_config(original_captures)
 
 
 def test_csp_hash_matches_the_inline_script():

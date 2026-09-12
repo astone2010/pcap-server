@@ -2390,6 +2390,8 @@ const SETTING_LABELS = {
     device_trust_days: "Device trust duration (days)",
     rate_limit_max_attempts: "Rate limit max attempts",
     rate_limit_lockout_minutes: "Rate limit lockout (minutes)",
+    rate_limit_packets_per_min: "Packet list requests per minute",
+    rate_limit_captures_per_min: "Capture start requests per minute",
 };
 
 async function loadAdminSettings() {

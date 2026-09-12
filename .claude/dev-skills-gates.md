@@ -1,164 +1,91 @@
 # Dev Skills gate state
-Track: 0.1.0-dev.14 SHIPPED. API hardening in progress (work commits).
-Version: 0.1.0-dev.14
+Track: work commit (API hardening item 3 — rate limiting)
+Version: 0.1.0-dev.14 (no bump owed — work commit track)
 Updated: 2026-09-12
-Branch: claude/admiring-wright-k20ptf (the user's choice this session)
+Branch: claude/api-rate-limiting-10cf7m (harness-designated branch for this task)
 
-## API hardening -- work commits since dev.14
+## Session start re-derivation
 
-🔒 SECURITY ✅ reviewed per commit. Both changes narrow input handling; neither
-              widens it. No new dependencies, no new I/O.
+Resuming from a prior session's handoff. Re-derived, not assumed:
 
-Done:
-- Item 1: limit_request_body refuses an oversized body on Content-Length,
-  before anything parses it. 64 KB for JSON routes, 128 KB for the key upload.
-  The SSH key upload's own 64 KB check ran only after `await file.read()`, and
-  starlette's max_part_size guards field parts but not file parts -- those
-  spool to a temp file uncapped, on the volume the captures live on.
-  Residual, deliberately left and documented in the code: a chunked request
-  sends no Content-Length and cannot be refused up front.
-- Item 2: KnownHostEndpoint replaces the hand-written _endpoint_from_body.
-  The two host-key routes were the only ones in the API without a model, and
-  the only ones answering malformed input with a 500 -- proven by probe, four
-  of five bad bodies returned 500 before and 422 after. Every prior rule is
-  preserved, including the "2222" -> 2222 string coercion, which now has its
-  own test.
+- Branch `claude/api-rate-limiting-10cf7m` at 1013f51, tree clean, matches
+  `origin` (git status confirms local == remote).
+- v0.1.0-dev.14 confirmed tagged on remote (`git ls-remote --tags origin`),
+  alongside dev.1 through dev.13. No unfinished release gap.
+- `backend/main.py:62` reads `APP_VERSION = "0.1.0-dev.14"` — unchanged, as
+  expected for a work-commit track.
+- Prior branch `claude/admiring-wright-k20ptf` (21 commits behind this one)
+  was the previous session's home; this session's designated branch is
+  `claude/api-rate-limiting-10cf7m`, per this session's task instructions.
+  Not resolved by guessing — the task description assigns this branch
+  explicitly, unlike last session's ambiguity between two branches.
+
+## API hardening — work commits since dev.14 (carried from prior session)
+
+Done (already committed, on this branch's history):
+- Item 1: `limit_request_body` — refuses oversized body on Content-Length
+  before parsing. (commit 1013f51)
+- Item 2: `KnownHostEndpoint` model replaces hand-written body parsing for
+  the two host-key routes. (commit in this branch's history)
 
 Open:
-- Item 3: rate limiting covers login only (rate_limiter appears four times,
-  all inside login). Packet listing spawns tshark and capture start opens SSH,
-  both unthrottled per user. Needs the user's decision on what the limits are
-  and whether they join the admin-configurable settings table.
-- ServerAuth.hostname rejects a smaller set than KnownHostEndpoint.hostname:
-  it allows $, backtick, backslash, newline and CR. Not touched here --
-  tightening it is a change to a different endpoint. Worth its own look.
-- No CHANGELOG entry yet: these are work commits, so they belong to dev.15's
-  release notes rather than to an Unreleased heading this repo does not use.
+- **Item 3 (this session's focus):** rate limiting covers login only
+  (`rate_limiter` at `backend/main.py:488,496,506,526`, all inside `login`,
+  plus `:622` for config). `RateLimiter` is `backend/auth.py:19`. Packet
+  listing (spawns tshark) and capture start (opens SSH) are unthrottled per
+  user. Needs a decision on limits and whether they join the admin-configurable
+  settings (defaults at `backend/database.py:504`, README settings table)
+  before coding.
+- `ServerAuth.hostname` (`backend/models.py:69`) allows `$`, backtick,
+  backslash, newline, CR — looser than `KnownHostEndpoint.hostname` (`:106`).
+  Not yet touched.
+- dev.15's CHANGELOG needs entries for the two hardening commits.
+- dev.14's release body compares against dev.8, not dev.13 (cosmetic,
+  `gh release edit`, user's to run).
 
-## 0.1.0-dev.14 -- shipped and verified
+## Environment
 
-🔢 VERSION    ✅ backend/main.py:61, docker-compose.yml image tag and the
-                CHANGELOG heading all read 0.1.0-dev.14. v0.1.0-dev.13 is
-                confirmed tagged on the remote (1573e0b); v0.1.0-dev.14 is not
-                yet, which is Gate 6.
-🔨 BUILD      ✅ ./scripts/check.sh: 486 passed, no skips, at the bumped
-                version. The browser suites boot the real app and drive it, so
-                the app is verified working rather than only imported. The
-                container image is NOT built here -- the docker client exists
-                in this container but there is no daemon; the release workflow
-                builds and pushes it on the tag.
-🔒 SECURITY   ✅ pip-audit: backend/requirements.txt clean. No dangerous
-                patterns introduced across the release diff (1573e0b..HEAD) in
-                backend/ or frontend/. Each work commit in this release was
-                security reviewed when it was made.
-                Open, documented, NOT blocking: pytest 8.3.4 carries
-                PYSEC-2026-1845 (predictable /tmp/pytest-of-{user}; local DoS
-                or possible privilege gain), fixed in 9.0.3. Dev-only -- pytest
-                is not in requirements.txt and never enters the shipped image,
-                and the fix needs pytest-asyncio moved too, which is a test
-                infrastructure change deserving its own commit and its own
-                verification rather than a rider on a release.
-📄 DOCS       ✅ CHANGELOG entry for 0.1.0-dev.14. README corrected: it still
-                described a **Filters** tab this release removes, and the
-                settings table now states the per-interface capture rule.
-                docs/ carries no stale tab or version claims.
-📦 RELEASE    ✅ 5bfa961 pushed to claude/admiring-wright-k20ptf. PR ➖ N/A --
-                the default branch is out of scope by the user's standing
-                decision, so there is nothing to merge into.
-🚀 SHIP       ✅ the user pushed the tag. Verified against four independent
-                checks: v0.1.0-dev.14 -> 5bfa961 on the remote, release run
-                34722294928 success, the "Build and push image" step success
-                (image.name shows :0.1.0-dev.14 and :dev, so the floating tag
-                moved forward as bb61fa6's guard intends), and the published
-                Release (id 387719963).
-                Cosmetic: the auto-generated body compares against dev.8, not
-                dev.13, because dev.8 was tagged later in wall-clock time.
+Remote container. Claude executes git after approval (Section 5.7); tag
+pushes and ref deletions always go to the user as a presented block.
+`gh` is not installed — GitHub MCP tools stand in.
 
-## 0.1.0-dev.13 -- shipped and verified
+🔢 VERSION    ⬜ not owed — work commit track
+🔨 BUILD      ✅ ./scripts/check.sh: 506 passed, no skips (497 + 9 new tests).
+                The two new 429 checks were verified to fail without the fix
+                (temporarily reverted the throttle checks, reran, got the
+                expected failures, restored) before being trusted as real
+                coverage.
+🔒 SECURITY   ✅ SlidingWindowLimiter (backend/auth.py) is pure in-memory
+                bookkeeping — no new I/O, no new dependency, no secrets, no
+                shell/SQL/serialization surface. Mirrors RateLimiter's
+                existing shape (same file, same class of state).
+                Quality note, not blocking: like RateLimiter._attempts, the
+                new _hits dict is keyed per user id and never purged for
+                users who stop being active — unbounded in principle, same
+                pre-existing shape as the login limiter, not a new risk this
+                change introduces.
+📄 DOCS       ➖ N/A for this commit (work commit; changelog entry deferred to dev.15 release, tracked above) — README settings table and the admin panel's SETTING_LABELS were both updated so the two new settings aren't invisible, per test_every_setting_the_backend_defaults_is_editable_in_the_admin_panel
+📦 RELEASE    ⬜ not owed — work commit track
+🚀 SHIP       ⬜ not owed — work commit track
 
-🔢 VERSION ✅  🔨 BUILD ✅  🔒 SECURITY ✅  📄 DOCS ✅  📦 RELEASE ✅  🚀 SHIP ✅
+## Item 3 implementation summary (this session)
 
-Ship verified against four independent checks: tag v0.1.0-dev.13 -> 1573e0b on
-the remote, Release run 34714750294 success, the "Build and push image" step
-success, and the published Release (id 387682986).
+User's decisions (AskUserQuestion): per-user global scope, packet listing
+30/min + capture start 10/min, admin-configurable.
 
-## Work committed since, all on claude/admiring-wright-k20ptf
-
-Each was a work commit: 🔒 SECURITY reviewed, approval given, no version bump.
-
-- bb61fa6 floating image tag cannot move backward (release.yml guard)
-- e9b9cd1 Enter submits the server form (the reported "cannot add a username")
-- f456052 one capture per interface per server (+ interface column, migration)
-- 195eb9a master key rotation routine (backend/rekey.py, 20 tests)
-- 16d1190 deployment instructions (compose header, README quick start)
-- e687ca0 filter library moved into the Capture tab, Filters tab removed
-- 4f0a2cf CSP hash pinned by a test
-
-455 tests pass, no skips. Tool-dependent suites really ran.
-
-## Uncommitted work: browser test suites, plus two fixes they justified
-
-Track: work commit. No version bump, no artifact, no publish.
-Branch: claude/admiring-wright-k20ptf -- the user chose it this session.
-
-Contents: tests/browser (31 tests), a favicon, and Enter submitting every
-single-field form via data-enter-submits on the container. 486 tests, no skips.
-
-🔒 SECURITY   ✅ reviewed. New dev-only dependency playwright==1.62.0 (official
-                Microsoft package, exact name, actively maintained, not in
-                requirements.txt so it never reaches the shipped image;
-                pip-audit: no known vulnerabilities). Test server binds
-                loopback only, throwaway master key per run, temp dirs removed
-                on teardown. --no-sandbox only when running as root, headless,
-                own-origin pages.
-📋 APPROVAL   ⬜ not yet given. Do not commit until the user says so.
-
-The two fixes were asked for explicitly. Both are covered by browser tests that
-were verified to fail without them: stripping data-enter-submits from index.html
-fails 6 tests, and removing the icon puts the /favicon.ico 404 back in the
-console assertions.
-
-Still on the old id list in app.js: display-filter, login-password, reg-password,
-totp-confirm-code, login-totp. Left alone deliberately -- the display filter's
-Enter needs a loaded capture to test, and an untested migration is how this bug
-class started.
-
-Pre-existing finding, NOT from this change, for dev.14's Gate 3: pytest 8.3.4
-carries PYSEC-2026-1845 (predictable /tmp/pytest-of-{user}; local DoS or
-privilege gain), fixed in 9.0.3. Dev-only. A major pytest bump is its own
-change, not a rider on this one.
-
-## Next: 0.1.0-dev.14 release sequence -- ALL SIX GATES APPLY
-
-🔢 VERSION    ⬜ bump backend/main.py:61, docker-compose.yml image tag, and the
-                CHANGELOG heading together. v0.1.0-dev.13 is confirmed tagged.
-🔨 BUILD      ⬜ 483 tests, no skips. The browser suites are now IN the repo
-                (tests/browser, 28 tests) and run in CI, so the browser pass is
-                part of the suite rather than a separate manual step.
-🔒 SECURITY   ⬜ pip-audit, plus review of this release's new input paths.
-📄 DOCS       ⬜ CHANGELOG entry for dev.14.
-📦 RELEASE    ⬜ PR ➖ N/A -- no branch to merge into.
-🚀 SHIP       ⬜ the tag is the user's to push, always.
-
-## Session notes
-
-- Environment: remote container. Claude executes git after approval; tag and
-  ref-deleting pushes are always handed to the user as a block.
-- Branch: claude/admiring-wright-k20ptf is canonical. Work was briefly put on
-  claude/dev13-ship-verify-n3cr2c (the harness-designated branch) and moved by
-  fast-forward; that branch has since been deleted. The default branch
-  (claude/hopeful-allen-qmo0ch) is explicitly out of scope -- do not raise it.
-- tshark/tcpdump/capinfos are now installed by .claude/hooks/session-start.sh
-  on remote sessions. No manual apt-get needed; if it ever is, the line needs
-  DEBIAN_FRONTEND=noninteractive or wireshark-common's debconf prompt hangs it.
-- ghcr.io :dev may currently point at dev.8's image -- dev.8 was tagged after
-  dev.13, and dev.8's own copy of release.yml predates the guard. dev.14's
-  release run will correct it. Worth confirming after dev.14 ships.
-- v0.1.0-dev.8 is now tagged; the unfinished Gate 6 from earlier is closed.
-- The browser suites use playwright's ASYNC api deliberately. The sync api
-  installs an event loop on the main thread and holds it, and pytest-asyncio
-  (this repo runs asyncio_mode=auto) then fails on every async test that
-  follows: 30 failed / 106 errors in a full run, while each suite passed alone.
-- The harness designated branch claude/pcap-server-dev14-release-3tokl4 for
-  this session; it and claude/admiring-wright-k20ptf both point at de46241.
-  Ask before pushing -- do not resolve this by guessing.
+- `SlidingWindowLimiter` (backend/auth.py) — sliding 60s window, `.allow(key)`
+  records-and-checks in one call, no lockout/reset semantics (unlike
+  RateLimiter, every allowed call counts and there's nothing to clear).
+- Two new settings in `Database.DEFAULTS`: `rate_limit_packets_per_min` (30),
+  `rate_limit_captures_per_min` (10).
+- Two module-level limiter instances in backend/main.py, built from those
+  settings at startup; `admin_update_setting`'s existing if/elif now also
+  routes these two keys to `.update_config(...)`.
+- `list_packets` and `start_capture` each call `.allow(user["id"])` first
+  thing and return 429 before any tshark spawn / SSH connect happens.
+- Frontend: SETTING_LABELS in app.js, README settings table.
+- Tests: 6 unit tests for SlidingWindowLimiter (test_auth.py), 3 endpoint
+  tests (test_main.py) — the two 429 tests assert the expensive call
+  (capture_manager.start / capture_manager.get) was never reached, and the
+  admin-settings test proves the new if/elif branches actually wire up
+  (not just that the setting round-trips through the DB).
