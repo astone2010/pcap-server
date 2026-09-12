@@ -1258,3 +1258,139 @@ body {
     /* Keep the version badge; the word "GitHub" is the first thing to go. */
     #repo-link { display: none; }
 }
+
+
+/* Refusals caused by an unencrypted connection. Deliberately loud: a blocked
+   action that fails quietly reads as a broken app. */
+.readonly-notice {
+    padding: 9px 16px;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    border-bottom: 1px solid var(--warning);
+}
+
+.readonly-notice strong { color: var(--warning); }
+
+.https-refusal {
+    position: fixed;
+    left: 50%;
+    top: 16px;
+    transform: translateX(-50%);
+    z-index: 1000;
+    width: min(560px, calc(100vw - 32px));
+    padding: 14px 16px;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--danger);
+    border-left: 4px solid var(--danger);
+    border-radius: 6px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+.https-refusal-title {
+    font-weight: 700;
+    color: var(--danger);
+    margin-bottom: 6px;
+}
+
+.https-refusal-remedy {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+
+.https-refusal-close {
+    margin-top: 10px;
+    padding: 5px 12px;
+    font: inherit;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.https-refusal-close:hover { border-color: var(--accent); color: var(--accent); }
+
+
+/* Encryption status in the admin panel. The state line is colour-coded because
+   "are my captures encrypted?" should be answerable at a glance. */
+.enc-state {
+    font-weight: 600;
+    padding: 8px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    margin-bottom: 8px;
+}
+
+.enc-good {
+    color: var(--success);
+    border-color: var(--success);
+    background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+
+.enc-warn {
+    color: var(--warning);
+    border-color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.enc-bad {
+    color: var(--danger);
+    border-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.enc-detail {
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+}
+
+.enc-facts {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+}
+
+.enc-facts td {
+    padding: 4px 8px 4px 0;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+
+.enc-key {
+    color: var(--text-muted);
+    white-space: nowrap;
+    width: 1%;
+}
+
+.enc-howto {
+    margin-top: 12px;
+    padding: 10px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    white-space: pre;
+}
+
+/* The unencrypted case is worse than read-only, so it reads as an error. */
+.enc-notice-bad {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    border-bottom-color: var(--danger);
+}
+
+.enc-notice-bad strong { color: var(--danger); }

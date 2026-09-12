@@ -70,12 +70,13 @@ def _describe_failure(exc: Exception, stderr_text: str) -> str:
 
 
 class CaptureManager:
-    def __init__(self, ssh: SSHManager, captures_dir: Path, get_setting: Callable[[str], int], db) -> None:
+    def __init__(self, ssh: SSHManager, captures_dir: Path, get_setting: Callable[[str], int], db, vault=None) -> None:
         self._ssh = ssh
         self._captures_dir = captures_dir
         self._captures_dir.mkdir(parents=True, exist_ok=True)
         self._get_setting = get_setting
         self._db = db
+        self._vault = vault
         self._monitor_timeout: float = 600 + _MONITOR_GRACE_SECONDS
         self._captures: dict[str, CaptureInfo] = {}
         # RemoteCapture objects: the tcpdump process bound to its SSH connection,
@@ -93,6 +94,12 @@ class CaptureManager:
                 info.error = "interrupted by a server restart"
                 self._db.upsert_capture(_row(info))
             self._captures[info.id] = info
+
+    def _pcap_source(self, path: Path):
+        if self._vault:
+            return self._vault.source_for(path)
+        from backend.pcapsource import PlaintextSource
+        return PlaintextSource(path)
 
     def _persist(self, info: CaptureInfo) -> None:
         self._db.upsert_capture(_row(info))
@@ -134,7 +141,12 @@ class CaptureManager:
         max_seconds = self._get_setting("max_capture_seconds")
         capture_id = str(uuid.uuid4())
         remote_path = f"/tmp/pcap_{capture_id}.pcap"
-        local_path = self._captures_dir / f"{capture_id}.pcap"
+        # The vault decides the on-disk name, so an encrypted capture is never
+        # mistaken for a readable pcap by anything that scans the directory.
+        local_path = (
+            self._vault.stored_path(capture_id) if self._vault
+            else self._captures_dir / f"{capture_id}.pcap"
+        )
 
         args = self.build_command_args(req)
         duration = req.duration_seconds
@@ -254,7 +266,8 @@ class CaptureManager:
             info.status = CaptureStatus.TRANSFERRING
             self._persist(info)
 
-            await self._ssh.fetch_file(server, remote_path, local_path)
+            cryptor = self._vault.cryptor if self._vault else None
+            await self._ssh.fetch_file(server, remote_path, local_path, cryptor=cryptor)
 
             try:
                 await self._ssh.delete_remote_file(server, remote_path)
@@ -264,7 +277,7 @@ class CaptureManager:
             if local_path.exists():
                 info.file_size = local_path.stat().st_size
 
-            info.packet_count = await get_packet_count(local_path)
+            info.packet_count = await get_packet_count(self._pcap_source(local_path))
             info.status = CaptureStatus.COMPLETED
 
         except asyncio.CancelledError:

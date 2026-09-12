@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -17,6 +18,7 @@ LOGIN_TIMEOUT = 15          # seconds to complete TCP connect + SSH auth
 KEEPALIVE_INTERVAL = 30     # seconds between keepalives on a long capture
 KEEPALIVE_COUNT_MAX = 3     # missed keepalives before the connection is dropped
 FETCH_TIMEOUT = 300        # seconds for the pcap download before it is abandoned
+DOWNLOAD_CHUNK = 64 * 1024  # bytes read per SFTP round trip
 
 
 class RemoteCapture:
@@ -246,14 +248,39 @@ class SSHManager:
         remote_path: str,
         local_path: Path,
         *,
+        cryptor=None,
         timeout: float = FETCH_TIMEOUT,
     ) -> None:
-        """Download over its own short-lived connection, bounded and always closed."""
+        """Download over its own short-lived connection, bounded and always closed.
+
+        When a cryptor is given the capture is sealed as it arrives, chunk by
+        chunk over SFTP, so the plaintext pcap never exists as a local file --
+        not even briefly before being encrypted and deleted.
+        """
         conn = await self._connect(server)
         async with conn:
             await asyncio.wait_for(
-                asyncssh.scp((conn, remote_path), str(local_path)), timeout=timeout
+                self._download(conn, remote_path, local_path, cryptor), timeout=timeout
             )
+
+    async def _download(self, conn, remote_path: str, local_path: Path, cryptor) -> None:
+        if cryptor is None:
+            await asyncssh.scp((conn, remote_path), str(local_path))
+            return
+
+        # Sealed as it arrives: the plaintext capture never becomes a local file.
+        sealer = cryptor.sealer()
+        async with conn.start_sftp_client() as sftp:
+            async with sftp.open(remote_path, "rb") as remote:
+                with open(local_path, "wb") as out:
+                    out.write(sealer.header())
+                    while True:
+                        data = await remote.read(DOWNLOAD_CHUNK)
+                        if not data:
+                            break
+                        out.write(sealer.seal(data))
+                    out.write(sealer.finish())
+        os.chmod(local_path, 0o600)
 
     async def delete_remote_file(
         self,

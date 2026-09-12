@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import logging
 import os
 import uuid
@@ -7,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -22,11 +24,13 @@ from backend.auth import (
     generate_totp_secret,
     get_totp_uri,
     hash_password,
+    needs_rehash,
     validate_session,
     verify_password,
     verify_totp,
 )
 from backend.capture import CaptureManager
+from backend.crypto import CryptoError
 from backend.database import Database
 from backend.models import (
     CaptureRequest,
@@ -35,7 +39,9 @@ from backend.models import (
     ServerInfo,
 )
 from backend.packet_parser import ALLOWED_VIEW_FLAGS, get_packet_detail, get_packet_list
+from backend.localnet import SELF_CAPTURE_EXPLANATION, describe_if_local
 from backend.ssh_manager import SSHManager
+from backend.vault import CaptureVault, StartupRefused
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -50,8 +56,22 @@ REPO_URL = "https://github.com/darthrater78/pcap-server"
 app = FastAPI(title="pcap-server", version=APP_VERSION)
 
 db = Database(DATA_DIR / "pcap-server.db")
+
+# Fail closed: a missing or wrong key stops the app rather than silently storing
+# captures in the clear. StartupRefused carries the exact remedy.
+try:
+    vault = CaptureVault(dict(os.environ), db, CAPTURES_DIR)
+except StartupRefused as exc:
+    logger.error("REFUSING TO START\n\n%s\n", exc)
+    raise SystemExit(1) from exc
+
+if vault.cryptor is not None:
+    _migrated, _failed = vault.migrate_plaintext()
+    if _failed:
+        logger.error("%d capture(s) could not be encrypted; they remain plaintext", _failed)
+
 ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR)
-capture_manager = CaptureManager(ssh_manager, CAPTURES_DIR, db.get_setting_int, db)
+capture_manager = CaptureManager(ssh_manager, CAPTURES_DIR, db.get_setting_int, db, vault)
 rate_limiter = RateLimiter(
     max_attempts=db.get_setting_int("rate_limit_max_attempts"),
     lockout_minutes=db.get_setting_int("rate_limit_lockout_minutes"),
@@ -108,9 +128,26 @@ class SettingUpdate(BaseModel):
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """The address the login rate limiter counts against.
+
+    X-Forwarded-For is only consulted when a trusted proxy is configured. It is
+    set by whatever spoke to us last, so an app reachable directly would let a
+    caller invent a fresh address per request and never trip the limiter at all
+    -- which is the whole brute-force protection gone.
+
+    When it is consulted, the RIGHTMOST entry is used, not the leftmost. A proxy
+    appends the peer it actually saw, so anything to the left of that may have
+    been supplied by the client. This assumes a single trusted hop, which is the
+    normal single-nginx deployment.
+    """
+    if _TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        for candidate in reversed([p.strip() for p in forwarded.split(",") if p.strip()]):
+            try:
+                ipaddress.ip_address(candidate)
+                return candidate
+            except ValueError:
+                continue
     return request.client.host if request.client else "unknown"
 
 
@@ -136,12 +173,156 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
 
 _COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() in ("1", "true", "yes")
 
+# X-Forwarded-Proto is set by whatever spoke to us last, so a client can send it
+# too. It is only evidence of TLS when a proxy we trust is known to be in front
+# and to overwrite it -- so trusting it is opt-in, not a default.
+_TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").lower() in ("1", "true", "yes")
+
+
+def _is_secure_transport(request: Request) -> bool:
+    """True only when the capture cannot be read off the wire in transit."""
+    if request.url.scheme == "https":
+        return True
+    if _TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-proto", "")
+        if forwarded.split(",")[0].strip().lower() == "https":
+            return True
+    # Loopback never leaves the machine, so there is no wire to read.
+    host = (request.client.host if request.client else "") or ""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+# Over plain HTTP the app is read-only. Anything that changes state, and
+# anything that hands back capture contents in bulk, is refused: on an
+# unencrypted connection those either cross the wire in the clear or let an
+# observer replay them. Looking is allowed; changing and exporting are not.
+#
+# The exceptions are the endpoints without which the app cannot be used at all.
+# Sign-in over HTTP is already unsafe and the banner says so loudly -- but
+# refusing it too would leave no way in rather than a degraded way in.
+_INSECURE_ALLOWED_PATHS = frozenset({
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/register",
+    "/api/auth/totp/confirm",
+})
+
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+_HTTPS_REMEDY = (
+    "Put pcap-server behind an HTTPS reverse proxy -- Caddy obtains and renews "
+    "certificates automatically -- then set TRUST_PROXY_HEADERS=true so pcap-server "
+    "recognises the proxy's TLS."
+)
+
+
+def _insecure_error(reason: str) -> HTTPException:
+    """Structured so the UI can recognise this and explain it, not just show a 403."""
+    return HTTPException(403, {
+        "code": "https_required",
+        "reason": reason,
+        "remedy": _HTTPS_REMEDY,
+    })
+
+
+def _require_secure_transport(request: Request) -> None:
+    if _is_secure_transport(request):
+        return
+    raise _insecure_error(
+        "A capture routinely contains credentials in cleartext. Downloading it over "
+        "an unencrypted connection would put the whole capture on the wire in the clear."
+    )
+
+
+# Defence in depth against injected script. Output escaping (escHtml) is the
+# first line and is tested, but one missed escape in 38 innerHTML sites would be
+# an XSS -- so the page is also constrained in what injected script could do.
+#
+# connect-src, img-src and form-action are the ones that matter for "diverting
+# traffic from the page": they mean script running on this origin cannot send
+# anything to another host -- not by fetch, not by loading an image URL, not by
+# submitting a form. frame-ancestors stops the page being framed for clickjacking,
+# and base-uri stops a injected <base> silently re-pointing every relative URL.
+#
+# script-src still needs 'unsafe-inline' because the UI uses 33 inline onclick
+# handlers, and an attribute handler cannot carry a nonce. Moving those to
+# addEventListener is what would let this become a genuinely strict policy; it
+# is a mechanical change, tracked as follow-up.
+_CSP = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",          # data: for the TOTP QR code
+    "font-src 'self'",
+    "connect-src 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "object-src 'none'",
+])
+
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": _CSP,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+}
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for header, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    # HSTS only where TLS is genuinely in use. Sending it over plain HTTP is
+    # ignored by browsers, and sending it from a LAN deployment that later
+    # cannot do TLS would lock users out of their own tool.
+    if _is_secure_transport(request) and request.url.scheme == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
+
+@app.middleware("http")
+async def enforce_read_only_over_http(request: Request, call_next):
+    """Read-only over plain HTTP: refuse anything that changes state."""
+    if (
+        request.method in _MUTATING_METHODS
+        and request.url.path.startswith("/api/")
+        and request.url.path not in _INSECURE_ALLOWED_PATHS
+        and not _is_secure_transport(request)
+    ):
+        reason = (
+            "Uploading a private key over an unencrypted connection would put the key "
+            "itself on the wire, where anyone on the path could take a copy."
+            if "ssh-keys" in request.url.path else
+            "pcap-server is running over plain HTTP, so it is read-only: anything that "
+            "changes configuration is refused, because the request would cross the network "
+            "in the clear and could be read or replayed."
+        )
+        return JSONResponse(
+            status_code=403,
+            content={"detail": {
+                "code": "https_required",
+                "reason": reason,
+                "remedy": _HTTPS_REMEDY,
+            }},
+        )
+    return await call_next(request)
+
 
 def _set_session_cookie(response: Response, token: str) -> None:
     max_age = db.get_setting_int("session_duration_hours") * 3600
     response.set_cookie(
         "session", token,
-        httponly=True, samesite="lax", secure=_COOKIE_SECURE,
+        # Strict, not Lax: nothing here is reached by cross-site navigation, so
+        # the cookie never needs to ride one -- and Lax would still send it on a
+        # top-level GET, which includes the capture download URL.
+        httponly=True, samesite="strict", secure=_COOKIE_SECURE,
         max_age=max_age,
     )
 
@@ -165,6 +346,12 @@ async def auth_status(request: Request):
         # can reach the login page which build to match advisories against.
         "repo_url": REPO_URL,
         "releases_url": f"{REPO_URL}/releases",
+        "secure_transport": _is_secure_transport(request),
+        "read_only": not _is_secure_transport(request),
+        "trust_proxy_headers": _TRUST_PROXY_HEADERS,
+        "encryption": vault.status() if user else {
+            "enabled": vault.enabled, "locked": vault.locked,
+        },
         "version": APP_VERSION if user else "",
         "release_notes_url": f"{REPO_URL}/releases/tag/v{APP_VERSION}" if user else "",
         "authenticated": user is not None,
@@ -188,7 +375,7 @@ async def register(req: RegisterRequest, response: Response):
         raise HTTPException(409, "username taken")
 
     user_id = str(uuid.uuid4())
-    pw_hash = hash_password(req.password)
+    pw_hash = await asyncio.to_thread(hash_password, req.password)
     db.create_user(user_id, req.username, pw_hash, is_admin=True)
 
     token, expires = create_session_token(db, user_id)
@@ -203,7 +390,10 @@ async def login(req: LoginRequest, request: Request, response: Response):
         raise HTTPException(429, "too many failed attempts, try again later")
 
     user = db.get_user_by_username(req.username)
-    if not user or not verify_password(req.password, user["password_hash"]):
+    password_ok = bool(user) and await asyncio.to_thread(
+        verify_password, req.password, user["password_hash"]
+    )
+    if not password_ok:
         rate_limiter.record_failure(client_ip)
         raise HTTPException(401, "invalid credentials")
 
@@ -221,9 +411,18 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 trust_token = create_device_trust(db, user["id"])
                 response.set_cookie(
                     "device_trust", trust_token,
-                    httponly=True, samesite="lax", secure=_COOKIE_SECURE,
+                    httponly=True, samesite="strict", secure=_COOKIE_SECURE,
                     max_age=trust_days * 86400,
                 )
+
+    # The password is in hand and verified, so this is the only moment a hash
+    # written under weaker parameters can be upgraded without asking the user
+    # to change anything.
+    if needs_rehash(user["password_hash"]):
+        db.update_password_hash(
+            user["id"], await asyncio.to_thread(hash_password, req.password)
+        )
+        logger.info("upgraded password hash cost for %s", user["username"])
 
     rate_limiter.reset(client_ip)
     token, expires = create_session_token(db, user["id"])
@@ -277,7 +476,7 @@ async def admin_create_user(req: RegisterRequest, user: dict = Depends(require_a
     if db.get_user_by_username(req.username):
         raise HTTPException(409, "username taken")
     user_id = str(uuid.uuid4())
-    db.create_user(user_id, req.username, hash_password(req.password))
+    db.create_user(user_id, req.username, await asyncio.to_thread(hash_password, req.password))
     return {"ok": True, "user_id": user_id}
 
 
@@ -326,6 +525,30 @@ async def admin_update_setting(req: SettingUpdate, user: dict = Depends(require_
             db.get_setting_int("rate_limit_lockout_minutes"),
         )
     return {"ok": True}
+
+
+# --- admin: encryption ---
+
+class UnlockRequest(BaseModel):
+    passphrase: str
+
+
+@app.get("/api/admin/encryption")
+async def admin_encryption_status(user: dict = Depends(require_admin)):
+    return vault.status()
+
+
+@app.post("/api/admin/encryption/unlock")
+async def admin_encryption_unlock(req: UnlockRequest, user: dict = Depends(require_admin)):
+    """Passphrase mode only: derive the key into memory for this process."""
+    if not vault.locked:
+        raise HTTPException(400, "encryption is not locked")
+    try:
+        await asyncio.to_thread(vault.unlock, req.passphrase)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    migrated, failed = vault.migrate_plaintext()
+    return {"ok": True, "migrated": migrated, "failed": failed}
 
 
 # --- admin: known hosts ---
@@ -385,6 +608,20 @@ def _require_server(server_id: str, user_id: str) -> ServerInfo:
     return _server_from_row(row)
 
 
+async def _reject_self_target(hostname: str) -> None:
+    """A capture target must not be the machine pcap-server runs on.
+
+    Resolution can block on DNS, so it runs off the event loop.
+    """
+    finding = await asyncio.to_thread(describe_if_local, hostname)
+    if finding:
+        raise HTTPException(400, {
+            "code": "self_capture",
+            "reason": f"This server cannot be added: {finding}.",
+            "explanation": SELF_CAPTURE_EXPLANATION,
+        })
+
+
 def _require_key(ssh_key_name: str) -> None:
     key_path = (SSH_KEYS_DIR / ssh_key_name).resolve()
     if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
@@ -400,6 +637,7 @@ async def list_servers(user: dict = Depends(get_current_user)):
 
 @app.post("/api/servers")
 async def add_server(auth: ServerAuth, user: dict = Depends(get_current_user)):
+    await _reject_self_target(auth.hostname)
     _require_key(auth.ssh_key_name)
     info = ServerInfo(**auth.model_dump())
     db.add_active_server(
@@ -487,6 +725,7 @@ async def list_saved_servers(user: dict = Depends(get_current_user)):
 
 @app.post("/api/saved-servers")
 async def save_server(req: SaveServerRequest, user: dict = Depends(get_current_user)):
+    await _reject_self_target(req.hostname)
     key_path = (SSH_KEYS_DIR / req.ssh_key_name).resolve()
     if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
         raise HTTPException(400, "invalid key path")
@@ -497,6 +736,8 @@ async def save_server(req: SaveServerRequest, user: dict = Depends(get_current_u
 
 @app.put("/api/saved-servers/{server_id}")
 async def update_saved_server(server_id: str, req: SaveServerRequest, user: dict = Depends(get_current_user)):
+    # Checked on edit too: otherwise a benign server could be repointed at the host.
+    await _reject_self_target(req.hostname)
     key_path = (SSH_KEYS_DIR / req.ssh_key_name).resolve()
     if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
         raise HTTPException(400, "invalid key path")
@@ -520,6 +761,8 @@ async def load_saved_server(server_id: str, user: dict = Depends(get_current_use
     saved = db.get_saved_server(server_id, user["id"])
     if not saved:
         raise HTTPException(404, "saved server not found")
+    # Profiles stored before this check existed are caught here.
+    await _reject_self_target(saved["hostname"])
     db.add_active_server(
         saved["id"], user["id"], saved["name"], saved["hostname"], saved["port"],
         saved["username"], saved["ssh_key_name"], bool(saved["use_sudo"]),
@@ -622,7 +865,10 @@ async def get_capture(capture_id: str, user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/captures/{capture_id}/download")
-async def download_capture(capture_id: str, user: dict = Depends(get_current_user)):
+async def download_capture(capture_id: str, request: Request, user: dict = Depends(get_current_user)):
+    # Encrypting at rest and then handing the plaintext to a cleartext socket
+    # would defeat the point of the storage work entirely.
+    _require_secure_transport(request)
     info = capture_manager.get(capture_id)
     if not info or info.user_id != user["id"]:
         raise HTTPException(404, "capture not found")
@@ -631,7 +877,28 @@ async def download_capture(capture_id: str, user: dict = Depends(get_current_use
     path = Path(info.local_path)
     if not path.exists():
         raise HTTPException(404, "pcap file not found on disk")
-    return FileResponse(path, media_type="application/vnd.tcpdump.pcap", filename=f"{capture_id}.pcap")
+
+    try:
+        source = vault.source_for(path)
+    except CryptoError as exc:
+        raise HTTPException(503, str(exc))
+
+    async def body():
+        """Decrypt into the response. No plaintext copy is written to serve it."""
+        try:
+            async for chunk in source.chunks():
+                yield chunk
+        except CryptoError:
+            logger.exception("capture %s failed to decrypt during download", capture_id)
+            # The response has already begun, so the only honest signal left is
+            # to cut it off rather than hand over a truncated capture that looks whole.
+            raise
+
+    return StreamingResponse(
+        body(),
+        media_type="application/vnd.tcpdump.pcap",
+        headers={"Content-Disposition": f'attachment; filename="{capture_id}.pcap"'},
+    )
 
 
 # --- packets ---
@@ -660,8 +927,9 @@ async def list_packets(
         raise HTTPException(404, "pcap file missing")
     try:
         packets = await get_packet_list(
-            path, offset=offset, limit=limit, display_filter=display_filter,
-            view_flags=view_flags, resolve_names=resolve_names,
+            vault.source_for(path), offset=offset, limit=limit,
+            display_filter=display_filter, view_flags=view_flags,
+            resolve_names=resolve_names,
         )
         return {"packets": packets, "total": info.packet_count}
     except Exception:
@@ -680,7 +948,7 @@ async def packet_detail(capture_id: str, frame_number: int, user: dict = Depends
     if not path.exists():
         raise HTTPException(404, "pcap file missing")
     try:
-        return await get_packet_detail(path, frame_number)
+        return await get_packet_detail(vault.source_for(path), frame_number)
     except Exception:
         raise HTTPException(500, "failed to get packet detail")
 

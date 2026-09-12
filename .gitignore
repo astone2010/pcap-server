@@ -10,3 +10,7 @@ captures/
 .venv/
 node_modules/
 .DS_Store
+
+# Master encryption key. Never commit this.
+secrets/
+*.key

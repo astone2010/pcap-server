@@ -92,6 +92,8 @@
 </div>
 
 <!-- main app -->
+<div id="readonly-notice" class="readonly-notice" hidden></div>
+<div id="encryption-notice" class="readonly-notice" hidden></div>
 <div id="app-screen" class="app-layout" hidden>
     <div class="toolbar">
         <span class="logo">pcap-server</span>
@@ -301,6 +303,10 @@
         <!-- admin panel -->
         <div id="panel-admin" class="panel">
             <div class="admin-layout">
+                <div class="admin-section">
+                    <h3>Capture encryption</h3>
+                    <div id="admin-encryption"></div>
+                </div>
                 <div class="admin-section">
                     <h3>Settings</h3>
                     <div id="admin-settings" class="admin-settings-grid"></div>

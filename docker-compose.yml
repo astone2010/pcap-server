@@ -1,5 +1,14 @@
 # Create the bind-mount directories before starting:
-#   mkdir -p ssh-keys data captures
+#   mkdir -p ssh-keys data captures secrets
+#
+# Generate the master key ONCE, before the first start:
+#   openssl rand -base64 32 > secrets/master.key
+#   chmod 0400 secrets/master.key
+#
+# KEEP A COPY OF THAT FILE SOMEWHERE ELSE. Captures are encrypted with it and
+# there is no recovery path: lose the key and every stored capture is gone.
+# Keep it OUT of the data/ and captures/ directories -- a key stored beside the
+# data it protects protects nothing.
 #
 # The entrypoint automatically fixes ownership for the container's
 # non-root user (appuser, UID 1000). No manual chown needed.
@@ -28,4 +37,23 @@ services:
       - CAPTURES_DIR=/app/captures
       - DATA_DIR=/app/data
       - COOKIE_SECURE=false
+      # Where the master key is mounted. A file, not a variable: an environment
+      # variable is readable via `docker inspect` and /proc/<pid>/environ.
+      - MASTER_KEY_FILE=/run/secrets/pcap_master_key
+      #
+      # Alternative: ENCRYPTION_MODE=passphrase derives the key from a
+      # passphrase an admin types after each start. Nothing on disk can decrypt
+      # anything, but the app stays locked -- and cannot capture -- until
+      # someone unlocks it. Drop MASTER_KEY_FILE and the secrets block if you
+      # choose this.
+      #
+      # To run without encryption you must say so explicitly; the app will not
+      # start with captures unprotected by accident:
+      # - ALLOW_UNENCRYPTED_CAPTURES=true
+    secrets:
+      - pcap_master_key
     restart: unless-stopped
+
+secrets:
+  pcap_master_key:
+    file: ./secrets/master.key

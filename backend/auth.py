@@ -45,19 +45,68 @@ class RateLimiter:
         self.lockout_minutes = lockout_minutes
 
 
+# scrypt cost. The old format stored only salt$hash, so the parameters were
+# implicit and could never be raised without invalidating every existing
+# password. They are recorded in the hash now, so cost can follow the hardware.
+#
+# N = 2**17 is the current OWASP guidance for scrypt with r=8, p=1 -- roughly
+# 128 MB and ~100 ms per verification, which is a cost an attacker pays per
+# guess and a user pays once per sign-in.
+SCRYPT_N = 1 << 17
+SCRYPT_R = 8
+SCRYPT_P = 1
+SCRYPT_DKLEN = 64
+
+# What the implicit parameters used to be, for hashes written before this change.
+_LEGACY_SCRYPT = (1 << 14, 8, 1, 64)
+
+
+def _scrypt(password: str, salt: bytes, n: int, r: int, p: int, dklen: int) -> bytes:
+    # maxmem must be raised explicitly: hashlib's default is too small for N=2**17.
+    return hashlib.scrypt(
+        password.encode(), salt=salt, n=n, r=r, p=p, dklen=dklen,
+        maxmem=(128 * n * r * 2),
+    )
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
-    h = hashlib.scrypt(password.encode(), salt=salt.encode(), n=16384, r=8, p=1, dklen=64)
-    return f"{salt}${h.hex()}"
+    h = _scrypt(password, salt.encode(), SCRYPT_N, SCRYPT_R, SCRYPT_P, SCRYPT_DKLEN)
+    return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${salt}${h.hex()}"
 
 
 def verify_password(password: str, stored: str) -> bool:
-    parts = stored.split("$", 1)
-    if len(parts) != 2:
+    """Verifies both the current parameterised format and the original one."""
+    if stored.startswith("scrypt$"):
+        try:
+            _, n_s, r_s, p_s, salt, expected_hex = stored.split("$", 5)
+            n, r, p = int(n_s), int(r_s), int(p_s)
+        except (ValueError, TypeError):
+            return False
+        dklen = len(expected_hex) // 2
+    else:
+        parts = stored.split("$", 1)
+        if len(parts) != 2:
+            return False
+        salt, expected_hex = parts
+        n, r, p, dklen = _LEGACY_SCRYPT
+
+    try:
+        h = _scrypt(password, salt.encode(), n, r, p, dklen)
+    except ValueError:
         return False
-    salt, expected_hex = parts
-    h = hashlib.scrypt(password.encode(), salt=salt.encode(), n=16384, r=8, p=1, dklen=64)
     return hmac.compare_digest(h.hex(), expected_hex)
+
+
+def needs_rehash(stored: str) -> bool:
+    """True when a stored hash was written with weaker parameters than current."""
+    if not stored.startswith("scrypt$"):
+        return True
+    try:
+        _, n_s, r_s, p_s, _salt, _hash = stored.split("$", 5)
+        return (int(n_s), int(r_s), int(p_s)) != (SCRYPT_N, SCRYPT_R, SCRYPT_P)
+    except (ValueError, TypeError):
+        return True
 
 
 def hash_token(token: str) -> str:

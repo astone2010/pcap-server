@@ -2,50 +2,76 @@
 
 ## 0.1.0-dev.8 — 2026-09-12
 
-### Features
-
-- Link the GitHub repository and release notes from every screen. Signed in, the
-  toolbar carries a version badge pointing at the running version's release
-  notes, served by the backend so it cannot drift from the code. Signed out, the
-  sign-in screen footer links the repo and the releases index.
-- Add a read-only prerequisite check per server (Servers → Check prerequisites).
-  It probes the host for what a capture needs and reports a checklist: OS,
-  whether tcpdump is installed and at what absolute path, whether it is on the
-  SSH session's PATH, whether capture privilege exists (root, `cap_net_raw` on
-  the binary, or passwordless sudo), whether /tmp is writable, and the SELinux
-  mode. **Nothing is installed and nothing is elevated beyond `sudo -n true`.**
-  On a miss it prints the command for the operator to run themselves, with the
-  install hint matched to the detected distribution. `setcap` is offered ahead
-  of sudo, since it removes the need for sudo altogether.
-- Captures now invoke tcpdump by its discovered absolute path. tcpdump lives in
-  `/usr/sbin`, which a non-login SSH session frequently omits from PATH for
-  non-root users — so a bare `tcpdump` could fail with "command not found" on a
-  host where it was plainly installed. The prerequisite check records the real
-  path and captures use it.
-- Everything the probe returns is treated as untrusted input. A discovered path
-  must be absolute, free of shell metacharacters, and named `tcpdump`, and it is
-  re-validated before it is stored — a hostile or compromised host answering
-  with `/bin/sh -c ...` is discarded rather than executed.
-
-### Changed
-
-- Replace the viewer's `-n`/`-nn` chips with a single explicit
-  **Resolve hostnames** toggle, default off. dev.7 claimed these flags were
-  fixed; testing against real tshark showed that was over-stated, and the
-  reason is structural rather than a bug in the mapping:
-  tshark's Info column prints ports numerically whatever name resolution is set
-  to — verified on a capture to port 80, where `-N mt` and `-n` produce
-  byte-identical output — so tcpdump's "ports named vs numeric" distinction has
-  nowhere to appear in this view. And host names need both
-  `nameres.network_name` and `nameres.use_external_name_resolver`; `-N mnt`
-  alone changes nothing, and the hosts file is only consulted when the external
-  resolver is on. So the only resolution that alters this view is host lookup,
-  and it costs a reverse-DNS query for every address in the capture. On a tool
-  used to examine suspicious traffic that tells the resolver what is being
-  investigated, so it is off by default and the control says what it does.
-
 ### Security
 
+- **Captures are encrypted at rest.** A packet capture routinely contains
+  credentials in cleartext, so the stored pcap is now sealed with AES-256-GCM
+  under a per-capture key, which is itself wrapped by a master key that never
+  lives on the data volume. The plaintext never touches a filesystem at any
+  point: the capture is sealed chunk by chunk as it streams off the remote host
+  over SFTP, tshark and capinfos read it from stdin rather than a file, and a
+  download is decrypted straight into the response. Truncation, tampering,
+  chunk reordering and splicing between files are all detected rather than read
+  as a short capture.
+- The master key comes from one of three sources, chosen by configuration: a
+  file (a Docker secret — the default, since an environment variable is
+  readable via `docker inspect` and `/proc/<pid>/environ`), an environment
+  variable, or a passphrase an admin types after each start, which exists only
+  in memory. **Startup fails closed**: without a key the app refuses to start
+  and prints the exact remedy, unless `ALLOW_UNENCRYPTED_CAPTURES=true` says
+  otherwise. A key that does not open the existing captures also stops startup,
+  since continuing would strand them while writing new ones under a different
+  key. Captures written before this release are sealed at startup, verified,
+  and only then is the plaintext removed.
+- **Over plain HTTP the app is read-only.** Anything that changes state is
+  refused — SSH key upload and deletion, adding or editing servers, starting
+  captures, settings, user creation — as is downloading a capture. Sign-in
+  remains possible, because refusing it would leave no way in rather than a
+  degraded way in. The refusal is a structured response the UI explains in
+  place, the sign-in banner announces the restriction and the remedies, and the
+  Download button renders disabled rather than failing when clicked.
+  `X-Forwarded-Proto` is honoured only when `TRUST_PROXY_HEADERS=true`, since
+  any client can send it.
+- **Fix a login rate-limiter bypass.** The client address was taken from
+  `X-Forwarded-For` unconditionally, and from the leftmost entry — which the
+  client controls. A caller could present a fresh address per request and never
+  trip the limiter, giving unlimited password guessing against a directly
+  exposed instance, and equally against one behind a proxy using the usual
+  `$proxy_add_x_forwarded_for`. The header is now consulted only with a trusted
+  proxy configured, and the rightmost (proxy-appended) entry is used.
+- **Servers may no longer point at the machine pcap-server runs on.** Capturing
+  an interface that carries its own traffic records its own sign-in; over plain
+  HTTP the admin password is recoverable verbatim from the resulting pcap, which
+  is then stored and browsable. Hostnames resolving to loopback, to an address
+  the container answers on, to the default gateway (the Docker host on a bridge
+  network), or to a published host alias are refused on add, save, edit, and on
+  loading a profile stored before this check existed. The alert names the
+  address it matched and explains the exposure.
+- **Add a Content-Security-Policy and companion headers.** Output escaping is
+  the first line of defence and is tested, but one missed escape among 38
+  `innerHTML` sites would be an XSS. `connect-src`, `img-src` and `form-action`
+  mean script running on the page cannot send anything to another host;
+  `frame-ancestors` and `X-Frame-Options` stop clickjacking; `base-uri` stops an
+  injected `<base>` re-pointing every relative URL. Also `nosniff`,
+  `no-referrer`, a restrictive `Permissions-Policy`, COOP/CORP, and HSTS only
+  where TLS is genuinely in use. `script-src` still needs `'unsafe-inline'`
+  because the UI uses inline event handlers, which cannot carry a nonce.
+- Session and device-trust cookies move from `SameSite=Lax` to `Strict`. Lax
+  still sends the cookie on a top-level GET, and the capture download is a GET.
+- **Password hashing records its parameters.** The stored format was
+  `salt$hash` with the scrypt cost implicit, so it could never be raised without
+  invalidating every existing password. Hashes are now
+  `scrypt$N$r$p$salt$hash` at N=2^17 (current OWASP guidance), old hashes still
+  verify, and a correct sign-in transparently re-hashes at the new cost. The
+  passphrase-derived master key uses the same cost. Hashing runs in a worker
+  thread: at this cost it would otherwise block the event loop for roughly half
+  a second per sign-in and make the login endpoint an easy way to stall the app.
+- Do not disclose the running version to unauthenticated callers.
+  `/api/auth/status` needs no session, so publishing the build there tells
+  anyone who can reach the login page which advisories to match.
+- Update `cryptography` 41.0.7 → 50.0.1 and `asyncssh` 2.18.0 → 2.24.0. The
+  former was pinned to whatever a build container happened to have and carries
+  known CVEs; the latter is the SSH implementation itself.
 - Close the SSH connection carrying a capture. `run_tcpdump` returned only the
   tcpdump process, leaving its connection with no owner and no close path: it
   stayed open after tcpdump had exited and was reclaimed only whenever the
@@ -91,6 +117,57 @@
   works normally and the session cookie, password and TOTP code all cross the
   network in cleartext. That case was silent. `localhost` stays quiet, since
   browsers treat it as a secure context.
+
+### Features
+
+- Admin → Capture encryption shows whether captures are encrypted, the key
+  source, the key fingerprint, and how many captures are encrypted or still
+  plaintext. In passphrase mode it offers the unlock form. A banner outside the
+  admin panel says when captures are unencrypted or when the vault is locked, so
+  neither state is discoverable only by going looking for it.
+- Guides for running behind a reverse proxy: `docs/nginx.conf.example` and
+  `docs/nginx-proxy-manager.md`. Both call out `proxy_buffering off`, without
+  which nginx spools a decrypted capture to its own disk and undoes encrypting
+  captures at rest.
+- Link the GitHub repository and release notes from every screen. Signed in, the
+  toolbar carries a version badge pointing at the running version's release
+  notes, served by the backend so it cannot drift from the code. Signed out, the
+  sign-in screen footer links the repo and the releases index.
+- Add a read-only prerequisite check per server (Servers → Check prerequisites).
+  It probes the host for what a capture needs and reports a checklist: OS,
+  whether tcpdump is installed and at what absolute path, whether it is on the
+  SSH session's PATH, whether capture privilege exists (root, `cap_net_raw` on
+  the binary, or passwordless sudo), whether /tmp is writable, and the SELinux
+  mode. **Nothing is installed and nothing is elevated beyond `sudo -n true`.**
+  On a miss it prints the command for the operator to run themselves, with the
+  install hint matched to the detected distribution. `setcap` is offered ahead
+  of sudo, since it removes the need for sudo altogether.
+- Captures now invoke tcpdump by its discovered absolute path. tcpdump lives in
+  `/usr/sbin`, which a non-login SSH session frequently omits from PATH for
+  non-root users — so a bare `tcpdump` could fail with "command not found" on a
+  host where it was plainly installed. The prerequisite check records the real
+  path and captures use it.
+- Everything the probe returns is treated as untrusted input. A discovered path
+  must be absolute, free of shell metacharacters, and named `tcpdump`, and it is
+  re-validated before it is stored — a hostile or compromised host answering
+  with `/bin/sh -c ...` is discarded rather than executed.
+
+### Changed
+
+- Replace the viewer's `-n`/`-nn` chips with a single explicit
+  **Resolve hostnames** toggle, default off. dev.7 claimed these flags were
+  fixed; testing against real tshark showed that was over-stated, and the
+  reason is structural rather than a bug in the mapping:
+  tshark's Info column prints ports numerically whatever name resolution is set
+  to — verified on a capture to port 80, where `-N mt` and `-n` produce
+  byte-identical output — so tcpdump's "ports named vs numeric" distinction has
+  nowhere to appear in this view. And host names need both
+  `nameres.network_name` and `nameres.use_external_name_resolver`; `-N mnt`
+  alone changes nothing, and the hosts file is only consulted when the external
+  resolver is on. So the only resolution that alters this view is host lookup,
+  and it costs a reverse-DNS query for every address in the capture. On a tool
+  used to examine suspicious traffic that tells the resolver what is being
+  investigated, so it is off by default and the control says what it does.
 
 ### Fixes
 

@@ -151,6 +151,12 @@ class Database:
         row = self._conn().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return dict(row) if row else None
 
+    def update_password_hash(self, user_id: str, password_hash: str) -> None:
+        self._conn().execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id)
+        )
+        self._conn().commit()
+
     def set_totp_secret(self, user_id: str, secret: str) -> None:
         self._conn().execute("UPDATE users SET totp_secret = ? WHERE id = ?", (secret, user_id))
         self._conn().commit()

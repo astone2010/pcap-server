@@ -137,6 +137,56 @@ seconds (three missed before the connection is dropped) so a peer that
 disappears mid-capture is noticed rather than waited on. The capture monitor
 gives up at the capture's duration plus 60 seconds regardless.
 
+## Behind a reverse proxy
+
+Over plain HTTP pcap-server is read-only — see [Sessions](#sessions) and the
+banner the app shows. Putting it behind TLS restores full access. A worked nginx
+config is in [`docs/nginx.conf.example`](docs/nginx.conf.example), and there is a
+separate guide for **[Nginx Proxy Manager](docs/nginx-proxy-manager.md)**, which
+generates its own config and needs different steps. Three settings are
+load-bearing and easy to miss.
+
+**1. Tell the app that TLS terminated at the proxy.**
+
+```nginx
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+and set `TRUST_PROXY_HEADERS=true` in the container. Without both, pcap-server
+sees a plain-HTTP request and stays read-only. The header is only trusted when
+that variable is set, because anyone can send it.
+
+**2. Do not publish the app port once you trust that header.**
+
+Trusting `X-Forwarded-Proto` means anyone who can reach the app directly can
+claim to be the proxy. Bind it to loopback, or drop `ports:` entirely and put
+nginx on the same Docker network:
+
+```yaml
+    ports:
+      - "127.0.0.1:8080:8080"   # not "8080:8080"
+```
+
+**3. Turn proxy buffering off.**
+
+```nginx
+proxy_buffering off;
+```
+
+A capture download is decrypted on the fly. With buffering on, nginx spools
+large responses to `proxy_temp_path`, which writes an unencrypted copy of the
+pcap onto the proxy's disk — undoing the point of encrypting captures at rest.
+
+One more worth setting: `proxy_set_header X-Forwarded-For $remote_addr;` rather
+than the usual `$proxy_add_x_forwarded_for`. The latter appends the real peer to
+whatever the client sent, leaving attacker-supplied text in the header.
+pcap-server reads the rightmost entry for exactly that reason, but sending only
+the address nginx saw removes the ambiguity.
+
+Caddy is an alternative worth knowing about: it obtains and renews Let's Encrypt
+certificates itself, and needs about five lines. nginx is fine — it just needs
+certbot alongside it.
+
 ## Sessions
 
 Sessions are bearer tokens in an `HttpOnly` cookie, stored only as a SHA-256

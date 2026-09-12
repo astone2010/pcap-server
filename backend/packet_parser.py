@@ -6,17 +6,63 @@ import logging
 from pathlib import Path
 
 from backend.models import PacketDetail, PacketSummary
+from backend.pcapsource import PcapSource
 
 logger = logging.getLogger(__name__)
 
 
-async def get_packet_count(pcap_path: Path) -> int:
+
+
+async def _run_tool(cmd: list[str], source: PcapSource) -> tuple[bytes, bytes, int]:
+    """Run a pcap tool with the capture on stdin.
+
+    Every tool used here (tshark, capinfos) reads "-" as stdin, which is what
+    keeps a decrypted capture out of the filesystem entirely -- it exists only
+    as chunks in flight between this process and the tool.
+
+    stdin is fed by a separate task while stdout is drained, because a capture
+    larger than the pipe buffer would otherwise deadlock: the writer blocks on a
+    full stdin pipe while the reader waits for output that cannot come.
+    """
     proc = await asyncio.create_subprocess_exec(
-        "capinfos", "-c", "-M", str(pcap_path),
+        *cmd,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, _ = await proc.communicate()
+
+    async def feed() -> None:
+        try:
+            async for chunk in source.chunks():
+                proc.stdin.write(chunk)
+                await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            # Normal when the tool stops early, e.g. tshark with -c.
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+    feeder = asyncio.create_task(feed())
+    stdout, stderr = await proc.communicate()
+    feed_error = None
+    try:
+        await feeder
+    except Exception as exc:  # noqa: BLE001 - re-raised below with context
+        feed_error = exc
+
+    if feed_error is not None:
+        # The tool saw truncated input or none at all, so whatever it printed is
+        # not trustworthy. Failing loudly beats returning a plausible empty result.
+        logger.error("failed while feeding %s: %s", cmd[0], feed_error)
+        raise RuntimeError(f"could not supply capture data to {cmd[0]}") from feed_error
+
+    return stdout, stderr, proc.returncode or 0
+
+async def get_packet_count(source: PcapSource) -> int:
+    stdout, _, _ = await _run_tool(["capinfos", "-c", "-M", "-"], source)
     for line in stdout.decode().splitlines():
         if "Number of packets" in line:
             parts = line.split(":")
@@ -61,7 +107,7 @@ def _name_resolution_args(resolve_names: bool) -> list[str]:
 
 
 async def get_packet_list(
-    pcap_path: Path,
+    source: PcapSource,
     offset: int = 0,
     limit: int = 200,
     display_filter: str = "",
@@ -77,7 +123,7 @@ async def get_packet_list(
     show_time = "-t" not in flags
     show_mac = "-e" in flags
 
-    cmd = ["tshark", "-r", str(pcap_path)]
+    cmd = ["tshark", "-r", "-"]
     cmd += _name_resolution_args(resolve_names)
     cmd += [
         "-T", "fields",
@@ -100,14 +146,8 @@ async def get_packet_list(
         _validate_display_filter(display_filter)
         cmd += ["-Y", display_filter]
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-
-    if proc.returncode != 0:
+    stdout, stderr, rc = await _run_tool(cmd, source)
+    if rc != 0:
         logger.warning("tshark stderr: %s", stderr.decode()[:500])
 
     packets = []
@@ -137,27 +177,23 @@ async def get_packet_list(
     return packets
 
 
-async def get_packet_detail(pcap_path: Path, frame_number: int) -> PacketDetail:
+async def get_packet_detail(source: PcapSource, frame_number: int) -> PacketDetail:
     cmd = [
-        "tshark", "-r", str(pcap_path),
+        "tshark", "-r", "-",
         "-T", "json",
         "-Y", f"frame.number == {int(frame_number)}",
         "--no-duplicate-keys",
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await proc.communicate()
-
+    stdout, _, _ = await _run_tool(cmd, source)
     data = json.loads(stdout.decode())
     if not data:
         raise ValueError(f"frame {frame_number} not found")
 
     pkt = data[0]
-    source = pkt.get("_source", {})
-    layers_raw = source.get("layers", {})
+    # Named pkt_source, not source: `source` is the PcapSource parameter, and
+    # shadowing it here silently fed a dict to the hex dump.
+    pkt_source = pkt.get("_source", {})
+    layers_raw = pkt_source.get("layers", {})
 
     layers = []
     for layer_name, layer_data in layers_raw.items():
@@ -168,7 +204,7 @@ async def get_packet_detail(pcap_path: Path, frame_number: int) -> PacketDetail:
     if "frame" in layers_raw and isinstance(layers_raw["frame"], dict):
         timestamp = layers_raw["frame"].get("frame.time_relative", "")
 
-    hex_dump = await _get_hex_dump(pcap_path, frame_number)
+    hex_dump = await _get_hex_dump(source, frame_number)
 
     return PacketDetail(
         number=frame_number,
@@ -178,15 +214,10 @@ async def get_packet_detail(pcap_path: Path, frame_number: int) -> PacketDetail:
     )
 
 
-async def _get_hex_dump(pcap_path: Path, frame_number: int) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "tshark", "-r", str(pcap_path),
-        "-Y", f"frame.number == {int(frame_number)}",
-        "-x",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+async def _get_hex_dump(source: PcapSource, frame_number: int) -> str:
+    stdout, _, _ = await _run_tool(
+        ["tshark", "-r", "-", "-Y", f"frame.number == {int(frame_number)}", "-x"], source
     )
-    stdout, _ = await proc.communicate()
     return stdout.decode(errors="replace")
 
 

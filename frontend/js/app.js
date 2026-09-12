@@ -3,6 +3,8 @@
 const API = "";
 let currentUser = null;
 let activeServers = [];
+// Whether this page reached the server over a connection a capture may cross.
+let secureTransport = true;
 let savedServers = [];
 let captures = [];
 let viewingCaptureId = null;
@@ -10,27 +12,79 @@ let selectedPacketRow = null;
 
 // --- helpers ---
 
-async function api(path, opts = {}) {
-    const resp = await fetch(API + path, {
-        headers: { "Content-Type": "application/json", ...opts.headers },
+async function api(path, options = {}) {
+    const res = await fetch(path, {
         credentials: "same-origin",
-        ...opts,
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        ...options,
     });
-    if (!resp.ok) {
-        let msg;
+    if (!res.ok) {
+        let detail = "";
         try {
-            const j = await resp.json();
-            msg = j.detail || JSON.stringify(j);
+            detail = (await res.json()).detail;
         } catch {
-            msg = resp.statusText;
+            detail = res.statusText;
         }
-        throw new Error(msg);
+        // A structured https_required refusal is shown in full, where the user
+        // is looking, rather than reduced to "403" in a corner.
+        if (detail && typeof detail === "object" && detail.code === "https_required") {
+            showHttpsRefusal(detail);
+            const err = new Error(detail.reason);
+            err.httpsRequired = true;
+            throw err;
+        }
+        if (detail && typeof detail === "object" && detail.code === "self_capture") {
+            showBlockingAlert("Cannot capture from this machine", detail.reason,
+                              detail.explanation);
+            throw new Error(detail.reason);
+        }
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
     }
-    if (resp.headers.get("content-type")?.includes("json")) {
-        return resp.json();
-    }
-    return resp;
+    return res.status === 204 ? null : res.json();
 }
+
+// A blocked action must say so plainly. This puts the reason on screen, scrolls
+// it into view and keeps it until dismissed -- an alert() is easy to click away
+// without reading, and a console error is invisible.
+function showHttpsRefusal(detail) {
+    showBlockingAlert("Blocked: this needs an encrypted connection",
+                      detail.reason || "", detail.remedy || "");
+}
+
+// One visible, dismissible panel for anything the server refuses on safety
+// grounds. Deliberately not an alert(): this needs to be readable and to stay
+// on screen while the user reads it.
+function showBlockingAlert(title, reason, detail) {
+    let box = $("https-refusal");
+    if (!box) {
+        box = document.createElement("div");
+        box.id = "https-refusal";
+        box.className = "https-refusal";
+        document.body.prepend(box);
+    }
+    box.textContent = "";
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "https-refusal-title";
+    titleEl.textContent = title;
+
+    const reasonEl = document.createElement("div");
+    reasonEl.textContent = reason;
+
+    const detailEl = document.createElement("div");
+    detailEl.className = "https-refusal-remedy";
+    detailEl.textContent = detail;
+
+    const close = document.createElement("button");
+    close.className = "https-refusal-close";
+    close.textContent = "Dismiss";
+    close.onclick = () => { box.hidden = true; };
+
+    box.append(titleEl, reasonEl, detailEl, close);
+    box.hidden = false;
+    box.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
 
 function show(id) { document.getElementById(id).hidden = false; }
 function hide(id) { document.getElementById(id).hidden = true; }
@@ -78,6 +132,10 @@ function setBanner(kind, lead, parts) {
     for (const part of parts) {
         if (typeof part === "string") {
             banner.append(part);
+        } else if (part.strong) {
+            const emphasis = document.createElement("strong");
+            emphasis.textContent = part.strong;
+            banner.append(emphasis);
         } else {
             const code = document.createElement("code");
             code.textContent = part.code;
@@ -109,12 +167,19 @@ function checkCookieConfig(cookieSecure) {
     } else if (!httpsPage && !cookieSecure && !localhost) {
         // The override case. Sign-in works, which is exactly why this needs
         // saying: nothing looks wrong, and every request is in the clear.
-        setBanner("warning", "This connection is not encrypted.", [
-            "pcap-server is running with ",
-            { code: "COOKIE_SECURE=false" },
-            " over plain HTTP, so your session cookie, password and TOTP code cross the network in cleartext, and captured packets download unencrypted. Anyone on the path can read them or replay your session. This is fine on a trusted LAN and unsafe anywhere else \u2014 put the app behind an HTTPS reverse proxy and set ",
+        setBanner("warning", "Not encrypted \u2014 signing in here is read-only.", [
+            "This page was loaded over plain HTTP, so your password and TOTP code will cross ",
+            "the network in cleartext and your session cookie can be copied and replayed. ",
+            "Because of that pcap-server runs read-only on this connection: you can browse ",
+            "servers and view captures, but ",
+            { strong: "captures cannot be downloaded, SSH keys cannot be uploaded, and nothing can be changed" },
+            ". To get full access, serve pcap-server over HTTPS \u2014 either put a reverse proxy in front ",
+            "(Caddy obtains and renews Let's Encrypt certificates automatically; nginx or Traefik work too) ",
+            "and set ",
+            { code: "TRUST_PROXY_HEADERS=true" },
+            " so it recognises the proxy's TLS, then set ",
             { code: "COOKIE_SECURE=true" },
-            " for any other network.",
+            " and restart the container.",
         ]);
     } else {
         $("config-banner").hidden = true;
@@ -153,6 +218,9 @@ async function checkAuth() {
     const status = await api("/api/auth/status");
     checkCookieConfig(status.cookie_secure);
     applyBuildLinks(status);
+    secureTransport = status.secure_transport !== false;
+    renderReadOnlyNotice(status);
+    renderEncryptionNotice(status);
     if (!status.has_users) {
         show("auth-screen");
         show("register-form");
@@ -277,6 +345,7 @@ function initTabs() {
             tab.classList.add("active");
             $("panel-" + tab.dataset.tab).classList.add("active");
             if (tab.dataset.tab === "admin") {
+                loadEncryptionStatus();
                 loadAdminSettings();
                 loadAdminUsers();
                 loadAdminSSHKeys();
@@ -814,8 +883,14 @@ function renderCaptures() {
             if (c.status === "running") {
                 actions = `<button class="btn btn-sm btn-secondary" onclick="stopCapture('${c.id}')">Stop</button>`;
             } else if (c.status === "completed") {
+                // Downloads are refused over plain HTTP, so say why here rather
+                // than letting the button fail with a 403 when clicked.
+                const dl = secureTransport
+                    ? `<button class="btn btn-sm btn-secondary" onclick="downloadCaptureById('${c.id}')">Download</button>`
+                    : `<button class="btn btn-sm btn-secondary" disabled
+                         title="Downloads require HTTPS. A pcap can contain credentials, so it is not sent over an unencrypted connection.">Download (HTTPS only)</button>`;
                 actions = `<button class="btn btn-sm btn-primary" onclick="viewCapture('${c.id}')">View</button>
-                           <button class="btn btn-sm btn-secondary" onclick="downloadCaptureById('${c.id}')">Download</button>`;
+                           ${dl}`;
             }
             actions += ` <button class="btn btn-sm btn-danger" onclick="deleteCapture('${c.id}')">Delete</button>`;
             return `
@@ -852,7 +927,65 @@ async function deleteCapture(id) {
     loadCaptures();
 }
 
+function renderEncryptionNotice(status) {
+    const el = $("encryption-notice");
+    if (!el) return;
+    const enc = status.encryption || {};
+    el.textContent = "";
+    if (enc.enabled === false) {
+        const strong = document.createElement("strong");
+        strong.textContent = "Captures are stored unencrypted. ";
+        const rest = document.createElement("span");
+        rest.textContent = "No master key is configured. A packet capture routinely contains "
+            + "credentials in cleartext, so anyone who can read the captures volume or a backup "
+            + "of it can read everything captured here. See Admin \u2192 Capture encryption.";
+        el.append(strong, rest);
+        el.className = "readonly-notice enc-notice-bad";
+        el.hidden = false;
+        return;
+    }
+    if (enc.locked) {
+        const strong = document.createElement("strong");
+        strong.textContent = "Encryption is locked. ";
+        const rest = document.createElement("span");
+        rest.textContent = "Captures cannot be taken or read until an admin enters the master "
+            + "passphrase in Admin \u2192 Capture encryption.";
+        el.append(strong, rest);
+        el.className = "readonly-notice";
+        el.hidden = false;
+        return;
+    }
+    el.hidden = true;
+}
+
+function renderReadOnlyNotice(status) {
+    const el = $("readonly-notice");
+    if (!el) return;
+    if (!status.read_only) {
+        el.hidden = true;
+        return;
+    }
+    el.textContent = "";
+    const strong = document.createElement("strong");
+    strong.textContent = "Read-only: this connection is not encrypted. ";
+    const rest = document.createElement("span");
+    rest.textContent = "Captures cannot be downloaded, SSH keys cannot be uploaded, and "
+        + "nothing can be changed, because those would cross the network in the clear. "
+        + "Viewing is allowed. Serve pcap-server over HTTPS to restore full access.";
+    el.append(strong, rest);
+    el.hidden = false;
+}
+
 function downloadCaptureById(id) {
+    if (!secureTransport) {
+        showHttpsRefusal({
+            reason: "A capture routinely contains credentials in cleartext. Downloading it "
+                + "over an unencrypted connection would put the whole capture on the wire.",
+            remedy: "Serve pcap-server over HTTPS, then set TRUST_PROXY_HEADERS=true if a "
+                + "reverse proxy terminates TLS.",
+        });
+        return;
+    }
     window.open(`/api/captures/${id}/download`, "_blank");
 }
 
@@ -1095,6 +1228,156 @@ document.addEventListener("keydown", (e) => {
         doLogin();
     }
 });
+
+
+// --- encryption ---
+
+async function loadEncryptionStatus() {
+    const box = $("admin-encryption");
+    if (!box) return;
+    try {
+        renderEncryption(box, await api("/api/admin/encryption"));
+    } catch (e) {
+        box.textContent = "";
+        const err = document.createElement("div");
+        err.className = "error-msg";
+        err.textContent = e.message;
+        box.append(err);
+    }
+}
+
+function encryptionSummary(st) {
+    if (!st.enabled) {
+        return {
+            level: "bad",
+            headline: "Captures are stored unencrypted",
+            detail: "No master key is configured and ALLOW_UNENCRYPTED_CAPTURES is set. "
+                + "A packet capture routinely contains credentials in cleartext, so anyone "
+                + "who can read the captures volume, a backup of it, or the disk it sits on "
+                + "can read everything you have captured.",
+        };
+    }
+    if (st.locked) {
+        return {
+            level: "warn",
+            headline: "Locked \u2014 a passphrase is needed",
+            detail: "This installation derives its key from a passphrase held only in memory, "
+                + "so a restart leaves it locked. Captures cannot be read or taken until it "
+                + "is unlocked.",
+        };
+    }
+    return {
+        level: "good",
+        headline: "Captures are encrypted at rest",
+        detail: "New captures are sealed as they arrive from the remote host, and decrypted "
+            + "only in transit to the viewer or your browser \u2014 the plaintext is never "
+            + "written to disk.",
+    };
+}
+
+const ENCRYPTION_MODE_LABEL = {
+    file: "master key file (Docker secret)",
+    env: "master key from the environment",
+    passphrase: "admin passphrase (held in memory only)",
+    disabled: "disabled",
+};
+
+function renderEncryption(box, st) {
+    box.textContent = "";
+    const summary = encryptionSummary(st);
+
+    const head = document.createElement("div");
+    head.className = `enc-state enc-${summary.level}`;
+    head.textContent = summary.headline;
+    box.append(head);
+
+    const detail = document.createElement("div");
+    detail.className = "enc-detail";
+    detail.textContent = summary.detail;
+    box.append(detail);
+
+    const facts = document.createElement("table");
+    facts.className = "enc-facts";
+    const rows = [["Key source", ENCRYPTION_MODE_LABEL[st.mode] || st.mode]];
+    if (st.key_id) rows.push(["Key fingerprint", st.key_id]);
+    rows.push(["Encrypted captures", String(st.encrypted_count)]);
+    if (st.plaintext_count) {
+        rows.push(["Still plaintext", `${st.plaintext_count} \u2014 these predate encryption `
+            + `and could not be converted; see the container log`]);
+    }
+    for (const [k, v] of rows) {
+        const tr = document.createElement("tr");
+        const th = document.createElement("td");
+        th.className = "enc-key";
+        th.textContent = k;
+        const td = document.createElement("td");
+        td.textContent = v;
+        tr.append(th, td);
+        facts.append(tr);
+    }
+    box.append(facts);
+
+    if (st.locked) {
+        const form = document.createElement("div");
+        form.className = "admin-inline-form";
+        form.style.marginTop = "12px";
+        const input = document.createElement("input");
+        input.type = "password";
+        input.id = "enc-passphrase";
+        input.placeholder = "Master passphrase";
+        input.style.width = "220px";
+        input.autocomplete = "off";
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") unlockEncryption(); });
+        const btn = document.createElement("button");
+        btn.className = "btn btn-sm btn-primary";
+        btn.textContent = "Unlock";
+        btn.onclick = unlockEncryption;
+        form.append(input, btn);
+        box.append(form);
+
+        const msg = document.createElement("div");
+        msg.id = "enc-msg";
+        msg.className = "error-msg";
+        box.append(msg);
+    }
+
+    if (!st.enabled) {
+        const how = document.createElement("pre");
+        how.className = "enc-howto";
+        how.textContent = "openssl rand -base64 32 > secrets/master.key\n"
+            + "chmod 0400 secrets/master.key\n\n"
+            + "then in docker-compose.yml:\n"
+            + "  environment:\n"
+            + "    - MASTER_KEY_FILE=/run/secrets/pcap_master_key\n"
+            + "  secrets:\n"
+            + "    - pcap_master_key\n\n"
+            + "Back that key up. Without it, encrypted captures cannot be recovered.";
+        box.append(how);
+    }
+}
+
+async function unlockEncryption() {
+    const input = $("enc-passphrase");
+    const msg = $("enc-msg");
+    if (!input) return;
+    if (msg) { msg.className = "error-msg"; msg.textContent = "Deriving key\u2026"; }
+    try {
+        const res = await api("/api/admin/encryption/unlock", {
+            method: "POST",
+            body: JSON.stringify({ passphrase: input.value }),
+        });
+        input.value = "";
+        if (msg) {
+            msg.className = "success-msg";
+            msg.textContent = res.migrated
+                ? `Unlocked. ${res.migrated} existing capture(s) encrypted.`
+                : "Unlocked.";
+        }
+        await loadEncryptionStatus();
+    } catch (e) {
+        if (msg) { msg.className = "error-msg"; msg.textContent = e.message; }
+    }
+}
 
 // --- admin panel ---
 
