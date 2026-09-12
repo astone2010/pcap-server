@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 
 import asyncssh
 
+from backend.crypto import CryptoError, looks_encrypted
 from backend.database import Database
 from backend.models import ServerAuth
 
@@ -72,16 +73,30 @@ class RemoteCapture:
 
 
 class SSHManager:
-    def __init__(self, keys_dir: Path, db: Database, data_dir: Path) -> None:
+    def __init__(self, keys_dir: Path, db: Database, data_dir: Path, vault=None) -> None:
         self._keys_dir = keys_dir
         self._db = db
         self._data_dir = data_dir
+        self._vault = vault
 
     def _key_path(self, key_name: str) -> Path:
         path = (self._keys_dir / key_name).resolve()
         if not str(path).startswith(str(self._keys_dir.resolve())):
             raise ValueError("path traversal blocked")
         return path
+
+    def _read_key_bytes(self, path: Path) -> bytes:
+        """Sealed keys are content-sniffed, not named by suffix -- same reason
+        as CaptureVault.source_for: nothing here should have to trust a
+        filename to know whether it needs the vault's cryptor."""
+        if looks_encrypted(path):
+            if not self._vault or not self._vault.cryptor:
+                raise CryptoError(f"SSH key {path.name!r} is encrypted and the vault is locked")
+            return self._vault.cryptor.open_bytes(path)
+        return path.read_bytes()
+
+    def _load_client_key(self, path: Path) -> asyncssh.SSHKey:
+        return asyncssh.import_private_key(self._read_key_bytes(path))
 
     async def _get_known_hosts_file(self, hostname: str, port: int) -> str | None:
         entries = self._db.get_known_hosts(hostname, port)
@@ -126,6 +141,15 @@ class SSHManager:
         if not key_path.exists():
             raise FileNotFoundError(f"SSH key not found: {server.ssh_key_name}")
 
+        # A locked or absent vault preventing key access reads to every caller
+        # exactly like any other reason a connection can't be established --
+        # _connect()'s documented failure modes stay FileNotFoundError and
+        # ConnectionError, so nothing downstream needs a third except clause.
+        try:
+            client_key = self._load_client_key(key_path)
+        except CryptoError as exc:
+            raise ConnectionError(str(exc)) from exc
+
         kh_file = await self._get_known_hosts_file(server.hostname, server.port)
 
         try:
@@ -133,7 +157,7 @@ class SSHManager:
                 server.hostname,
                 port=server.port,
                 username=server.username,
-                client_keys=[str(key_path)],
+                client_keys=[client_key],
                 known_hosts=kh_file if kh_file else None,
                 password=None,
                 passphrase=None,
@@ -291,6 +315,38 @@ class SSHManager:
         conn = await self._connect(server)
         async with conn:
             await conn.run(f"rm -f {safe_path}", check=True, timeout=10)
+
+    def migrate_plaintext_keys(self) -> tuple[int, int]:
+        """Seal SSH keys uploaded before encryption was switched on.
+
+        Same verify-then-replace safety as CaptureVault.migrate_plaintext:
+        seal to a temp file, confirm it decrypts back to the original bytes,
+        only then replace -- so a crash at any point leaves either the
+        original key or a verified sealed replacement, never a half-written
+        one that would silently lock an admin out of a saved server.
+        """
+        cryptor = self._vault.cryptor if self._vault else None
+        if cryptor is None or not self._keys_dir.exists():
+            return (0, 0)
+        done = failed = 0
+        for path in self._keys_dir.iterdir():
+            if not path.is_file() or path.name == ".gitkeep" or looks_encrypted(path):
+                continue
+            tmp = path.with_name(path.name + ".sealing")
+            try:
+                cryptor.seal_file(path, tmp)
+                if cryptor.open_bytes(tmp) != path.read_bytes():
+                    raise CryptoError("verification mismatch")
+                tmp.replace(path)
+                done += 1
+                logger.info("encrypted existing SSH key %s", path.name)
+            except (OSError, CryptoError) as exc:
+                failed += 1
+                logger.error("could not encrypt SSH key %s: %s", path.name, exc)
+                tmp.unlink(missing_ok=True)
+        if done or failed:
+            logger.info("SSH key migration complete: %d encrypted, %d failed", done, failed)
+        return (done, failed)
 
 
 def _shell_quote(s: str) -> str:

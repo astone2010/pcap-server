@@ -70,7 +70,13 @@ if vault.cryptor is not None:
     if _failed:
         logger.error("%d capture(s) could not be encrypted; they remain plaintext", _failed)
 
-ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR)
+ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR, vault=vault)
+
+if vault.cryptor is not None:
+    _migrated_keys, _failed_keys = ssh_manager.migrate_plaintext_keys()
+    if _failed_keys:
+        logger.error("%d SSH key(s) could not be encrypted; they remain plaintext", _failed_keys)
+
 capture_manager = CaptureManager(ssh_manager, CAPTURES_DIR, db.get_setting_int, db, vault)
 rate_limiter = RateLimiter(
     max_attempts=db.get_setting_int("rate_limit_max_attempts"),
@@ -799,7 +805,10 @@ async def upload_ssh_key(file: UploadFile, user: dict = Depends(require_admin)):
     if len(content) > 64 * 1024:
         raise HTTPException(400, "key file too large (max 64 KB)")
     SSH_KEYS_DIR.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(content)
+    # Sealed before it ever touches disk when a master key is configured --
+    # same as captures, an uploaded private key never exists as a plaintext
+    # file on the volume.
+    dest.write_bytes(vault.cryptor.seal_bytes(content) if vault.cryptor else content)
     dest.chmod(0o600)
     return {"ok": True, "name": name}
 

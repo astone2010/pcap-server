@@ -423,7 +423,83 @@ simulate N already-running captures. Async fixture teardown calls
 manager.shutdown() to cancel the one real monitor task each test does
 spin up, same cleanup path production uses.
 
-Next: from the same punch list -- seal the SSH keys (plaintext private
-keys currently sit on the data volume; asyncssh.import_private_key takes
-bytes, so no plaintext copy needs to exist on disk), then CSP
-unsafe-inline (33 inline onclick handlers -> addEventListener, mechanical).
+Next: CSP unsafe-inline (33 inline onclick handlers -> addEventListener,
+mechanical) -- the last item on the punch list.
+
+---
+
+## Fix: SSH private keys stored in plaintext (session 4, continued)
+
+User flagged this as an architecture-level task, not mechanical test-writing
+-- correctly: it required deciding where key material flows (asyncssh's
+client_keys accepts bytes/SSHKey objects, not just paths, so the whole
+_connect() key-loading path had to change shape), how sealing relates to
+the existing CaptureVault (reuse the same master key rather than a second
+independent one -- one key to back up, no new configuration surface), what
+happens across all four vault states (disabled/unencrypted, enabled+
+unlocked, enabled+locked, no vault at all), and a migration story for
+already-uploaded plaintext keys with the same blast-radius concern
+concurrent-captures didn't have: get this wrong and an admin could be
+locked out of every saved server, not just see a bad error message.
+Designed at bumped effort on Sonnet (not Opus) per the user's call --
+verified against the actual asyncssh 2.24.0 API before writing any code
+(client_keys type union confirmed to accept bytes/str/PurePath/SSHKey;
+import_private_key confirmed to raise KeyImportError, itself a ValueError
+subclass, so malformed-key handling falls through the exact same generic
+except-Exception paths that already existed -- zero behavior change for
+that case).
+
+Design chosen: keys are content-sniffed via the existing looks_encrypted()
+magic-byte check, same as CaptureVault.source_for -- no filename/extension
+change, so ServerAuth.ssh_key_name validation and the list/delete
+endpoints needed zero changes. SSHManager gained an optional `vault` param
+(same pattern as CaptureManager) and three new methods: _read_key_bytes
+(decrypt when sealed and the vault can, else raise CryptoError -- vault
+locked or absent), _load_client_key (decrypt then asyncssh.import_private_key),
+and migrate_plaintext_keys (verify-then-replace, structurally identical to
+CaptureVault.migrate_plaintext's already-proven safety, deliberately
+NOT extracted into a shared helper -- duplicating ~15 lines was judged
+safer than refactoring vault.py's already-tested, already-shipped
+migrate_plaintext for a second caller). _connect() translates a locked-
+vault CryptoError into ConnectionError right at the point of failure,
+keeping _connect()'s public contract at exactly two exception types
+(FileNotFoundError, ConnectionError) -- every existing caller
+(test_connection, list_interfaces, prereq_check) already has a `except
+ConnectionError -> HTTP 502` handler, so the clearer message reaches the
+admin with ZERO changes needed in main.py's endpoint handlers. Upload
+seals content via vault.cryptor.seal_bytes() before the first write_bytes
+call -- no plaintext key touches disk even transiently.
+
+Track: work commit (architecture-level fix, no version bump)
+🔒 SECURITY   ✅ 0 Critical, 0 High -- see verification note below, this
+  one got a live end-to-end check, not just unit tests in isolation.
+
+VERIFIED FOR REAL, live, against a real SSH server: apt-get installed
+openssh-server in this container (throwaway, like the tshark install --
+repo/Dockerfile untouched) specifically to prove the whole pipeline works,
+not just that the pieces look right in isolation. Generated a real ed25519
+keypair, sealed the private half under a Cryptor, ran the actual
+SSHManager.test_connection() against a real sshd on 127.0.0.1:2222 with
+PermitRootLogin: the sealed key decrypted, parsed via
+asyncssh.import_private_key, authenticated, and `echo ok` came back over
+a real SSH session. Then re-ran the same connection attempt with the vault
+locked (cryptor=None): refused with "SSH key ... is encrypted and the
+vault is locked" -- BEFORE any network connection was attempted, not
+after a failed handshake. Test sshd and all key material cleaned up
+afterward (killed the process, removed /root/.ssh/authorized_keys and the
+temp key files); nothing from this verification is part of the diff.
+
+Landed: tests/test_ssh_manager_keys.py (14 tests) and
+tests/test_ssh_keys_upload.py (2 tests) -- 265 total. Covers
+_read_key_bytes/_load_client_key across all four vault states including
+two REAL asyncssh keys (ed25519, ecdsa-p256) round-tripped through actual
+seal/parse (not just byte-equality on fake data), _connect() translating
+a locked vault into ConnectionError with the message asserted, and
+migrate_plaintext_keys' full safety net (seals in place, skips .gitkeep,
+skips already-sealed files so nothing is ever double-enveloped, leaves
+the original byte-for-byte on a verification-failure injected via
+monkeypatch, handles multiple files, no-ops with no cryptor or a missing
+directory). The upload-sealing tests call main.upload_ssh_key directly
+(FastAPI route decorators return the function unchanged) rather than
+through TestClient, specifically to avoid registering a real user against
+the shared session-wide db singleton just to reach one conditional.
