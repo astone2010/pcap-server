@@ -282,9 +282,26 @@ https, the read-only-over-HTTP middleware blocking a mutating endpoint
 unauthenticated (proves the block happens in middleware, before auth even
 runs) while the 4 _INSECURE_ALLOWED_PATHS stay open and HTTPS is unaffected.
 
-Next: tests/test_localnet.py (describe_if_local, table-driven: HOST_ALIASES,
-loopback, own address, gateway, and the documented case it cannot catch),
-then tests/test_ssh_manager.py's hostile-input suite, then
-tests/test_packet_parser.py with pytest.mark.skipif for real-tshark cases
-(reported as skipped, never silently omitted), then the scaffolding:
-scripts/check.sh, .github/workflows/check.yml.
+Landed: tests/test_localnet.py -- 22 tests, all passing (134 total).
+Table-driven across describe_if_local's three "this is local" paths --
+every HOST_ALIASES entry (parametrized, with a resolve() that raises if
+called at all, proving the alias check truly short-circuits), plus
+case-insensitivity and trailing-dot handling on the alias match; loopback
+(v4 and v6); an address the container itself holds; the default gateway --
+and the negative cases: unresolvable hostname, a resolved address with no
+overlap at all, and the one from the module's own docstring: the host's
+real LAN address on a bridged container that was never given an
+--add-host entry, which resolves to neither an own address nor the
+gateway and so is indistinguishable from a genuinely remote target. Also
+covers resolve() directly (IP-literal short-circuit skips DNS entirely,
+empty/whitespace input, DNS-failure returns empty set rather than
+raising, IPv6 zone-id stripping, timeout restored even after a failure)
+and local_addresses() as the union. resolve()/_own_addresses()/
+_default_gateways() are monkeypatched throughout so none of this touches
+real DNS, sockets, or /proc -- runs identically on any machine.
+
+Next: tests/test_ssh_manager.py's hostile-input suite (_is_safe_tcpdump_path,
+parse_prereq_output, _shell_quote, _key_path traversal, evaluate_prereqs
+privilege matrix), then tests/test_packet_parser.py with pytest.mark.skipif
+for real-tshark cases (reported as skipped, never silently omitted), then
+the scaffolding: scripts/check.sh, .github/workflows/check.yml.
