@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -89,6 +90,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_trusted_devices_user_token ON trusted_devices(user_id, token_hash);
             CREATE TABLE IF NOT EXISTS captures (
                 id TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 server_id TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -103,6 +105,15 @@ class Database:
                 server_label TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE TABLE IF NOT EXISTS known_usernames (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                username TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT NOT NULL DEFAULT '',
+                UNIQUE(user_id, username)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_captures_user_id ON captures(user_id);
             CREATE INDEX IF NOT EXISTS idx_active_servers_user_id ON active_servers(user_id);
         """)
@@ -112,7 +123,32 @@ class Database:
         session_columns = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
         if "last_seen" not in session_columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN last_seen TEXT")
+        # Usernames used to be derived from active_servers, so deleting the last
+        # server that used one silently discarded it. They are stored in their
+        # own right now; carry across whatever the derived view was showing.
+        #
+        # Once only, and flagged as done. Re-running it every start would
+        # resurrect a username the operator has since deleted in Admin, for as
+        # long as any server still uses it -- a delete that undoes itself on the
+        # next restart is worse than no delete at all.
+        backfilled = conn.execute(
+            "SELECT value FROM settings WHERE key = 'known_usernames_backfilled'"
+        ).fetchone()
+        if not backfilled:
+            conn.execute(
+                """INSERT OR IGNORE INTO known_usernames
+                       (id, user_id, username, created_at, last_used_at)
+                   SELECT lower(hex(randomblob(16))), user_id, username,
+                          MAX(added_at), MAX(added_at)
+                   FROM active_servers GROUP BY user_id, username"""
+            )
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('known_usernames_backfilled', '1')"
+            )
+
         capture_columns = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
+        if "name" not in capture_columns:
+            conn.execute("ALTER TABLE captures ADD COLUMN name TEXT NOT NULL DEFAULT ''")
         if "server_label" not in capture_columns:
             conn.execute("ALTER TABLE captures ADD COLUMN server_label TEXT NOT NULL DEFAULT ''")
         self._fold_saved_servers(conn)
@@ -259,12 +295,19 @@ class Database:
     # until it is explicitly deleted, and scopes it to the user who added it.
 
     def add_active_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool) -> None:
+        """Also records the username in the suggestion list.
+
+        Here rather than in the route, so the invariant holds for every caller:
+        a server can never exist with a login name the Username dropdown has
+        never heard of.
+        """
         self._conn().execute(
             """INSERT OR REPLACE INTO active_servers (id, user_id, name, hostname, port, username, ssh_key_name, use_sudo, added_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (server_id, user_id, name, hostname, port, username, ssh_key_name, int(use_sudo), _utcnow().isoformat()),
         )
         self._conn().commit()
+        self.remember_username(user_id, username)
 
     def list_active_servers(self, user_id: str) -> list[dict]:
         rows = self._conn().execute(
@@ -296,6 +339,8 @@ class Database:
             (name, hostname, port, username, ssh_key_name, int(use_sudo), server_id, user_id),
         )
         self._conn().commit()
+        if cur.rowcount:
+            self.remember_username(user_id, username)
         return cur.rowcount > 0
 
     def delete_active_server(self, server_id: str, user_id: str) -> bool:
@@ -305,23 +350,71 @@ class Database:
         self._conn().commit()
         return cur.rowcount > 0
 
-    def list_usernames(self, user_id: str) -> list[str]:
-        """Distinct SSH usernames this user has already typed, most recent first."""
+    # --- stored SSH usernames ---
+
+    def list_usernames(self, user_id: str) -> list[dict]:
+        """Stored SSH usernames, most recently used first.
+
+        Kept independently of active_servers: a username outlives the server it
+        was first typed for, which is the whole point of storing it.
+        """
         rows = self._conn().execute(
-            """SELECT username FROM active_servers WHERE user_id = ?
-               GROUP BY username ORDER BY MAX(added_at) DESC""",
+            """SELECT id, username, last_used_at FROM known_usernames
+               WHERE user_id = ?
+               ORDER BY last_used_at DESC, username ASC""",
             (user_id,),
         ).fetchall()
-        return [r["username"] for r in rows]
+        return [dict(r) for r in rows]
+
+    def remember_username(self, user_id: str, username: str) -> None:
+        """Record a username, or bump the one already stored. Never raises on a
+        duplicate: adding a second server as the same user is the normal case."""
+        now = _utcnow().isoformat()
+        conn = self._conn()
+        conn.execute(
+            """INSERT INTO known_usernames (id, user_id, username, created_at, last_used_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, username) DO UPDATE SET last_used_at = excluded.last_used_at""",
+            (str(uuid.uuid4()), user_id, username, now, now),
+        )
+        conn.commit()
+
+    def rename_username(self, user_id: str, username_id: str, username: str) -> bool:
+        """Rename a stored username. Servers already using the old one keep it:
+        this list is what the forms offer, not a foreign key onto them.
+
+        Raises ValueError when the new name is already stored -- (user_id,
+        username) is unique, and a bare IntegrityError would surface as a 500.
+        """
+        conn = self._conn()
+        clash = conn.execute(
+            "SELECT 1 FROM known_usernames WHERE user_id = ? AND username = ? AND id != ?",
+            (user_id, username, username_id),
+        ).fetchone()
+        if clash:
+            raise ValueError(f"'{username}' is already stored")
+        cur = conn.execute(
+            "UPDATE known_usernames SET username = ? WHERE id = ? AND user_id = ?",
+            (username, username_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+    def delete_username(self, user_id: str, username_id: str) -> bool:
+        cur = self._conn().execute(
+            "DELETE FROM known_usernames WHERE id = ? AND user_id = ?", (username_id, user_id)
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
 
     # --- captures ---
 
     def upsert_capture(self, row: dict) -> None:
         self._conn().execute(
             """INSERT OR REPLACE INTO captures
-               (id, user_id, server_id, server_label, status, started_at, stopped_at, command,
+               (id, name, user_id, server_id, server_label, status, started_at, stopped_at, command,
                 remote_path, local_path, packet_count, file_size, error)
-               VALUES (:id, :user_id, :server_id, :server_label, :status, :started_at, :stopped_at, :command,
+               VALUES (:id, :name, :user_id, :server_id, :server_label, :status, :started_at, :stopped_at, :command,
                        :remote_path, :local_path, :packet_count, :file_size, :error)""",
             row,
         )

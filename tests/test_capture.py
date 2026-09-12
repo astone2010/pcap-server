@@ -15,8 +15,39 @@ from datetime import datetime, timezone
 
 import pytest
 
-from backend.capture import CaptureLimitExceeded, CaptureManager
-from backend.models import CaptureInfo, CaptureRequest, CaptureStatus, ServerInfo
+from backend.capture import (
+    _STDERR_COLLAPSE_PARTS,
+    _STDERR_KEEP_CHARS,
+    _pump_stderr,
+    CaptureLimitExceeded,
+    CaptureManager,
+)
+from pydantic import ValidationError
+
+from backend.models import (
+    CAPTURE_NAME_MAX,
+    CaptureInfo,
+    CaptureRename,
+    CaptureRequest,
+    CaptureStatus,
+    ServerInfo,
+)
+
+
+class ScriptedStderr:
+    """Hands back one scripted chunk per read, then blocks.
+
+    That is how a real capture's stderr behaves: tcpdump keeps writing progress
+    lines and the stream only reaches EOF when the process exits.
+    """
+
+    def __init__(self, chunks: list[str]) -> None:
+        self._chunks = list(chunks)
+
+    async def read(self, n: int = -1) -> str:
+        if self._chunks:
+            return self._chunks.pop(0)
+        await asyncio.Event().wait()
 
 
 class FakeProcess:
@@ -24,8 +55,9 @@ class FakeProcess:
     waits on it, same as a real long-running capture would, until shutdown()
     cancels it in fixture teardown."""
 
-    def __init__(self) -> None:
+    def __init__(self, stderr_chunks: list[str] | None = None) -> None:
         self.closed = False
+        self._stderr = ScriptedStderr(stderr_chunks or [])
 
     async def wait(self):
         await asyncio.Event().wait()
@@ -36,7 +68,7 @@ class FakeProcess:
 
     @property
     def stderr(self):
-        return None
+        return self._stderr
 
     def send_signal(self, sig: str) -> None:
         pass
@@ -51,10 +83,13 @@ class FakeProcess:
 class FakeSSHManager:
     def __init__(self) -> None:
         self.run_tcpdump_calls = 0
+        self.stderr_chunks: list[str] = []
+        self.last_args: list[str] = []
 
     async def run_tcpdump(self, server, args, remote_path, *, duration=None):
         self.run_tcpdump_calls += 1
-        return FakeProcess()
+        self.last_args = list(args)
+        return FakeProcess(self.stderr_chunks)
 
     async def stop_tcpdump(self, process) -> None:
         pass
@@ -309,3 +344,189 @@ async def test_failed_launch_is_persisted_so_a_restart_does_not_resurrect_it(exp
     rows = mgr._db.list_captures()
     assert len(rows) == 1
     assert rows[0]["status"] == CaptureStatus.FAILED.value
+
+
+# --- progress reporting -------------------------------------------------------
+#
+# A capture used to show nothing at all until it finished and transferred: the
+# pcap is on the remote host for the whole run, so there is nothing local to
+# count. tcpdump -v, when writing with -w, prints its own running total to
+# stderr once a second as "Got 1234\r", and that is the only signal available.
+
+
+async def _eventually(predicate, timeout: float = 2.0) -> None:
+    async def poll():
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), timeout)
+
+
+def test_build_command_args_asks_tcpdump_to_report_its_progress(manager):
+    mgr, _, _ = manager
+    args = mgr.build_command_args(CaptureRequest(server_id="s1", interface="eth0"))
+    assert "-v" in args
+
+
+def test_build_command_args_still_puts_the_filter_last_behind_a_separator(manager):
+    """-v goes at the front, so it must not disturb the -- that keeps a filter
+    beginning with a dash from being read as an option."""
+    mgr, _, _ = manager
+    args = mgr.build_command_args(
+        CaptureRequest(server_id="s1", interface="eth0", bpf_filter="tcp port 80")
+    )
+    assert args[-2:] == ["--", "tcp port 80"]
+    assert args[0] == "-v"
+
+
+async def test_running_capture_reports_the_count_tcpdump_prints(manager):
+    mgr, ssh, _ = manager
+    ssh.stderr_chunks = [
+        "tcpdump: listening on any, link-type LINUX_SLL2\n",
+        "Got 12\r",
+        "Got 4096\r",
+    ]
+    info = await mgr.start(
+        CaptureRequest(server_id="s1", interface="eth0"), make_server(), user_id="u1"
+    )
+    await _eventually(lambda: info.packet_count == 4096)
+    assert info.status == CaptureStatus.RUNNING
+
+
+async def test_several_counts_in_one_read_take_the_last(manager):
+    """A second's worth of output can arrive as one chunk; the newest total is
+    the current one, not the first one parsed."""
+    mgr, ssh, _ = manager
+    ssh.stderr_chunks = ["Got 3\rGot 40\rGot 900\r"]
+    info = await mgr.start(
+        CaptureRequest(server_id="s1", interface="eth0"), make_server(), user_id="u1"
+    )
+    await _eventually(lambda: info.packet_count == 900)
+
+
+async def test_the_live_count_reaches_the_database(manager):
+    """Persisted as well as held in memory, so a count survives a restart."""
+    mgr, ssh, _ = manager
+    ssh.stderr_chunks = ["Got 77\r"]
+    info = await mgr.start(
+        CaptureRequest(server_id="s1", interface="eth0"), make_server(), user_id="u1"
+    )
+    await _eventually(lambda: mgr._db.rows[info.id]["packet_count"] == 77)
+
+
+async def test_unreadable_stderr_does_not_fail_the_capture(manager):
+    """Losing the progress counter is not a reason to fail a running capture."""
+    mgr, ssh, _ = manager
+
+    class Broken:
+        async def read(self, n: int = -1):
+            raise OSError("channel gone")
+
+    info = await mgr.start(
+        CaptureRequest(server_id="s1", interface="eth0"), make_server(), user_id="u1"
+    )
+    mgr._processes[info.id]._stderr = Broken()
+    await asyncio.sleep(0.05)
+    assert info.status == CaptureStatus.RUNNING
+
+
+# --- rename -------------------------------------------------------------------
+
+
+async def test_rename_sets_the_name_and_persists_it(manager):
+    mgr, _, _ = manager
+    capture_id = seed_running_capture(mgr)
+    info = mgr.rename(capture_id, "Friday DNS storm")
+    assert info.name == "Friday DNS storm"
+    assert mgr.get(capture_id).name == "Friday DNS storm"
+    assert mgr._db.rows[capture_id]["name"] == "Friday DNS storm"
+
+
+async def test_rename_can_clear_a_name(manager):
+    mgr, _, _ = manager
+    capture_id = seed_running_capture(mgr)
+    mgr.rename(capture_id, "temporary")
+    assert mgr.rename(capture_id, "").name == ""
+
+
+async def test_rename_rejects_an_unknown_capture(manager):
+    mgr, _, _ = manager
+    with pytest.raises(KeyError):
+        mgr.rename("no-such-capture", "anything")
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("  spaced  ", "spaced"),
+        ("with\x00a null", "witha null"),
+        ("tab\tseparated", "tabseparated"),
+        ("plain name", "plain name"),
+    ],
+)
+def test_capture_rename_cleans_the_name(raw, expected):
+    assert CaptureRename(name=raw).name == expected
+
+
+def test_capture_rename_rejects_an_overlong_name():
+    with pytest.raises(ValidationError):
+        CaptureRename(name="x" * (CAPTURE_NAME_MAX + 1))
+
+
+def test_capture_rename_accepts_a_name_at_the_limit():
+    assert len(CaptureRename(name="x" * CAPTURE_NAME_MAX).name) == CAPTURE_NAME_MAX
+
+
+async def test_an_absurd_count_is_ignored_rather_than_parsed(manager):
+    """stderr comes from the host being captured on. An unbounded digit run
+    would hand int() a quadratic parse, so the pattern refuses it outright."""
+    mgr, ssh, _ = manager
+    ssh.stderr_chunks = ["Got " + "9" * 5000 + "\r", "Got 7\r"]
+    info = await mgr.start(
+        CaptureRequest(server_id="s1", interface="eth0"), make_server(), user_id="u1"
+    )
+    await _eventually(lambda: info.packet_count == 7)
+
+
+async def test_flooding_stderr_does_not_grow_without_bound():
+    """The buffer is held open for the whole capture, so a chatty or hostile
+    host must not be able to fill memory through it."""
+
+    class Flood:
+        def __init__(self, chunks: int) -> None:
+            self._left = chunks
+
+        async def read(self, n: int = -1) -> str:
+            if not self._left:
+                return ""
+            self._left -= 1
+            return "x" * 8192
+
+    class Proc:
+        stderr = Flood(500)
+
+    buf: list[str] = []
+    await _pump_stderr(Proc(), buf, lambda c: None)
+
+    assert sum(len(part) for part in buf) <= _STDERR_KEEP_CHARS + _STDERR_COLLAPSE_PARTS * 8192
+    assert sum(len(part) for part in buf) < 500 * 8192
+
+
+async def test_the_kept_stderr_is_the_tail_that_diagnoses_the_exit():
+    class Proc:
+        def __init__(self) -> None:
+            self._chunks = ["filler" * 4000] * 40 + ["sudo: a password is required\n"]
+
+        @property
+        def stderr(self):
+            outer = self
+
+            class Reader:
+                async def read(self, n: int = -1) -> str:
+                    return outer._chunks.pop(0) if outer._chunks else ""
+
+            return Reader()
+
+    buf: list[str] = []
+    await _pump_stderr(Proc(), buf, lambda c: None)
+    assert "sudo: a password is required" in "".join(buf)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 
 from backend.models import PacketDetail, PacketSummary
@@ -20,31 +21,54 @@ async def _run_tool(cmd: list[str], source: PcapSource) -> tuple[bytes, bytes, i
     keeps a decrypted capture out of the filesystem entirely -- it exists only
     as chunks in flight between this process and the tool.
 
-    stdin is fed by a separate task while stdout is drained, because a capture
-    larger than the pipe buffer would otherwise deadlock: the writer blocks on a
-    full stdin pipe while the reader waits for output that cannot come.
+    stdin is an explicit os.pipe(), never stdin=PIPE. Wiretap -- the library
+    behind both tools -- accepts a regular file or a FIFO and rejects anything
+    else outright:
+
+        tshark: The standard input is a "special file" or socket or other
+        non-regular file.
+
+    asyncio's PIPE is a real pipe, so that check passes. uvloop's is a Unix
+    socketpair, so it does not, and uvloop is what the container runs. Every
+    tshark call returned nothing and every capinfos call returned no count,
+    which is why a capture that downloaded and opened perfectly well showed an
+    empty packet list and a packet count of zero.
+
+    The pipe is fed by a separate task while stdout is drained, because a
+    capture larger than the pipe buffer would otherwise deadlock: the writer
+    blocks on a full stdin pipe while the reader waits for output that cannot
+    come.
     """
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    read_fd, write_fd = os.pipe()
+    try:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=read_fd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        finally:
+            # The child holds its own duplicate. Leaving this end open in the
+            # parent means the tool never sees EOF and waits for input forever.
+            os.close(read_fd)
+    except BaseException:
+        os.close(write_fd)
+        raise
 
     async def feed() -> None:
         try:
             async for chunk in source.chunks():
-                proc.stdin.write(chunk)
-                await proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError, RuntimeError):
+                # A blocking write on a full pipe parks a worker thread, not the
+                # event loop. os.write is not guaranteed to take the whole chunk.
+                await asyncio.to_thread(_write_all, write_fd, chunk)
+        except (BrokenPipeError, ConnectionResetError):
             # Normal when the tool stops early, e.g. tshark with -c.
-            # uvloop raises RuntimeError("handler is closed") instead of
-            # BrokenPipeError when the transport is already torn down.
             pass
         finally:
             try:
-                proc.stdin.close()
-            except (BrokenPipeError, OSError, RuntimeError):
+                os.close(write_fd)
+            except OSError:
                 pass
 
     feeder = asyncio.create_task(feed())
@@ -63,14 +87,28 @@ async def _run_tool(cmd: list[str], source: PcapSource) -> tuple[bytes, bytes, i
 
     return stdout, stderr, proc.returncode or 0
 
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view):]
+
+
 async def get_packet_count(source: PcapSource) -> int:
-    stdout, _, _ = await _run_tool(["capinfos", "-c", "-M", "-"], source)
-    for line in stdout.decode().splitlines():
+    """The capture's packet count, or a raised error -- never a silent zero.
+
+    This used to return 0 both for an empty capture and for a capinfos that
+    never ran, which is indistinguishable to every caller and hid the socketpair
+    failure above for an entire release.
+    """
+    stdout, stderr, rc = await _run_tool(["capinfos", "-c", "-M", "-"], source)
+    for line in stdout.decode(errors="replace").splitlines():
         if "Number of packets" in line:
             parts = line.split(":")
             if len(parts) == 2:
                 return int(parts[1].strip())
-    return 0
+    detail = stderr.decode(errors="replace").strip()[:300] or f"exit status {rc}"
+    raise RuntimeError(f"capinfos reported no packet count: {detail}")
 
 
 # tcpdump-style view flags, mapped onto how tshark renders the packet list.

@@ -191,6 +191,15 @@
                         out here &mdash; tcpdump itself ignores them under <code>-w</code>.
                     </p>
                     <p>
+                        <code>-v</code> is the one exception, and this tool adds it to every
+                        capture for you &mdash; which is why you will see it in the command
+                        below. It still changes nothing about the file. Under <code>-w</code>
+                        it makes tcpdump report its running packet total on the side, once a
+                        second, and that is what the <strong>packets so far</strong> figure on
+                        a running capture is reading. The pcap stays on the remote host until
+                        the capture ends, so there is nothing else to count.
+                    </p>
+                    <p>
                         Those flags were accepted in earlier builds. That was misleading: you
                         could set them, and nothing happened. They have been removed rather
                         than left as controls that do nothing. The ones that describe
@@ -364,6 +373,23 @@
                     </p>
                     <div id="admin-known-hosts" class="admin-table-container"></div>
                     <div id="admin-host-msg" class="error-msg"></div>
+                </div>
+                <div class="admin-section">
+                    <h3>SSH usernames</h3>
+                    <p class="field-hint" style="margin-bottom:10px">
+                        The login names offered in the Server form's Username dropdown. Every
+                        username you add a server with is saved here automatically; add one
+                        ahead of time to have it waiting. Removing one only removes the
+                        suggestion &mdash; servers already configured with that name keep
+                        working, and renaming one does not touch them either. This list is
+                        yours, not shared with other users.
+                    </p>
+                    <div id="admin-usernames" class="admin-table-container"></div>
+                    <div class="admin-inline-form" style="margin-top:12px">
+                        <input type="text" id="admin-new-ssh-username" placeholder="e.g. serveradmin" style="width:180px">
+                        <button id="btn-admin-add-username" class="btn btn-sm btn-secondary">Add username</button>
+                    </div>
+                    <div id="admin-username-msg" class="error-msg"></div>
                 </div>
             </div>
         </div>

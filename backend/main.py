@@ -34,10 +34,12 @@ from backend.capture import CaptureLimitExceeded, CaptureManager
 from backend.crypto import CryptoError
 from backend.database import Database
 from backend.models import (
+    CaptureRename,
     CaptureRequest,
     CaptureStatus,
     ServerAuth,
     ServerInfo,
+    UsernameRequest,
 )
 from backend.packet_parser import ALLOWED_VIEW_FLAGS, get_packet_detail, get_packet_list
 from backend.localnet import SELF_CAPTURE_EXPLANATION, describe_if_local
@@ -809,10 +811,46 @@ async def update_server(server_id: str, auth: ServerAuth, user: dict = Depends(g
     return _server_from_row(db.get_active_server(server_id, user["id"]))
 
 
+# --- stored SSH usernames ---
+#
+# Per-user, like the servers they are offered to. The management screen sits in
+# the Admin panel, so a non-admin gets the picker and the automatic recording
+# but cannot prune the list.
+
 @app.get("/api/usernames")
 async def list_usernames(user: dict = Depends(get_current_user)):
-    """SSH usernames already used, so the add form can offer them back."""
+    """Stored SSH usernames, so the server forms can offer them back."""
     return db.list_usernames(user["id"])
+
+
+@app.post("/api/usernames")
+async def add_username(req: UsernameRequest, user: dict = Depends(get_current_user)):
+    db.remember_username(user["id"], req.username)
+    return db.list_usernames(user["id"])
+
+
+@app.put("/api/usernames/{username_id}")
+async def rename_username(
+    username_id: str,
+    req: UsernameRequest,
+    user: dict = Depends(get_current_user),
+):
+    try:
+        renamed = db.rename_username(user["id"], username_id, req.username)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    if not renamed:
+        raise HTTPException(404, "username not found")
+    return db.list_usernames(user["id"])
+
+
+@app.delete("/api/usernames/{username_id}")
+async def delete_username(username_id: str, user: dict = Depends(get_current_user)):
+    """Removes the suggestion only. Servers already configured with this name
+    keep working -- the list is what the forms offer, not a reference they hold."""
+    if not db.delete_username(user["id"], username_id):
+        raise HTTPException(404, "username not found")
+    return {"ok": True}
 
 
 # --- ad-hoc probes ---
@@ -947,6 +985,19 @@ async def stop_capture(capture_id: str, user: dict = Depends(get_current_user)):
         return await capture_manager.stop(capture_id)
     except KeyError:
         raise HTTPException(404, "capture not found")
+
+
+@app.post("/api/captures/{capture_id}/rename")
+async def rename_capture(
+    capture_id: str,
+    body: CaptureRename,
+    user: dict = Depends(get_current_user),
+):
+    """Give a capture a label. Allowed in any state, including while running."""
+    info = capture_manager.get(capture_id)
+    if not info or info.user_id != user["id"]:
+        raise HTTPException(404, "capture not found")
+    return capture_manager.rename(capture_id, body.name)
 
 
 @app.delete("/api/captures/{capture_id}")

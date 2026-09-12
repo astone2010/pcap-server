@@ -12,7 +12,9 @@ mixup) goes unnoticed for a release.
 from __future__ import annotations
 
 import shutil
+import stat
 import struct
+import sys
 
 import pytest
 
@@ -249,15 +251,12 @@ async def test_get_packet_count_matches_real_capture():
 # --- the tool exiting before the feed finishes -----------------------------
 #
 # A tool that has what it needs closes its stdin and exits while chunks are
-# still being written. Under plain asyncio that write raises BrokenPipeError;
-# under uvloop -- which uvicorn selects in the container -- it raises
-# RuntimeError("...the handler is closed") instead. Only the first was caught,
-# so every real capture died on "could not supply capture data to capinfos"
-# after transferring successfully, and the error path then deleted the file.
+# still being written, and the write that lands after that must not be treated
+# as a failure to supply the capture.
 
 
 class ClosedTransportSource(PcapSource):
-    """Writes once, then fails the way uvloop fails on a closed stdin."""
+    """Writes once, then fails the way a closed stdin fails."""
 
     def __init__(self, data: bytes, error: Exception) -> None:
         self._data = data
@@ -274,21 +273,61 @@ class ClosedTransportSource(PcapSource):
 @needs_capinfos
 @pytest.mark.parametrize(
     "error",
-    [
-        RuntimeError(
-            "unable to perform operation on <WriteUnixTransport closed=True "
-            "reading=False 0x7fb21ff3ac20>; the handler is closed"
-        ),
-        BrokenPipeError(),
-        ConnectionResetError(),
-    ],
-    ids=["uvloop-runtime-error", "broken-pipe", "connection-reset"],
+    [BrokenPipeError(), ConnectionResetError()],
+    ids=["broken-pipe", "connection-reset"],
 )
 async def test_get_packet_count_survives_the_tool_closing_stdin_early(error):
     count = await packet_parser.get_packet_count(
         ClosedTransportSource(_build_minimal_pcap(num_packets=3), error)
     )
     assert count == 3
+
+
+# --- how the capture reaches the tool ---------------------------------------
+#
+# Wiretap, the library under both tshark and capinfos, accepts a regular file
+# or a FIFO on stdin and rejects everything else outright:
+#
+#   tshark: The standard input is a "special file" or socket or other
+#   non-regular file.
+#
+# asyncio's stdin=PIPE is a real pipe, so it passes. uvloop's is a Unix
+# socketpair, so it does not -- and uvicorn[standard] selects uvloop in the
+# container. Every tshark call there returned no packets and every capinfos
+# call no count, for a whole release, while this suite passed on stock asyncio.
+# So the assertion is about the shape of the descriptor, not about the loop:
+# it holds under both, and no tool needs to be installed to check it.
+
+
+async def test_run_tool_hands_the_tool_a_fifo_on_stdin_not_a_socket():
+    probe = (
+        "import os, stat; "
+        "print('fifo' if stat.S_ISFIFO(os.fstat(0).st_mode) else 'other')"
+    )
+    stdout, _, rc = await packet_parser._run_tool(
+        [sys.executable, "-c", probe], BytesSource(b"ignored")
+    )
+    assert rc == 0
+    assert stdout.decode().strip() == "fifo"
+
+
+async def test_run_tool_closes_the_write_end_so_the_tool_sees_eof():
+    """A tool that reads to EOF must terminate. Leaving the parent's copy of the
+    write end open leaves it blocked on a pipe nobody will ever close again."""
+    stdout, _, rc = await packet_parser._run_tool(
+        [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read())"],
+        BytesSource(b"three chunks worth"),
+    )
+    assert rc == 0
+    assert stdout == b"three chunks worth"
+
+
+@needs_capinfos
+async def test_get_packet_count_raises_rather_than_reporting_zero_for_a_failed_tool():
+    """0 meant both "an empty capture" and "capinfos never ran", which is what
+    let the socketpair failure look like a legitimately empty capture."""
+    with pytest.raises(RuntimeError, match="no packet count"):
+        await packet_parser.get_packet_count(BytesSource(b"not a capture file"))
 
 
 class UnreadableSource(PcapSource):

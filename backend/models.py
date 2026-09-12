@@ -9,6 +9,43 @@ from pathlib import PurePosixPath
 from pydantic import BaseModel, Field, field_validator
 
 
+def validate_ssh_username(v: str) -> str:
+    """Constrained to a real login name's characters.
+
+    The prerequisite check prints a sudoers rule naming this user for the
+    operator to paste as root. Everything sudoers gives meaning to --
+    whitespace, `#`, `,`, `=`, `(`, `)`, `:`, `!` -- is excluded here, so a
+    username can never extend that rule into a broader grant than the one
+    binary it names.
+
+    Shared by the server forms and the stored-username list on purpose: a name
+    saved in the list is offered straight back into a server, so anything the
+    list accepts is something the sudoers rule will eventually carry.
+    """
+    v = v.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._@-]{0,63}", v):
+        raise ValueError(
+            "username must be 1-64 characters of letters, digits, dot, "
+            "underscore, hyphen or @, and cannot start with a hyphen"
+        )
+    return v
+
+
+class StoredUsername(BaseModel):
+    id: str
+    username: str
+    last_used_at: str = ""
+
+
+class UsernameRequest(BaseModel):
+    username: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        return validate_ssh_username(v)
+
+
 class ServerAuth(BaseModel):
     hostname: str
     port: int = 22
@@ -46,21 +83,7 @@ class ServerAuth(BaseModel):
     @field_validator("username")
     @classmethod
     def validate_username(cls, v: str) -> str:
-        """Constrained to a real login name's characters.
-
-        The prerequisite check prints a sudoers rule naming this user for the
-        operator to paste as root. Everything sudoers gives meaning to --
-        whitespace, `#`, `,`, `=`, `(`, `)`, `:`, `!` -- is excluded here, so a
-        username can never extend that rule into a broader grant than the one
-        binary it names.
-        """
-        v = v.strip()
-        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._@-]{0,63}", v):
-            raise ValueError(
-                "username must be 1-64 characters of letters, digits, dot, "
-                "underscore, hyphen or @, and cannot start with a hyphen"
-            )
-        return v
+        return validate_ssh_username(v)
 
     @field_validator("ssh_key_name")
     @classmethod
@@ -151,6 +174,9 @@ class CaptureRequest(BaseModel):
 
 class CaptureInfo(BaseModel):
     id: str
+    # Operator-chosen label. Empty until someone renames the capture, at which
+    # point it replaces the bare UUID everywhere the capture is listed.
+    name: str = ""
     server_id: str
     # Denormalised on purpose: a capture must still say where it came from after
     # the server it ran against has been deleted.
@@ -184,3 +210,23 @@ class PacketDetail(BaseModel):
     timestamp: str
     layers: list[dict]
     hex_dump: str
+
+
+CAPTURE_NAME_MAX = 120
+
+
+class CaptureRename(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """A display label, so the only rules are length and printability.
+
+        Control characters are stripped rather than rejected: they cannot render
+        anywhere useful, and a name pasted from a terminal picks them up easily.
+        """
+        cleaned = "".join(ch for ch in v if ch.isprintable()).strip()
+        if len(cleaned) > CAPTURE_NAME_MAX:
+            raise ValueError(f"name must be at most {CAPTURE_NAME_MAX} characters")
+        return cleaned

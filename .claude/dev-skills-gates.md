@@ -1,48 +1,48 @@
 # Dev Skills gate state
-Track: release sequence
-Version: 0.1.0-dev.10
+Track: work commit
+Version: 0.1.0-dev.10 (unchanged -- this commit does not bump anything)
 Updated: 2026-09-12
 
-🔢 VERSION    ✅ 0.1.0-dev.10 in backend/main.py, docker-compose.yml and the
-                CHANGELOG heading; v0.1.0-dev.9 confirmed tagged on the remote
-                at 7637bce; repo and release-notes links present in main.py.
-🔨 BUILD      ✅ 351 tests green via scripts/check.sh with real tshark and
-                capinfos installed, so the capinfos suite ran rather than
-                skipping. Booted on the upgraded stack (fastapi 0.141.1 /
-                starlette 1.3.1) and the new lifespan shutdown handler was seen
-                firing. UI driven end to end in Chromium via Playwright -- which
-                is the only thing that caught the missing comma that left
-                app.js unparseable while all 303 tests passed.
-🔒 SECURITY   ✅ 0 Critical, 0 High. pip-audit clean (five starlette advisories
-                cleared). Fixed this release: an unvalidated SSH username
-                interpolated into the sudoers rule printed for an operator to
-                run as root; that rule now installs through visudo rather than
-                tee; a capture-slot leak on failed launch; one shared body
-                validator for both host-key endpoints (a non-numeric port was
-                a 500). Reviewed and cleared: the migration's SQL f-string
-                interpolates one of two hardcoded literals chosen by a local
-                PRAGMA, and every new frontend interpolation is escaped or is
-                an own-API URL path.
-📄 DOCS       ✅ CHANGELOG entry for 0.1.0-dev.10 with date; README feature list
-                no longer advertises the removed saved-servers split; README
-                sudo section contrasts blanket NOPASSWD:ALL with the scoped rule
-                and explains why passwordless is required at all (SSH keys are
-                the only auth method this app uses).
-📦 RELEASE    ✅ commit approved by the user; release notes approved.
-                PR step ➖ N/A -- this remote has no default branch to merge
-                into (only claude/* branches exist), so the project releases by
-                tagging the branch, as v0.1.0-dev.1 through dev.9 all did.
-🚀 SHIP       ⏳ tag block handed to the user to run. Stays ⏳ until
-                `git ls-remote --tags origin v0.1.0-dev.10` confirms the tag,
-                the release workflow (.github/workflows/release.yml, on: push
-                tags v*) completes, and the ghcr.io image and GitHub Release
-                are verified.
+🔢 VERSION    ⬜ not owed on a work commit. No refs touched; main.py, the
+                compose file and the CHANGELOG heading all still read
+                0.1.0-dev.10.
+🔨 BUILD      ✅ 384 tests green via the venv with real tshark, capinfos and
+                tcpdump installed, so nothing skipped. The app was booted under
+                uvicorn (uvloop) with a seeded encrypted capture and driven end
+                to end in Chromium: viewer, packet detail, hex dump, display
+                filter, capture rename, the capture-page host label, the server
+                username picker and the Admin username list all verified in the
+                browser, not just in tests.
+🔒 SECURITY   ✅ 0 Critical, 0 High. pip-audit clean (no dependency changes).
+                Found and fixed in this diff: the tcpdump progress parser
+                matched an unbounded digit run from the captured host's stderr,
+                handing int() a quadratic parse; and that stderr accumulated for
+                the whole capture with no cap. Both are remote-influenced input
+                from a host under investigation, so both are bounded now.
+                Reviewed and cleared: every new SQL statement is parameterised;
+                the one-off backfill uses literals only; the username endpoints
+                validate through the same rule the sudoers line depends on and
+                scope every read and write by user_id; the new mutating routes
+                inherit the plain-HTTP read-only refusal from the existing
+                middleware; all new frontend interpolation is escaped or set
+                through textContent.
+📄 DOCS       ⬜ not owed on a work commit. The in-app flags explainer was
+                updated because -v now appears in every command string; the
+                CHANGELOG has no entry for this work yet.
+📦 RELEASE    ⬜ not owed on a work commit.
+🚀 SHIP       ⏳ CARRIED OVER, NOT THIS SESSION'S WORK: v0.1.0-dev.10 was
+                released and pushed last session but never tagged. Tag pushes
+                are always the user's to run. Until
+                `git ls-remote --tags origin v0.1.0-dev.10` shows it, dev.10 is
+                an unfinished Gate 6.
+
+Quality, surfaced and accepted:
+  * CaptureManager._monitor is ~90 lines and now carries a nested live-count
+    closure. Cohesive but large; left as known debt rather than split under an
+    unrelated change.
 
 Follow-ups requested by the user, not started:
   #1 full API hardening pass (auth/authz per route, pydantic bodies instead of
      raw request.json(), rate limiting on the probe endpoints, error shapes).
   #2 filter UX -- pattern suggestions and real documentation for both the BPF
-     capture filter and the viewer display filter. Checked this session: the
-     display filter has no help at all beyond its placeholder, and the BPF
-     examples exist but are buried inside the "Where are the tcpdump flags?"
-     explainer.
+     capture filter and the viewer display filter.

@@ -168,7 +168,18 @@ def test_update_server_will_not_touch_another_users_row(db):
     assert db.get_active_server("s1", owner)["hostname"] == "10.0.0.1"
 
 
-# --- remembered usernames -----------------------------------------------------
+# --- stored usernames ---------------------------------------------------------
+#
+# These used to be derived from active_servers with a GROUP BY, which meant the
+# list was only ever a view of the servers that happened to exist: deleting the
+# last server that used a login name silently discarded the name too, and there
+# was no way to add one ahead of time or remove one you never wanted offered.
+# They are their own rows now, recorded by add/update_active_server so a server
+# can never exist with a name the list has not seen.
+
+
+def _names(db, user_id):
+    return [u["username"] for u in db.list_usernames(user_id)]
 
 
 def test_usernames_are_distinct_and_most_recently_used_first(db):
@@ -177,7 +188,7 @@ def test_usernames_are_distinct_and_most_recently_used_first(db):
     db.add_active_server("s2", user_id, "", "10.0.0.2", 22, "netadmin", "k", False)
     db.add_active_server("s3", user_id, "", "10.0.0.3", 22, "root", "k", False)
 
-    assert db.list_usernames(user_id) == ["root", "netadmin"]
+    assert _names(db, user_id) == ["root", "netadmin"]
 
 
 def test_usernames_are_scoped_to_the_user_who_typed_them(db):
@@ -185,12 +196,111 @@ def test_usernames_are_scoped_to_the_user_who_typed_them(db):
     db.add_active_server("s1", mine, "", "10.0.0.1", 22, "alice", "k", False)
     db.add_active_server("s2", theirs, "", "10.0.0.2", 22, "bob", "k", False)
 
-    assert db.list_usernames(mine) == ["alice"]
-    assert db.list_usernames(theirs) == ["bob"]
+    assert _names(db, mine) == ["alice"]
+    assert _names(db, theirs) == ["bob"]
 
 
 def test_usernames_is_empty_for_a_user_with_no_servers(db):
     assert db.list_usernames(_user(db)) == []
+
+
+def test_a_username_outlives_the_server_it_was_typed_for(db):
+    """The whole point of storing them: the old derived view lost the name the
+    moment its last server went away."""
+    user_id = _user(db)
+    db.add_active_server("s1", user_id, "", "10.0.0.1", 22, "netadmin", "k", False)
+    assert db.delete_active_server("s1", user_id)
+
+    assert _names(db, user_id) == ["netadmin"]
+
+
+def test_editing_a_server_records_its_new_username(db):
+    user_id = _user(db)
+    db.add_active_server("s1", user_id, "", "10.0.0.1", 22, "root", "k", False)
+    db.update_active_server("s1", user_id, "", "10.0.0.1", 22, "netadmin", "k", False)
+
+    assert sorted(_names(db, user_id)) == ["netadmin", "root"]
+
+
+def test_a_failed_edit_records_nothing(db):
+    """A rejected edit -- wrong owner, missing server -- must not leak the
+    username it was attempted with into the list."""
+    mine, theirs = _user(db), _user(db)
+    db.add_active_server("s1", mine, "", "10.0.0.1", 22, "root", "k", False)
+
+    assert not db.update_active_server("s1", theirs, "", "10.0.0.1", 22, "intruder", "k", False)
+    assert _names(db, theirs) == []
+
+
+def test_a_username_can_be_stored_before_any_server_uses_it(db):
+    user_id = _user(db)
+    db.remember_username(user_id, "netadmin")
+    assert _names(db, user_id) == ["netadmin"]
+
+
+def test_remembering_a_username_twice_keeps_one_row(db):
+    user_id = _user(db)
+    db.remember_username(user_id, "netadmin")
+    db.remember_username(user_id, "netadmin")
+    assert _names(db, user_id) == ["netadmin"]
+
+
+def test_rename_changes_the_stored_username(db):
+    user_id = _user(db)
+    db.remember_username(user_id, "netadmn")
+    stored_id = db.list_usernames(user_id)[0]["id"]
+
+    assert db.rename_username(user_id, stored_id, "netadmin")
+    assert _names(db, user_id) == ["netadmin"]
+
+
+def test_rename_leaves_the_servers_using_the_old_name_alone(db):
+    """The list is what the forms offer, not a reference the servers hold."""
+    user_id = _user(db)
+    db.add_active_server("s1", user_id, "", "10.0.0.1", 22, "root", "k", False)
+    stored_id = db.list_usernames(user_id)[0]["id"]
+
+    db.rename_username(user_id, stored_id, "netadmin")
+    assert db.get_active_server("s1", user_id)["username"] == "root"
+
+
+def test_rename_onto_an_existing_username_is_refused(db):
+    user_id = _user(db)
+    db.remember_username(user_id, "root")
+    db.remember_username(user_id, "netadmin")
+    stored_id = next(u["id"] for u in db.list_usernames(user_id) if u["username"] == "root")
+
+    with pytest.raises(ValueError):
+        db.rename_username(user_id, stored_id, "netadmin")
+    assert sorted(_names(db, user_id)) == ["netadmin", "root"]
+
+
+def test_rename_of_another_users_username_is_refused(db):
+    mine, theirs = _user(db), _user(db)
+    db.remember_username(mine, "alice")
+    stored_id = db.list_usernames(mine)[0]["id"]
+
+    assert not db.rename_username(theirs, stored_id, "mallory")
+    assert _names(db, mine) == ["alice"]
+
+
+def test_delete_removes_the_suggestion_but_not_the_server(db):
+    user_id = _user(db)
+    db.add_active_server("s1", user_id, "", "10.0.0.1", 22, "root", "k", False)
+    stored_id = db.list_usernames(user_id)[0]["id"]
+
+    assert db.delete_username(user_id, stored_id)
+    assert _names(db, user_id) == []
+    assert db.get_active_server("s1", user_id)["username"] == "root"
+
+
+def test_delete_of_another_users_username_is_refused(db):
+    mine, theirs = _user(db), _user(db)
+    db.remember_username(mine, "alice")
+    stored_id = db.list_usernames(mine)[0]["id"]
+
+    assert not db.delete_username(theirs, stored_id)
+    assert _names(db, mine) == ["alice"]
 
 
 # --- host trust ---------------------------------------------------------------
@@ -317,3 +427,34 @@ def test_endpoint_body_accepts_a_numeric_string_port():
     from backend.main import _endpoint_from_body
 
     assert _endpoint_from_body({"hostname": "ok.example", "port": "2222"}) == ("ok.example", 2222)
+
+
+def test_existing_servers_are_backfilled_into_the_username_list(tmp_path):
+    """Upgrading an install that predates the table must not start empty: the
+    derived view was showing these names, so the stored list has to keep them."""
+    path = tmp_path / "upgrade.db"
+    db = Database(path)
+    user_id = _user(db)
+    db.add_active_server("s1", user_id, "", "10.0.0.1", 22, "root", "k", False)
+    db.add_active_server("s2", user_id, "", "10.0.0.2", 22, "netadmin", "k", False)
+
+    # Rewind to the pre-migration state: rows present, list absent, flag unset.
+    conn = db._conn()
+    conn.execute("DELETE FROM known_usernames")
+    conn.execute("DELETE FROM settings WHERE key = 'known_usernames_backfilled'")
+    conn.commit()
+
+    assert sorted(_names(Database(path), user_id)) == ["netadmin", "root"]
+
+
+def test_the_backfill_does_not_resurrect_a_deleted_username(tmp_path):
+    """A delete that undoes itself on the next restart is worse than no delete:
+    the server still exists, so an unguarded backfill would put the name back."""
+    path = tmp_path / "restart.db"
+    db = Database(path)
+    user_id = _user(db)
+    db.add_active_server("s1", user_id, "", "10.0.0.1", 22, "root", "k", False)
+    stored_id = db.list_usernames(user_id)[0]["id"]
+    assert db.delete_username(user_id, stored_id)
+
+    assert _names(Database(path), user_id) == []
