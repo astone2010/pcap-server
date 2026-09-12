@@ -545,8 +545,11 @@ const NO_KEY_CHOSEN = "";
 
 function sshKeyPicker(idPrefix, keys, current = "") {
     if (!keys.length) {
+        // Marked so serverFormProblem can tell "you have not picked one yet"
+        // from "there is nothing here to pick". Both leave the select empty,
+        // and telling someone to choose from a list of none is a dead end.
         return `<label>SSH Key</label>
-            <select id="${idPrefix}-key"><option value="">No keys found</option></select>
+            <select id="${idPrefix}-key" data-no-keys="1"><option value="">No keys found</option></select>
             <div class="field-hint">No SSH keys are available. Upload one in the Admin panel first.</div>`;
     }
     const opts = keys
@@ -689,7 +692,12 @@ function bindUsernamePicker(idPrefix) {
 // tool rather than an unanswered question.
 function serverFormProblem(idPrefix) {
     if (!$(`${idPrefix}-host`).value.trim()) return "Enter a hostname or IP address.";
-    if (!$(`${idPrefix}-key`).value) return "Choose an SSH key from the list.";
+    const key = $(`${idPrefix}-key`);
+    if (key.dataset.noKeys) {
+        return "No SSH keys have been uploaded yet. Add one under Admin → SSH keys, "
+            + "then come back to this form.";
+    }
+    if (!key.value) return "Choose an SSH key from the list.";
     if (!usernameValue(idPrefix)) return "Enter a username.";
     return "";
 }
@@ -2177,6 +2185,28 @@ document.addEventListener("keydown", (e) => {
     }
     if (e.key === "Enter" && $("login-totp") === document.activeElement) {
         doLogin();
+    }
+    // Enter submits the form the cursor is in. The checks above name single
+    // fields by id, which is fine for the fixed login and filter boxes but left
+    // out every field of the server form: typing a new username and pressing
+    // Enter did nothing whatsoever -- no request, no error, no feedback -- which
+    // reads as a form with no way to submit it rather than a missing shortcut.
+    //
+    // Naming six more ids here would only leave out the seventh. The form's own
+    // primary button already says what submitting means, and clicking it goes
+    // through the same delegated dispatch as a real click, so the add and edit
+    // forms both work without either being wired up separately.
+    if (e.key === "Enter") {
+        const area = $("server-form-area");
+        const field = document.activeElement;
+        if (area && field && field !== area && area.contains(field)
+            && field.tagName !== "TEXTAREA") {
+            const primary = area.querySelector("button.btn-primary[data-action]");
+            if (primary) {
+                e.preventDefault();
+                primary.click();
+            }
+        }
     }
 });
 
