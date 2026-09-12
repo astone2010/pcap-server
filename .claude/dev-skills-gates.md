@@ -2,7 +2,11 @@
 Track: release sequence — 0.1.0-dev.16
 Version: 0.1.0-dev.16
 Updated: 2026-09-12
-Branch: claude/nifty-lamport-aul3v3 (branched from origin/claude/admiring-wright-k20ptf @ 0e7649e)
+Branch: claude/admiring-wright-k20ptf @ 45cf119 — CANONICAL, and the only
+        one to push to. The harness assigns a fresh claude/* branch every
+        session; that assignment is NOT the branch this project uses. Two
+        sessions running have now pushed to the harness name first and had
+        to be corrected. Fast-forward onto admiring-wright-k20ptf instead.
 
 ## What is in the working tree
 
@@ -69,10 +73,27 @@ audit fixes worth making. Nothing committed yet — awaiting approval.
   interfaces. Documented in the file, but it is the insecure default.
 - dev.14's release body still compares against dev.8 (carried over, cosmetic).
 
-## Branch note for the next session
+## Branch note for the next session — READ THIS FIRST
 
-The container cloned the repo's HEAD, which is claude/hopeful-allen-qmo0ch —
-the ORIGINAL single "Add pcap-server" commit, not the current work. There is no
-main/master on origin. claude/nifty-lamport-aul3v3 was created here from
-origin/claude/admiring-wright-k20ptf (0e7649e, = v0.1.0-dev.15), which is the
-real tip. A session that trusts the default checkout audits a dead ancestor.
+Two traps, and this session fell into both.
+
+1. **The container clones the wrong tip.** origin/HEAD is
+   claude/hopeful-allen-qmo0ch — the ORIGINAL single "Add pcap-server" commit,
+   with no README, no tests, no backend/auth.py. There is no main or master on
+   origin. A session that trusts the default checkout audits a dead ancestor.
+   Start with:
+       git fetch origin claude/admiring-wright-k20ptf
+       git checkout -B <work> origin/claude/admiring-wright-k20ptf
+
+2. **The harness-assigned branch is not this project's branch.** Every session
+   is told to develop on a fresh claude/<name> branch. That is the harness
+   talking, not the user. The canonical branch is
+   claude/admiring-wright-k20ptf and work belongs there — fast-forward onto it
+   and push that, do not leave the work on the assigned name. This has now
+   been corrected by the user in two consecutive sessions
+   (claude/api-rate-limiting-10cf7m in the last one,
+   claude/nifty-lamport-aul3v3 in this one).
+
+Stale branches on origin that are the USER'S to delete, never Claude's:
+claude/nifty-lamport-aul3v3 (duplicate of the canonical tip),
+claude/api-rate-limiting-10cf7m if it is still there.
