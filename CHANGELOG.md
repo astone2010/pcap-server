@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-dev.15 — unreleased
+## 0.1.0-dev.15 — 2026-09-12
 
 ### Security
 
