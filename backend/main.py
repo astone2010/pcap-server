@@ -216,9 +216,10 @@ _INSECURE_ALLOWED_PATHS = frozenset({
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 _HTTPS_REMEDY = (
-    "Put pcap-server behind an HTTPS reverse proxy -- Caddy obtains and renews "
-    "certificates automatically -- then set TRUST_PROXY_HEADERS=true so pcap-server "
-    "recognises the proxy's TLS."
+    "Put pcap-server behind an HTTPS reverse proxy that can obtain and renew its "
+    "own certificates (Caddy, Nginx Proxy Manager and Traefik all do this "
+    "automatically; plain nginx needs certbot or similar alongside it), then set "
+    "TRUST_PROXY_HEADERS=true so pcap-server recognises the proxy's TLS."
 )
 
 

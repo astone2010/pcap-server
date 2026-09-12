@@ -192,7 +192,8 @@ function checkCookieConfig(cookieSecure) {
             "servers and view captures, but ",
             { strong: "captures cannot be downloaded, SSH keys cannot be uploaded, and nothing can be changed" },
             ". To get full access, serve pcap-server over HTTPS \u2014 either put a reverse proxy in front ",
-            "(Caddy obtains and renews Let's Encrypt certificates automatically; nginx or Traefik work too) ",
+            "that can obtain and renew its own certificates (Caddy, Nginx Proxy Manager and Traefik all do "
+            "this automatically; plain nginx needs certbot or similar alongside it) ",
             "and set ",
             { code: "TRUST_PROXY_HEADERS=true" },
             " so it recognises the proxy's TLS, then set ",
