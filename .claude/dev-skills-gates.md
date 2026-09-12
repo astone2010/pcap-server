@@ -502,6 +502,85 @@ three verified live, not just unit-tested in isolation.
 
 ---
 
+## Release sequence: 0.1.0-dev.9 (session 4, continued)
+
+User asked to tag the next version after the CSP work landed. dev.8 was
+never tagged (deferred, per the standing decision recorded above); dev.9
+folds dev.8's untagged work together with this session's four changesets
+(test harness + CI, concurrent-captures limit, SSH key sealing, CSP
+hardening) into one release, consistent with "fold prereq work in rather
+than burn dev.9."
+
+Track: release sequence
+Version: 0.1.0-dev.9
+
+🔢 VERSION    ✅ APP_VERSION in backend/main.py, image tag in
+  docker-compose.yml, CHANGELOG.md entry all agree. v0.1.0-dev.7 is the
+  latest tag on the remote (verified via `git ls-remote --tags origin`,
+  never local refs); dev.8 was never tagged and dev.9 supersedes it.
+🔨 BUILD      ✅ `./scripts/check.sh`: 265 passed, 0 skipped (tshark/
+  capinfos still installed in this container from earlier verification).
+  Beyond the test suite: live-smoke-tested the actual running app against
+  the upgraded dependencies below -- register, multipart SSH key upload,
+  and the specific crafted Range-header request against a static asset
+  that was the concrete DoS vector being patched, confirmed fast (8ms) and
+  correct (206 Partial Content) rather than hanging.
+🔒 SECURITY   ✅ 0 Critical, 0 High for this app's actual attack surface.
+  Ran `pip-audit` against backend/requirements.txt as part of doing this
+  gate properly (not something asked for -- it's what the gate is for) and
+  found 26 findings across `starlette` 0.41.3 and `python-multipart`
+  0.0.20. Two are concretely exploitable here: an UNAUTHENTICATED crafted
+  `Range` header against any static asset (the frontend, served before
+  sign-in, via the StaticFiles mount) causing quadratic-time processing in
+  FileResponse -- a real DoS with no auth required at all -- and a large
+  multipart upload blocking the event loop's main thread, reachable
+  through the admin-gated SSH key upload endpoint. Fixed by bumping
+  fastapi 0.115.6->0.125.0 (the lowest version whose starlette ceiling
+  admits a patched starlette), starlette->0.50.0, python-multipart->0.0.32.
+  Chose this combination specifically because it keeps the (deprecated but
+  functional) `on_event` shutdown hook this app's connection-cleanup path
+  depends on -- confirmed by downloading and inspecting starlette
+  0.49.1/0.50.0's applications.py directly, not assumed. starlette 1.x
+  removes `on_event` entirely (also confirmed by inspection), so the 5
+  remaining lower-severity advisories (Host-header URL reconstruction,
+  Windows-only UNC path handling via StaticFiles, HTTPEndpoint verb
+  dispatch, x-www-form-urlencoded size limits) were checked one by one
+  against this app's actual code and none apply -- no HTTPEndpoint
+  subclasses, no security decision built from request.url, Linux-only
+  deployment, no raw form()-urlencoded parsing. Migrating to lifespan
+  handlers to close those anyway is real, legitimate follow-up work, just
+  not something to bundle into a release whose point is a security fix,
+  not a framework migration. Also ran dependency/pattern checks across the
+  full backend+frontend (no eval/shell=True/pickle/bare-except/disabled-
+  TLS/hardcoded secrets; all deps exactly pinned) -- clean.
+📄 DOCS       ✅ CHANGELOG.md gets a dev.9 entry (Security: concurrent-
+  capture bound, SSH key sealing, CSP hardening, the dependency CVE fixes
+  with the same reasoning as above condensed; Changed: the test harness
+  and CI). README.md's Admin Settings table was missing BOTH the new
+  max_concurrent_captures setting AND session_idle_timeout_minutes (a
+  dev.8-era gap this pass also caught and fixed, since it's the same
+  table and same review pass). The SSH Keys section now says keys are
+  sealed under the master key when one is configured, instead of implying
+  plaintext storage. Deliberately NOT backfilled: a full README section
+  documenting capture encryption-at-rest -- that's a dev.8 gap, a much
+  larger addition, and out of scope for what changed in dev.9.
+📦 RELEASE    ➖ N/A — dev pre-release, no PR to main until stable (your
+  standing decision, unchanged)
+🚀 SHIP       ⬜ tag command below -- yours to run, per the standing rule
+  that tag pushes are never executed on your behalf. I will confirm on
+  the remote afterward with `git ls-remote --tags origin v0.1.0-dev.9`
+  rather than assuming it landed.
+
+Commands for you to run once the commit below is approved and pushed:
+```
+git tag v0.1.0-dev.9
+git push origin v0.1.0-dev.9
+```
+That will fire release.yml (builds and pushes the Docker image, creates
+the GitHub Release, marked prerelease since the tag contains "-dev").
+
+---
+
 ## Fix: SSH private keys stored in plaintext (session 4, continued)
 
 User flagged this as an architecture-level task, not mechanical test-writing

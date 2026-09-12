@@ -50,7 +50,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.8"
+APP_VERSION = "0.1.0-dev.9"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 app = FastAPI(title="pcap-server", version=APP_VERSION)

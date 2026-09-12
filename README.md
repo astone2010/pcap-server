@@ -55,7 +55,9 @@ These are configurable from the Admin tab by the admin user:
 |---|---|---|
 | Max capture seconds | 300 | Maximum duration for a single capture |
 | Max capture packets | 100000 | Maximum packets per capture |
+| Max concurrent captures | 5 | Captures running or finishing up at once, across all users — each holds an SSH connection to a target host plus a local file |
 | Session duration (hours) | 8 | Login session lifetime |
+| Session idle timeout (minutes) | 60 | Idle window before a session is deleted, independent of the absolute duration above. `0` disables idle expiry |
 | Device trust (days) | 30 | How long a trusted device skips MFA |
 | Rate limit attempts | 5 | Failed login attempts before lockout |
 | Rate limit lockout (minutes) | 15 | Lockout duration after too many failures |
@@ -211,7 +213,11 @@ clear sessions once per worker as each boots, signing users out repeatedly.
 Upload private keys from the **Admin** tab. They are stored in the `ssh-keys/`
 directory (mounted at `/app/ssh-keys`) and offered as options when connecting to
 a remote server. Keys can be uploaded and deleted from the GUI; no manual file
-placement is needed.
+placement is needed. When a master key is configured (`MASTER_KEY_FILE` in
+`docker-compose.yml`), uploaded keys are sealed under it the same way
+captures are — a key never exists as a plaintext file on disk, and one
+uploaded before encryption was enabled is sealed in place automatically the
+next time the container starts.
 
 ## Running tcpdump with sudo
 

@@ -1,10 +1,20 @@
-fastapi==0.115.6
+fastapi==0.125.0
+# Pinned explicitly, not left to fastapi's own transitive resolution: 0.41.3
+# and 0.0.20 (fastapi's floor) carry known DoS advisories -- a main-thread
+# block on large multipart uploads, and a quadratic-time Range-header parse
+# in FileResponse that's reachable unauthenticated through the StaticFiles
+# mount serving the frontend. 0.50.0 is the newest starlette fastapi 0.125.0
+# allows (<0.51.0) and still carries the (deprecated but functional) on_event
+# hook this app's shutdown handler uses -- starlette 1.x drops it entirely,
+# which would need a lifespan-handler migration this fix deliberately doesn't
+# bundle in.
+starlette==0.50.0
 uvicorn[standard]==0.34.0
 asyncssh==2.24.0
 aiofiles==24.1.0
 pydantic==2.10.3
 pydantic-settings==2.7.0
-python-multipart==0.0.20
+python-multipart==0.0.32
 pyotp==2.9.0
 qrcode[pil]==8.0
 cryptography==50.0.1

@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.1.0-dev.9 — 2026-09-12
+
+### Security
+
+- **Bound concurrent captures.** Starting a capture had no limit at all: any
+  authenticated user could call the start-capture endpoint without bound, each
+  call opening a new SSH connection to a target host and a new local file, with
+  nothing capping how many ran at once. A new `Max concurrent captures` setting
+  in Admin → Settings (default 5) is checked first, before any connection is
+  opened or file created; going over it is refused with a clear error rather
+  than a stalled or resource-starved container.
+- **SSH private keys are sealed at rest.** The one secret in this app that
+  grants remote code execution on another machine was stored in plaintext on
+  the data volume. Keys are now sealed under the same master key as captures,
+  content-sniffed the same way captures are (so no filename or API change was
+  needed), and never exist as a plaintext file on disk: uploads are sealed
+  before the first write, and reads decrypt straight into an in-memory key
+  object handed to the SSH library, never a plaintext path. Keys uploaded
+  before this release are sealed at startup with the same verify-then-replace
+  safety captures already use — a crash partway through leaves either the
+  original key or a verified sealed replacement, never a half-written one that
+  could lock an admin out of a saved server. A locked or unconfigured vault
+  refuses the connection with a clear reason rather than silently falling back
+  to reading a plaintext key that no longer exists.
+- **`script-src` drops `'unsafe-inline'`.** Every inline `onclick`/`onchange`
+  handler in the UI (32 of them) was moved to `addEventListener`, most via one
+  small event-delegation helper for dynamically-rendered lists. The one
+  remaining inline script — applying the saved theme before first paint, which
+  has to run before the external script is even loaded — is now pinned by
+  SHA-256 content hash instead of being exempted from the policy.
+- Update `starlette` 0.41.3 → 0.50.0 and `python-multipart` 0.0.20 → 0.0.32,
+  found by running `pip-audit` as part of this release's security gate. The
+  two that concretely apply to this app: a multipart file upload large enough
+  to spool to disk blocked the event loop's main thread (reachable through the
+  admin-only SSH key upload endpoint), and a crafted `Range` header against
+  any static asset caused quadratic-time processing in `FileResponse` —
+  unauthenticated, since `StaticFiles` serves the frontend before sign-in.
+  `fastapi` moves to 0.125.0, the lowest version compatible with a patched
+  starlette. Five further starlette advisories need starlette 1.x, which
+  drops the `on_event` hook this app's shutdown handler still uses; none of
+  the five apply to code this app actually runs (no `HTTPEndpoint` subclasses,
+  no security decision built from a reconstructed `request.url`, no reliance
+  on `application/x-www-form-urlencoded` size limits, and the Windows-only UNC
+  issue doesn't apply to this Linux-only deployment) — migrating to `lifespan`
+  handlers to close them anyway is tracked as follow-up, not bundled into a
+  release meant to be a security fix, not a framework migration.
+
+### Changed
+
+- Add a pytest harness (`scripts/check.sh`, `.github/workflows/check.yml`)
+  covering `crypto.py`, `vault.py`, `auth.py`, `main.py`'s transport-security
+  surface (including a regression test for the `X-Forwarded-For` rate-limiter
+  bypass fixed in dev.8), `localnet.py`, `ssh_manager.py`'s hostile-input
+  handling, and `packet_parser.py`. Tests needing `tshark`/`capinfos` are
+  skipped rather than silently omitted when those tools aren't present, and
+  are reported as skipped (`pytest -r s`) so the gap stays visible. CI now
+  runs the same script on every push and pull request — previously the only
+  workflow fired on version tags, so ordinary commits had no automated check
+  at all.
+
 ## 0.1.0-dev.8 — 2026-09-12
 
 ### Security
