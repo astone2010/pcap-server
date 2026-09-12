@@ -1,0 +1,27 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install tshark and tcpdump
+        env:
+          # wireshark-common's postinst asks an interactive debconf question
+          # about non-root capture; this must be set or the install hangs.
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tshark tcpdump
+
+      - name: Run tests
+        run: ./scripts/check.sh

@@ -348,8 +348,34 @@ valid, not just that they skip cleanly when tools are absent (full suite:
 were not touched -- this was throwaway container tooling for verification
 only).
 
-Next: the scaffolding. requirements-dev.txt already landed. Still need
-scripts/check.sh (tool-availability preamble listing tshark/tcpdump/docker
-present-or-absent, then `pytest -r s` so skips stay visible) and
-.github/workflows/check.yml on push/PR calling that script rather than
-reimplementing the checks inline.
+Landed: scripts/check.sh and .github/workflows/check.yml -- the last
+scaffolding piece. check.sh prints a tool-availability preamble
+(tshark/tcpdump/capinfos/docker present-or-absent, explaining that absent
+tools mean SKIPPED not silently omitted), bootstraps a local .venv if one
+doesn't exist, installs backend/requirements-dev.txt into it, then runs
+`pytest -r s`. The venv step exists because of the exact issue the original
+plan flagged: this container's system python has a Debian-packaged
+`cryptography` with no RECORD file, so a bare `python3 -m pip install`
+fails with "Cannot uninstall cryptography ..." -- reproduced live while
+building this script, which is why the fix is in the script now rather than
+a note for next time. check.yml runs on every push and pull_request
+(closing the gap release.yml leaves: that one only fires on v* tags),
+installs tshark+tcpdump (DEBIAN_FRONTEND=noninteractive, since
+wireshark-common's postinst asks an interactive debconf question that
+would otherwise hang the job), and calls scripts/check.sh rather than
+reimplementing the checks inline, so CI and local can never drift into
+passing and failing independently.
+
+VERIFIED FOR REAL, twice: ./scripts/check.sh with the pre-existing .venv
+(237 passed), and again after moving .venv aside to force the bootstrap
+path from nothing (237 passed, fresh venv created and populated
+correctly). tshark/capinfos are still installed in this container from
+the previous verification pass, so 0 of the 237 were skipped either time;
+capinfos install left tcpdump absent both runs, which is exactly the
+partial-tool-availability case the preamble exists to report.
+
+This closes out the harness plan from the original handoff: every file in
+the table (crypto, vault, auth, main, localnet, ssh_manager,
+packet_parser) now has real tests, plus the scaffolding to run them
+identically in CI and locally. 🔨 BUILD is no longer a historical claim --
+scripts/check.sh is a build/test workflow a fresh clone can run today.
