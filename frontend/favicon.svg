@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="pcap-server">
+    <!-- Captured packets: a short stack of frames of differing length, which is
+         what the packet list looks like from across the room. Drawn on its own
+         dark ground rather than transparently, so it reads the same in a light
+         browser chrome as in a dark one.
+
+         SVG rather than .ico: one file, no binary in the tree, and it stays
+         sharp at every size a browser asks for. -->
+    <rect width="32" height="32" rx="7" fill="#16181d"/>
+    <g fill="#2dd4bf">
+        <rect x="7" y="8.5" width="18" height="3.5" rx="1.75"/>
+        <rect x="7" y="14.25" width="11" height="3.5" rx="1.75"/>
+        <rect x="7" y="20" width="15" height="3.5" rx="1.75"/>
+    </g>
+</svg>

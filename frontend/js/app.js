@@ -2192,27 +2192,37 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && $("login-totp") === document.activeElement) {
         doLogin();
     }
-    // Enter submits the form the cursor is in. The checks above name single
-    // fields by id, which is fine for the fixed login and filter boxes but left
-    // out every field of the server form: typing a new username and pressing
-    // Enter did nothing whatsoever -- no request, no error, no feedback -- which
-    // reads as a form with no way to submit it rather than a missing shortcut.
+    // Enter submits the form the cursor is in.
     //
-    // Naming six more ids here would only leave out the seventh. The form's own
-    // primary button already says what submitting means, and clicking it goes
-    // through the same delegated dispatch as a real click, so the add and edit
-    // forms both work without either being wired up separately.
+    // There is no <form> element anywhere in this UI, so none of this is the
+    // browser's own behaviour -- Enter works only where something asks for it,
+    // and for a long time the only things that asked were the ids listed
+    // above. That list left out every field of the server form: typing a
+    // hostname and pressing Enter did nothing whatsoever -- no request, no
+    // error, no feedback -- which reads as a form with no way to submit it
+    // rather than a missing shortcut. It left out the stored-username box on
+    // the same tab too, and the Add user box under Admin.
+    //
+    // Naming the missing ids here would only leave out the next one, so the
+    // container names its own submit button instead, in the markup, beside the
+    // fields it belongs to:
+    //
+    //     <div data-enter-submits="#btn-add-username"> ... </div>
+    //
+    // The value is a selector, looked up inside that container: an id where
+    // the button is fixed markup, a class where the form is rendered by JS and
+    // the button has no id of its own. The button is clicked rather than its
+    // handler called, so Enter and the mouse go down the same path and cannot
+    // drift apart.
     if (e.key === "Enter") {
-        const area = $("server-form-area");
         const field = document.activeElement;
-        if (area && field && field !== area && area.contains(field)
-            && field.tagName !== "TEXTAREA") {
-            const primary = area.querySelector("button.btn-primary[data-action]");
-            if (primary) {
-                e.preventDefault();
-                primary.click();
-            }
-        }
+        if (!field || field.tagName === "TEXTAREA") return;
+        const form = field.closest("[data-enter-submits]");
+        if (!form) return;
+        const submit = form.querySelector(form.dataset.enterSubmits);
+        if (!submit) return;
+        e.preventDefault();
+        submit.click();
     }
 });
 

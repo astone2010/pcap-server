@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>pcap-server</title>
+    <!-- Without this the browser asks for /favicon.ico on every single page
+         load and gets a 404, which is a failed request in everyone's console
+         for the lifetime of the app. Declaring an icon is what stops the ask. -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/css/style.css">
     <!-- This inline script is pinned in the CSP by content hash (see _CSP in
          backend/main.py), not 'unsafe-inline' -- it must run before first
@@ -145,7 +149,10 @@
                         <div class="empty-state" style="padding:20px;font-size:0.8125rem">No servers added</div>
                     </div>
                 </div>
-                <div id="server-form-area" class="server-form">
+                <!-- Both forms rendered in here -- add and edit -- lead with a
+                     primary button, so one rule submits either. -->
+                <div id="server-form-area" class="server-form"
+                     data-enter-submits="button.btn-primary[data-action]">
                     <div class="empty-state">Select a server or click + Add</div>
                 </div>
             </div>
@@ -161,7 +168,8 @@
                         shared with other users.
                     </p>
                     <div id="username-list" class="admin-table-container"></div>
-                    <div class="admin-inline-form" style="margin-top:12px">
+                    <div class="admin-inline-form" style="margin-top:12px"
+                         data-enter-submits="#btn-add-username">
                         <input type="text" id="new-ssh-username" placeholder="e.g. serveradmin" style="width:180px">
                         <button id="btn-add-username" class="btn btn-sm btn-secondary">Add username</button>
                     </div>
@@ -451,7 +459,8 @@
                 <div class="admin-section">
                     <h3>Users</h3>
                     <div id="admin-user-list" class="admin-table-container"></div>
-                    <div class="admin-inline-form" style="margin-top:12px">
+                    <div class="admin-inline-form" style="margin-top:12px"
+                         data-enter-submits="#btn-admin-create-user">
                         <input type="text" id="admin-new-username" placeholder="Username" style="width:140px">
                         <input type="password" id="admin-new-password" placeholder="Password" style="width:140px">
                         <button id="btn-admin-create-user" class="btn btn-sm btn-secondary">Add user</button>
