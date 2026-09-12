@@ -30,37 +30,85 @@ jobs:
 
       - name: Derive release metadata from tag
         id: meta
+        env:
+          # Read through the environment rather than a ${{ }} template so the
+          # tag name is never expanded into the script text.
+          TAG: ${{ github.ref_name }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          version="${TAG#v}"
+          image="${REGISTRY}/${IMAGE_NAME}"
+
+          # Every version tag on the remote, oldest first.
+          #
+          # Failure here aborts the release rather than falling through to a
+          # guess: not knowing what else is tagged is exactly the state in which
+          # moving a floating tag is unsafe.
+          remote_versions="$(git ls-remote --tags origin 'refs/tags/v*' \
+            | sed 's#.*refs/tags/v##' | grep -v '\^{}$')"
+
+          # The tag that started this run is normally in that list already --
+          # its push is the trigger -- but it is added explicitly rather than
+          # assumed. If the ref were not yet visible to ls-remote, a release
+          # would compare itself against only its predecessors, conclude it was
+          # not the newest, and quietly decline to move :dev. Declining is the
+          # safe direction for an old tag and the wrong one here, so the one
+          # version this run knows for certain is never left to a lookup.
+          versions="$(printf '%s\n%s\n' "$remote_versions" "$version" \
+            | awk 'NF' | sort -V -u)"
+
+          # A floating tag must only ever move forward. Nothing about a tag push
+          # says it is the newest version: backfilling a version that was
+          # skipped, or re-tagging an old commit, pushes an older build through
+          # this same workflow. Without this check that build would claim :dev
+          # or :latest and silently downgrade whoever pulls them.
+          #
+          # Compare within a kind -- newest dev against dev, newest stable
+          # against stable -- so a stable release does not stop :dev tracking
+          # dev builds. This also sidesteps sort -V ordering a prerelease after
+          # its own release (it places 0.1.0 before 0.1.0-dev.2), which is wrong
+          # by semver but never consulted across kinds.
+          newest_dev="$(printf '%s\n' "$versions" | { grep -- '-dev' || true; } | tail -n1)"
+          newest_stable="$(printf '%s\n' "$versions" | { grep -v -- '-' || true; } | tail -n1)"
+
+          tags="${image}:${version}"
+          moving=""
 
           if [[ "$version" == *-dev* ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "release_name=v${version} (Dev)" >> "$GITHUB_OUTPUT"
-            {
-              echo "tags<<EOF"
-              echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${version}"
-              echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            prerelease=true
+            release_name="v${version} (Dev)"
+            if [ "$version" = "$newest_dev" ]; then
+              moving=":dev"
+              tags="${tags}"$'\n'"${image}:dev"
+            else
+              echo "::notice::v${version} is not the newest dev version (v${newest_dev}) -- leaving :dev pointing where it is"
+            fi
           elif [[ "$version" == *-* ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "release_name=v${version} (Pre-release)" >> "$GITHUB_OUTPUT"
-            {
-              echo "tags<<EOF"
-              echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${version}"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            # Other prereleases (-rc, -beta) carry no floating tag by design.
+            prerelease=true
+            release_name="v${version} (Pre-release)"
           else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "release_name=v${version}" >> "$GITHUB_OUTPUT"
-            {
-              echo "tags<<EOF"
-              echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${version}"
-              echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            prerelease=false
+            release_name="v${version}"
+            if [ "$version" = "$newest_stable" ]; then
+              moving=":latest"
+              tags="${tags}"$'\n'"${image}:latest"
+            else
+              echo "::notice::v${version} is not the newest stable version (v${newest_stable}) -- leaving :latest pointing where it is"
+            fi
           fi
+
+          echo "Building v${version}; pushing ${image}:${version}${moving:+ and ${image}${moving}}"
+
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "release_name=$release_name"
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push image
         uses: docker/build-push-action@v6
