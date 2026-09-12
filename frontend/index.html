@@ -277,12 +277,46 @@
                     <button id="btn-apply-filter" class="btn btn-sm btn-secondary">Apply</button>
                     <button id="btn-download-capture" class="btn btn-sm btn-secondary">Download .pcap</button>
                 </div>
-                <div class="filter-help-row">
+                <!-- One line of chrome. Everything that is reference material
+                     rather than something you look at while reading packets
+                     lives in a drawer behind it, closed until asked for: the
+                     viewer had 309px of furniture above the packet list on an
+                     800px window, which is more than the list itself got. -->
+                <div class="viewer-bar">
+                    <button type="button" class="drawer-toggle" data-action="toggle-drawer" data-id="view-options">View options</button>
+                    <button type="button" class="drawer-toggle" data-action="toggle-drawer" data-id="filter-help">Filter help</button>
+                    <div id="packet-legend" class="packet-legend"></div>
+                </div>
+                <div id="display-filter-error" class="filter-error" hidden></div>
+
+                <div id="drawer-view-options" class="viewer-drawer" hidden>
+                    <div class="flag-groups">
+                        <div class="flag-group">
+                            <div class="flag-group-head">
+                                Standard view flags
+                                <span class="flag-group-note">the usual choices &mdash; dotted ones are on by default</span>
+                            </div>
+                            <div id="flag-picker-standard" class="flag-picker"></div>
+                        </div>
+                        <div class="flag-group flag-group-niche">
+                            <div class="flag-group-head">
+                                Niche view flags
+                                <span class="flag-group-note">situational &mdash; most views never need these</span>
+                            </div>
+                            <div id="flag-picker-niche" class="flag-picker"></div>
+                        </div>
+                    </div>
+                    <label class="resolve-names" title="Sends a reverse-DNS query for every address in the capture">
+                        <input type="checkbox" id="resolve-names">
+                        <span>Resolve hostnames</span>
+                        <span class="resolve-warn">performs DNS lookups for addresses in this capture</span>
+                    </label>
+                    <div id="flag-help" class="flag-help"></div>
+                </div>
+
+                <div id="drawer-filter-help" class="viewer-drawer" hidden>
                     <div id="display-filter-suggestions" class="filter-suggestions"></div>
-                    <div id="display-filter-error" class="filter-error" hidden></div>
-                    <details class="explainer">
-                        <summary>What goes in the display filter?</summary>
-                        <div class="explainer-body">
+                    <div class="explainer-body">
                             <p>
                                 <strong>This is not the same language as the BPF filter on the
                                 Capture tab</strong>, and that is the single thing most worth
@@ -331,34 +365,8 @@
                                 rather than an empty packet list &mdash; an empty list here always
                                 means the filter was valid and nothing matched it.
                             </p>
-                        </div>
-                    </details>
-                </div>
-                <div class="view-options" style="padding:8px 16px">
-                    <div class="flag-groups">
-                        <div class="flag-group">
-                            <div class="flag-group-head">
-                                Standard view flags
-                                <span class="flag-group-note">the usual choices — dotted ones are on by default</span>
-                            </div>
-                            <div id="flag-picker-standard" class="flag-picker"></div>
-                        </div>
-                        <div class="flag-group flag-group-niche">
-                            <div class="flag-group-head">
-                                Niche view flags
-                                <span class="flag-group-note">situational — most views never need these</span>
-                            </div>
-                            <div id="flag-picker-niche" class="flag-picker"></div>
-                        </div>
                     </div>
-                    <label class="resolve-names" title="Sends a reverse-DNS query for every address in the capture">
-                        <input type="checkbox" id="resolve-names">
-                        <span>Resolve hostnames</span>
-                        <span class="resolve-warn">performs DNS lookups for addresses in this capture</span>
-                    </label>
-                    <div id="flag-help" class="flag-help"></div>
                 </div>
-                <div id="packet-legend" class="packet-legend"></div>
                 <div class="packet-list-container">
                     <div class="packet-table-scroll">
                         <table class="packet-table">
@@ -379,6 +387,7 @@
                         </table>
                     </div>
                 </div>
+                <div class="packet-detail-hint">Click a packet to inspect it</div>
                 <div class="resizer" id="resizer"></div>
                 <div class="packet-detail-container">
                     <div id="packet-detail-tree" class="packet-detail-tree">

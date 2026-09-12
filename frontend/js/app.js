@@ -371,6 +371,7 @@ function enterApp() {
     initTabs();
     initFlagPicker();
     loadUsernameList();
+    applyDrawerState();
     renderFilterSuggestions("bpf-suggestions", BPF_SUGGESTIONS);
     renderFilterSuggestions("display-filter-suggestions", DISPLAY_SUGGESTIONS);
     loadServers();
@@ -1146,6 +1147,7 @@ async function viewCapture(id) {
 
     hide("viewer-empty");
     show("packet-viewer");
+    applyStoredSplit();
     renderPacketLegend();
     setViewerLabel(id);
     $("display-filter").value = "";
@@ -1249,6 +1251,49 @@ function renderFilterSuggestions(containerId, suggestions) {
             .join("");
 }
 
+// Drawer state is a per-viewer convenience, so localStorage is the right home
+// for it -- and it can throw or come back empty (private window, blocked site
+// data), which must not stop the viewer rendering.
+const DRAWER_KEY = "pcap.viewer.drawers";
+
+function openDrawers() {
+    try {
+        const raw = localStorage.getItem(DRAWER_KEY);
+        return raw ? new Set(JSON.parse(raw)) : new Set();
+    } catch {
+        return new Set();
+    }
+}
+
+function saveOpenDrawers(open) {
+    try {
+        localStorage.setItem(DRAWER_KEY, JSON.stringify([...open]));
+    } catch {
+        // A remembered drawer is not worth failing over.
+    }
+}
+
+function applyDrawerState() {
+    const open = openDrawers();
+    for (const name of ["view-options", "filter-help"]) {
+        const drawer = $(`drawer-${name}`);
+        const toggle = document.querySelector(`.drawer-toggle[data-id="${name}"]`);
+        if (!drawer || !toggle) continue;
+        const isOpen = open.has(name);
+        drawer.hidden = !isOpen;
+        toggle.classList.toggle("open", isOpen);
+        toggle.setAttribute("aria-expanded", String(isOpen));
+    }
+}
+
+function toggleDrawer(name) {
+    const open = openDrawers();
+    if (open.has(name)) open.delete(name);
+    else open.add(name);
+    saveOpenDrawers(open);
+    applyDrawerState();
+}
+
 function showDisplayFilterError(message) {
     const el = $("display-filter-error");
     if (!el) return;
@@ -1270,6 +1315,8 @@ async function loadPackets(captureId, filter = "") {
     // Kept so a rejected filter can put the packets back. The spinner replaces
     // them before the request goes out, and a filter the server refuses would
     // otherwise leave a spinner that never resolves where the list used to be.
+    selectedPacketRow = null;
+    setDetailVisible(false);
     const previousRows = tbody.innerHTML;
     tbody.innerHTML = `<tr><td colspan="${span}" style="text-align:center;padding:20px"><span class="spinner"></span> Loading...</td></tr>`;
 
@@ -1334,7 +1381,15 @@ function downloadCapture() {
     downloadCaptureById(viewingCaptureId);
 }
 
+// Nothing selected means the detail pane has nothing to show, so it gives its
+// height back to the list rather than holding a third of the window for
+// "Click a packet above".
+function setDetailVisible(visible) {
+    $("packet-viewer")?.classList.toggle("no-selection", !visible);
+}
+
 async function selectPacket(frameNumber) {
+    setDetailVisible(true);
     if (selectedPacketRow) selectedPacketRow.classList.remove("selected");
     selectedPacketRow = document.querySelector(`tr[data-frame="${frameNumber}"]`);
     if (selectedPacketRow) selectedPacketRow.classList.add("selected");
@@ -1395,22 +1450,52 @@ function buildTreeNode(label, fields) {
 
 // --- resizer ---
 
+const SPLIT_KEY = "pcap.viewer.listHeight";
+// Leave room for the detail pane's own header even when dragged to the bottom,
+// so the split can never be pulled to a state with no way back.
+const MIN_DETAIL_HEIGHT = 80;
+
+function applyStoredSplit() {
+    const listContainer = document.querySelector(".packet-list-container");
+    if (!listContainer) return;
+    let stored = null;
+    try {
+        stored = localStorage.getItem(SPLIT_KEY);
+    } catch {
+        return;
+    }
+    const height = parseInt(stored, 10);
+    if (!height) return;
+    const viewer = $("packet-viewer");
+    const max = viewer ? viewer.clientHeight - MIN_DETAIL_HEIGHT : height;
+    listContainer.style.flex = "none";
+    listContainer.style.height = Math.max(100, Math.min(height, max)) + "px";
+}
+
 (function initResizer() {
     const resizer = $("resizer");
     if (!resizer) return;
     let startY, startH;
     resizer.addEventListener("mousedown", (e) => {
         const listContainer = document.querySelector(".packet-list-container");
+        const viewer = $("packet-viewer");
         startY = e.clientY;
         startH = listContainer.offsetHeight;
+        e.preventDefault();
         function onMove(ev) {
-            const delta = ev.clientY - startY;
+            const max = viewer.clientHeight - MIN_DETAIL_HEIGHT;
+            const height = Math.max(100, Math.min(startH + ev.clientY - startY, max));
             listContainer.style.flex = "none";
-            listContainer.style.height = Math.max(100, startH + delta) + "px";
+            listContainer.style.height = height + "px";
         }
         function onUp() {
             document.removeEventListener("mousemove", onMove);
             document.removeEventListener("mouseup", onUp);
+            try {
+                localStorage.setItem(SPLIT_KEY, String(listContainer.offsetHeight));
+            } catch {
+                // A remembered split is not worth failing over.
+            }
         }
         document.addEventListener("mousemove", onMove);
         document.addEventListener("mouseup", onUp);
@@ -1996,6 +2081,9 @@ function initEventDelegation() {
     });
     delegate("admin-ssh-keys", {
         "delete-key": (id) => adminDeleteKey(id),
+    });
+    document.querySelectorAll(".drawer-toggle").forEach((el) => {
+        el.addEventListener("click", () => toggleDrawer(el.dataset.id));
     });
     delegate("bpf-suggestions", {
         "use-filter": (expr, el) => useFilterSuggestion(expr, el),

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The packet viewer gives its height to packets.** On an 800px window the
+  chrome above the packet list came to 309px of a 721px viewer — a toolbar, a
+  filter-help row, two bordered flag-group boxes, a resolve-hostnames control
+  and a legend — leaving the list 272px and twelve visible rows. Everything that
+  is reference material rather than something you read packets against now sits
+  behind one of two toggles on a single 30px bar, closed by default and
+  remembered per browser. An open drawer is capped and scrolls rather than
+  pushing the list off the bottom.
+- **The detail pane appears when there is something to show.** It used to hold a
+  third of the viewer to display "Click a packet above". With nothing selected
+  it is a 26px hint strip, and it opens on selection and closes again when the
+  list is redrawn.
+- **The list/detail split is remembered**, and can no longer be dragged to a
+  state with no way back: the detail pane keeps a minimum height.
+
+Chrome above the list is 76px instead of 309, and an 800px window shows 28
+packet rows instead of 12.
+
 ## 0.1.0-dev.11 — 2026-09-12
 
 ### Fixed

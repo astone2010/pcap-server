@@ -39,11 +39,23 @@ Updated: 2026-09-12
                 PR step ➖ N/A -- the repo has no branch to merge into: the
                 default branch is the initial commit and every release from
                 dev.1 to dev.10 was tagged on a claude/* branch.
-🚀 SHIP       ⏳ awaiting the tag. Tag pushes are always the user's to run.
-                Stays ⏳ until `git ls-remote --tags origin v0.1.0-dev.11`
-                confirms it, the release workflow (.github/workflows/release.yml,
-                on: push tags v*) completes, and the ghcr.io image and the
-                GitHub Release are verified.
+🚀 SHIP       ✅ v0.1.0-dev.11 verified on all four counts, not assumed:
+                the tag is on the remote at 77186a9 (git ls-remote) and matches
+                HEAD; the Release workflow run 10 completed with conclusion
+                success; the GitHub Release v0.1.0-dev.11 is published as a
+                prerelease. The ghcr.io image is published by that same
+                successful run -- the run is the evidence, the image bytes were
+                not pulled from here.
+
+--- work since the tag, not released ---
+
+Track: work commit
+🔒 SECURITY   ✅ presentation only: HTML structure, CSS, and two localStorage
+                reads/writes, each wrapped so a private window or blocked site
+                data cannot stop the viewer rendering. No new input handling,
+                no new endpoint, no dependency change.
+🔨 BUILD      ✅ 399 tests green; four browser suites pass, including a new
+                layout suite that measures the split rather than eyeballing it.
 
 Outstanding, needs the repository owner:
   * The repo's DEFAULT BRANCH is claude/hopeful-allen-qmo0ch, the initial
