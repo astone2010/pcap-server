@@ -184,6 +184,62 @@ transit between two processes.
 Uploaded SSH private keys are sealed the same way, and a key uploaded before
 encryption was switched on is sealed in place at the next start.
 
+### Rotating the master key
+
+If the master key is disclosed — pasted into a chat, caught in a screenshot,
+committed by accident — it has to be replaced, and swapping the key file alone
+will not do it: the app refuses to start against captures the new key cannot
+open, which is the fail-closed behaviour above doing its job.
+
+Rotate it properly instead. Because the master key only ever wraps per-file data
+keys and never touches a capture's contents, a rotation rewrites 84 bytes per
+file rather than re-encrypting anything — a 40 GB capture rotates as fast as a
+40 KB one.
+
+**Stop the app first.** A capture being written while its header is swapped is
+the one way this can corrupt one; the tool refuses to touch a file modified in
+the last 10 seconds, but a stopped app is the real guarantee.
+
+```bash
+docker compose stop pcap-server
+
+docker compose run --rm --entrypoint python pcap-server -m backend.rekey \
+    --captures-dir /app/captures \
+    --ssh-keys-dir /app/ssh-keys \
+    --old-key-file /run/secrets/pcap_master_key \
+    --generate-new-key /app/data/master.key.new
+```
+
+That is a **dry run**: it reports what it would move and writes nothing, key
+file included. Add `--apply` to commit it. Then put the new key where the old
+one was and start up again:
+
+```bash
+cp /opt/docker/pcap/data/master.key.new /opt/docker/pcap/secrets/master.key
+docker compose start pcap-server
+docker compose logs pcap-server | grep -i encryption
+```
+
+The log will report `encryption enabled (key id ...)` with the new id.
+
+**Keep the old key until that line appears and a capture opens in the viewer.**
+Until then it is the only thing that can read your captures.
+
+Notes on how it behaves, which matter if something goes wrong mid-run:
+
+- It covers captures **and** stored SSH keys. Moving only one would leave the
+  other unopenable, and startup refuses to continue past that.
+- It is safe to re-run. A file already under the new key is recognised and
+  skipped, so an interrupted run finishes on the second pass.
+- Any file it cannot move is left untouched under the old key and the run exits
+  non-zero. There is no partial success reported as success.
+- A file sealed under some third key is named and skipped, never guessed at.
+- It never deletes a capture. The worst case is a file still on the old key,
+  named in the output.
+
+There is no supported way to rotate while the app runs, and no way to recover
+captures whose key is lost — that is the point of the design, not a gap in it.
+
 ### Traffic in transit
 
 **Browser to pcap-server** is yours to terminate, because a LAN appliance cannot

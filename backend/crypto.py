@@ -108,14 +108,32 @@ class Cryptor:
         wrapped = self._aes.encrypt(nonce, dek, MAGIC + self.kek_id)
         return nonce, wrapped
 
-    def _build_header(self) -> tuple[bytes, AESGCM]:
-        dek = os.urandom(DEK_LEN)
+    def header_for_dek(self, dek: bytes) -> bytes:
+        """A header binding an already-existing DEK to this master key.
+
+        Split out of _build_header for rekeying, which must keep a file's DEK
+        exactly as it is -- the body is encrypted under that DEK, so a new one
+        would mean re-encrypting every byte instead of rewriting 84 of them.
+        """
+        if len(dek) != DEK_LEN:
+            raise ValueError(f"DEK must be {DEK_LEN} bytes, got {len(dek)}")
         nonce, wrapped = self._wrap_dek(dek)
         header = MAGIC + self.kek_id + nonce + wrapped
         assert len(header) == HEADER_LEN, len(header)
-        return header, AESGCM(dek)
+        return header
 
-    def _open_header(self, header: bytes) -> AESGCM:
+    def _build_header(self) -> tuple[bytes, AESGCM]:
+        dek = os.urandom(DEK_LEN)
+        return self.header_for_dek(dek), AESGCM(dek)
+
+    def unwrap_dek(self, header: bytes) -> bytes:
+        """The DEK this header carries, or raise.
+
+        The one place the header is parsed and authenticated. _open_header wants
+        a cipher and rekeying wants the key itself, and a second parser written
+        for the second caller is a second place for the kek_id check to be
+        forgotten.
+        """
         if len(header) < HEADER_LEN or not header.startswith(MAGIC):
             raise NotEncrypted("missing envelope header")
         offset = len(MAGIC)
@@ -131,10 +149,12 @@ class Cryptor:
                 f"(file {file_kek_id.hex()[:12]}, current {self.kek_id.hex()[:12]})"
             )
         try:
-            dek = self._aes.decrypt(nonce, wrapped, MAGIC + file_kek_id)
+            return self._aes.decrypt(nonce, wrapped, MAGIC + file_kek_id)
         except InvalidTag as exc:
             raise WrongKey("master key does not open this file") from exc
-        return AESGCM(dek)
+
+    def _open_header(self, header: bytes) -> AESGCM:
+        return AESGCM(self.unwrap_dek(header))
 
     # --- sealing ---
 
