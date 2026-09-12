@@ -102,7 +102,8 @@ class Database:
                 packet_count INTEGER NOT NULL DEFAULT 0,
                 file_size INTEGER NOT NULL DEFAULT 0,
                 error TEXT NOT NULL DEFAULT '',
-                server_label TEXT NOT NULL DEFAULT ''
+                server_label TEXT NOT NULL DEFAULT '',
+                interface TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS known_usernames (
@@ -151,6 +152,8 @@ class Database:
             conn.execute("ALTER TABLE captures ADD COLUMN name TEXT NOT NULL DEFAULT ''")
         if "server_label" not in capture_columns:
             conn.execute("ALTER TABLE captures ADD COLUMN server_label TEXT NOT NULL DEFAULT ''")
+        if "interface" not in capture_columns:
+            conn.execute("ALTER TABLE captures ADD COLUMN interface TEXT NOT NULL DEFAULT ''")
         self._fold_saved_servers(conn)
         conn.commit()
 
@@ -413,9 +416,9 @@ class Database:
         self._conn().execute(
             """INSERT OR REPLACE INTO captures
                (id, name, user_id, server_id, server_label, status, started_at, stopped_at, command,
-                remote_path, local_path, packet_count, file_size, error)
+                remote_path, local_path, packet_count, file_size, error, interface)
                VALUES (:id, :name, :user_id, :server_id, :server_label, :status, :started_at, :stopped_at, :command,
-                       :remote_path, :local_path, :packet_count, :file_size, :error)""",
+                       :remote_path, :local_path, :packet_count, :file_size, :error, :interface)""",
             row,
         )
         self._conn().commit()

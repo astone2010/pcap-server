@@ -89,6 +89,16 @@ class CaptureLimitExceeded(Exception):
     """Raised when starting a capture would exceed max_concurrent_captures."""
 
 
+class InterfaceAlreadyCapturing(Exception):
+    """Raised when this server's interface already has a capture running.
+
+    Separate from CaptureLimitExceeded because it is a different kind of no:
+    the limit is a quota on this container's resources and clears by waiting,
+    while this is a conflict over one specific link that clears only by
+    stopping the capture that holds it -- or by choosing another interface.
+    """
+
+
 def server_label(server: ServerInfo) -> str:
     """A human-readable stamp of where a capture ran, frozen at start time."""
     endpoint = f"{server.username}@{server.hostname}"
@@ -243,6 +253,33 @@ class CaptureManager:
                 "stop or wait for one to finish before starting another"
             )
 
+        # One capture per interface per server. Two tcpdumps reading the same
+        # link record the same packets twice, doubling load on the target host
+        # for a second copy of a capture you already have -- and leave two
+        # captures nothing in the UI distinguishes. Different interfaces on one
+        # host stay allowed: reading eth0 and eth1 at once is a real thing to
+        # want, and they do not overlap.
+        #
+        # Deliberately in the same synchronous stretch as the limit check above
+        # and the _captures insert below. Nothing awaits between them, so two
+        # simultaneous requests cannot both pass this and then both register;
+        # an await anywhere in here would open exactly that window.
+        busy = next(
+            (
+                c for c in self._captures.values()
+                if c.status in _ACTIVE_STATUSES
+                and c.server_id == server.id
+                and c.interface == req.interface
+            ),
+            None,
+        )
+        if busy:
+            held = busy.name or busy.id
+            raise InterfaceAlreadyCapturing(
+                f"a capture is already running on {req.interface} on this server "
+                f"({held}) -- stop it first, or capture a different interface"
+            )
+
         max_seconds = self._get_setting("max_capture_seconds")
         capture_id = str(uuid.uuid4())
         remote_path = f"/tmp/pcap_{capture_id}.pcap"
@@ -273,6 +310,7 @@ class CaptureManager:
             id=capture_id,
             server_id=server.id,
             server_label=server_label(server),
+            interface=req.interface,
             user_id=user_id,
             status=CaptureStatus.RUNNING,
             started_at=datetime.now(timezone.utc),

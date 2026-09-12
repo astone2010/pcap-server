@@ -30,7 +30,7 @@ from backend.auth import (
     verify_password,
     verify_totp,
 )
-from backend.capture import CaptureLimitExceeded, CaptureManager
+from backend.capture import CaptureLimitExceeded, CaptureManager, InterfaceAlreadyCapturing
 from backend.crypto import CryptoError
 from backend.database import Database
 from backend.models import (
@@ -1008,6 +1008,10 @@ async def start_capture(req: CaptureRequest, user: dict = Depends(get_current_us
         return info
     except CaptureLimitExceeded as exc:
         raise HTTPException(429, str(exc))
+    except InterfaceAlreadyCapturing as exc:
+        # 409, not 429: this is a conflict over one link that waiting will not
+        # clear, so retrying the same request is not the remedy.
+        raise HTTPException(409, str(exc))
     except Exception:
         logger.exception("failed to start capture")
         raise HTTPException(500, "failed to start capture")

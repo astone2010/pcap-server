@@ -24,6 +24,7 @@ from backend.capture import (
     _STDERR_KEEP_CHARS,
     _pump_stderr,
     CaptureLimitExceeded,
+    InterfaceAlreadyCapturing,
     CaptureManager,
 )
 from pydantic import ValidationError
@@ -142,13 +143,23 @@ async def manager(tmp_path):
         await mgr.shutdown()
 
 
-def seed_running_capture(mgr: CaptureManager, status: CaptureStatus = CaptureStatus.RUNNING) -> str:
+def seed_running_capture(
+    mgr: CaptureManager,
+    status: CaptureStatus = CaptureStatus.RUNNING,
+    server_id: str = "some-server",
+    interface: str = "",
+) -> str:
     """Populate _captures directly, bypassing start() -- active_count() only
     reads this dict, so this is enough to simulate N captures already active
-    without spinning up N real fake processes and monitor tasks."""
+    without spinning up N real fake processes and monitor tasks.
+
+    server_id and interface default to values that match no real server under
+    test, so seeding for the concurrency limit never trips the per-interface
+    rule by accident; the per-interface tests pass them explicitly."""
     info = CaptureInfo(
         id=f"seed-{len(mgr._captures)}",
-        server_id="some-server",
+        server_id=server_id,
+        interface=interface,
         status=status,
         started_at=datetime.now(timezone.utc),
     )
@@ -550,3 +561,104 @@ def test_every_setting_the_backend_defaults_is_editable_in_the_admin_panel():
     ).group(1)
     for key in Database.DEFAULTS:
         assert f"{key}:" in labels, f"{key} has a default but no row in the admin panel"
+
+
+# --- one capture per server per interface -------------------------------------
+#
+# The concurrency limit is a global quota and says nothing about where captures
+# point, so five captures could all read the same link of the same host: five
+# copies of one capture, five tcpdumps of load on the target.
+
+
+async def test_second_capture_on_the_same_interface_is_refused(manager):
+    mgr, ssh, settings = manager
+    srv = make_server()
+    seed_running_capture(mgr, CaptureStatus.RUNNING, server_id=srv.id, interface="eth0")
+
+    req = CaptureRequest(server_id=srv.id, interface="eth0")
+    with pytest.raises(InterfaceAlreadyCapturing):
+        await mgr.start(req, srv, user_id="u1")
+
+    # Refused before any connection is opened, like the limit check above it.
+    assert ssh.run_tcpdump_calls == 0
+
+
+async def test_a_different_interface_on_the_same_server_is_allowed(manager):
+    """eth0 and eth1 on one host do not overlap, so this must not be blocked."""
+    mgr, ssh, settings = manager
+    srv = make_server()
+    seed_running_capture(mgr, CaptureStatus.RUNNING, server_id=srv.id, interface="eth0")
+
+    info = await mgr.start(CaptureRequest(server_id=srv.id, interface="eth1"), srv, user_id="u1")
+    assert info.status == CaptureStatus.RUNNING
+    assert info.interface == "eth1"
+    assert ssh.run_tcpdump_calls == 1
+
+
+async def test_the_same_interface_name_on_a_different_server_is_allowed(manager):
+    """eth0 is not one resource -- every host has its own."""
+    mgr, ssh, settings = manager
+    srv = make_server()
+    seed_running_capture(mgr, CaptureStatus.RUNNING, server_id="another-server", interface="eth0")
+
+    info = await mgr.start(CaptureRequest(server_id=srv.id, interface="eth0"), srv, user_id="u1")
+    assert info.status == CaptureStatus.RUNNING
+    assert ssh.run_tcpdump_calls == 1
+
+
+@pytest.mark.parametrize("status", [CaptureStatus.STOPPING, CaptureStatus.TRANSFERRING])
+async def test_interface_is_held_while_a_capture_is_finishing_up(manager, status):
+    """A capture that is stopping or transferring still owns the link."""
+    mgr, ssh, settings = manager
+    srv = make_server()
+    seed_running_capture(mgr, status, server_id=srv.id, interface="any")
+
+    with pytest.raises(InterfaceAlreadyCapturing):
+        await mgr.start(CaptureRequest(server_id=srv.id, interface="any"), srv, user_id="u1")
+    assert ssh.run_tcpdump_calls == 0
+
+
+async def test_interface_is_free_again_once_the_capture_finishes(manager):
+    mgr, ssh, settings = manager
+    srv = make_server()
+    done = seed_running_capture(mgr, CaptureStatus.RUNNING, server_id=srv.id, interface="eth0")
+    mgr._captures[done].status = CaptureStatus.COMPLETED
+
+    info = await mgr.start(CaptureRequest(server_id=srv.id, interface="eth0"), srv, user_id="u1")
+    assert info.status == CaptureStatus.RUNNING
+    assert ssh.run_tcpdump_calls == 1
+
+
+async def test_refusal_names_the_interface_and_the_capture_holding_it(manager):
+    mgr, ssh, settings = manager
+    srv = make_server()
+    held = seed_running_capture(mgr, CaptureStatus.RUNNING, server_id=srv.id, interface="eth0")
+    mgr._captures[held].name = "friday-debug"
+
+    with pytest.raises(InterfaceAlreadyCapturing, match="eth0") as exc:
+        await mgr.start(CaptureRequest(server_id=srv.id, interface="eth0"), srv, user_id="u1")
+    # The operator has to be able to find the capture they need to stop.
+    assert "friday-debug" in str(exc.value)
+
+
+async def test_default_any_interface_conflicts_with_itself(manager):
+    """"any" is the default, so this is the collision people hit first."""
+    mgr, ssh, settings = manager
+    srv = make_server()
+    first = await mgr.start(CaptureRequest(server_id=srv.id), srv, user_id="u1")
+    assert first.interface == "any"
+
+    with pytest.raises(InterfaceAlreadyCapturing):
+        await mgr.start(CaptureRequest(server_id=srv.id), srv, user_id="u1")
+
+
+async def test_interface_survives_a_persist_and_restore_round_trip(manager, tmp_path):
+    """The rule reads CaptureInfo.interface, so it has to come back from the DB
+    rather than be re-derived from the command string."""
+    mgr, ssh, settings = manager
+    srv = make_server()
+    info = await mgr.start(CaptureRequest(server_id=srv.id, interface="eth2"), srv, user_id="u1")
+
+    row = next(r for r in mgr._db.list_captures() if r["id"] == info.id)
+    assert row["interface"] == "eth2"
+    assert CaptureInfo(**row).interface == "eth2"

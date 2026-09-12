@@ -275,3 +275,74 @@ def test_no_session_is_still_a_401_not_a_403(client):
     "you are signed in but only halfway"."""
     client.cookies.clear()
     assert client.get("/api/servers").status_code == 401
+
+
+# --- the per-interface refusal reaches the client as a 409 -------------------
+#
+# The manager's rule is covered in test_capture.py. What that cannot show is the
+# status code: InterfaceAlreadyCapturing is a different exception from
+# CaptureLimitExceeded, so if the route ever stops naming it the refusal turns
+# into a blanket 500 "failed to start capture" and the reason is lost.
+
+
+@pytest.fixture()
+def secure_client():
+    """Starting a capture changes state, and over plain HTTP that is refused
+    outright (403) before the route is ever reached -- so a test about the
+    route's own status code has to arrive over TLS or it only ever sees the
+    transport gate."""
+    with TestClient(main.app, base_url="https://testserver") as c:
+        yield c
+
+
+@pytest.fixture()
+def enrolled(secure_client):
+    """Signed in with the second factor confirmed -- a usable session."""
+    user_id = str(uuid.uuid4())
+    main.db.create_user(user_id, f"user-{user_id[:8]}", "scrypt$1$1$1$00$00", is_admin=True)
+    main.db.set_totp_secret(user_id, "A" * 32)
+    main.db.confirm_totp(user_id)
+    token, _ = create_session_token(main.db, user_id)
+    secure_client.cookies.set("session", token)
+    try:
+        yield user_id
+    finally:
+        main.db.delete_user(user_id)
+
+
+def _a_server(user_id: str) -> str:
+    server_id = str(uuid.uuid4())
+    main.db.add_active_server(
+        server_id, user_id, "target", "target.example", 22, "alice", "alice-key", False
+    )
+    return server_id
+
+
+def test_interface_conflict_is_a_409_naming_the_interface(secure_client, enrolled, monkeypatch):
+    server_id = _a_server(enrolled)
+
+    async def refuse(req, server, user_id):
+        raise main.InterfaceAlreadyCapturing(
+            "a capture is already running on eth0 on this server (friday-debug) -- "
+            "stop it first, or capture a different interface"
+        )
+
+    monkeypatch.setattr(main.capture_manager, "start", refuse)
+    resp = secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
+
+    assert resp.status_code == 409
+    assert "eth0" in resp.json()["detail"]
+    assert "friday-debug" in resp.json()["detail"]
+
+
+def test_the_concurrency_limit_is_still_a_429(secure_client, enrolled, monkeypatch):
+    """The two refusals must not collapse into one status: waiting clears a
+    429 and does nothing for a 409."""
+    server_id = _a_server(enrolled)
+
+    async def refuse(req, server, user_id):
+        raise main.CaptureLimitExceeded("5 capture(s) already running or finishing up")
+
+    monkeypatch.setattr(main.capture_manager, "start", refuse)
+    resp = secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
+    assert resp.status_code == 429

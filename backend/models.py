@@ -181,6 +181,13 @@ class CaptureInfo(BaseModel):
     # Denormalised on purpose: a capture must still say where it came from after
     # the server it ran against has been deleted.
     server_label: str = ""
+    # Which link this capture is reading. Stored rather than parsed back out of
+    # the command string, because one capture per server per interface is an
+    # invariant enforced against it -- and a rule that depends on re-parsing a
+    # shell command is a rule that breaks the first time the command changes
+    # shape. Empty on captures written before the column existed; those are all
+    # restored as FAILED, so no stale record can hold an interface hostage.
+    interface: str = ""
     user_id: str = ""
     status: CaptureStatus
     started_at: datetime | None = None
