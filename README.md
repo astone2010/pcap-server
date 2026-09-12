@@ -103,6 +103,52 @@ A display filter tshark cannot parse is reported back with tshark's own message
 and the position it objected to. An empty packet list therefore always means the
 filter was valid and nothing matched it.
 
+### Building a filter by clicking
+
+Most display filters do not need to be typed. **Right-click** anything in the
+viewer and the Wireshark menu appears:
+
+- **In the detail tree** — any field, at any depth, including a single TCP flag
+  bit. Right-clicking `.... .... ..1. = Syn: Set` gives `tcp.flags.syn == 1`.
+- **In the packet list** — the menu builds from the column under the cursor: an
+  address, a protocol, a length, a frame number. It also offers a
+  **Conversation filter**, which is both endpoints of that exchange and nothing
+  else.
+
+Each menu offers the same four combinators as Wireshark — apply the expression
+on its own, negate it, or join it to whatever is already in the box with `&&`
+or `||` — plus **Prepare as filter**, which fills the box without running it.
+
+Addresses go into the filter bare and text values are quoted, because Wireshark
+treats `192.168.1.50` as an address literal and rejects it in quotes. A value
+containing a character the display filter does not accept falls back to testing
+that the field is simply present.
+
+### Field and byte selection
+
+The detail tree and the hex pane are two views of the same frame. Click a field
+and its bytes light up in both the hex and ASCII columns; click a byte and the
+innermost field covering it is selected, with every parent opened so the row is
+on screen. This works because the dissection comes from tshark's PDML output,
+which reports each field's byte offset and length — the JSON output does not.
+
+### Adding a capture target
+
+The SSH key field starts empty and has to be chosen. Add, Test connection and
+Check prerequisites all refuse until a hostname, a username and a key are
+present, so a server is never created with a key nobody picked.
+
+**Never add the machine pcap-server itself runs on.** Capturing from its own
+host records pcap-server's own traffic — your session cookie and TOTP code, and
+over plain HTTP your password — into a capture this UI then stores and serves
+back, and on a Docker host the `any` interface sweeps every other container too.
+The obvious cases are refused automatically: hostname aliases, loopback, the
+container's own addresses, and the default gateway, which on a Docker bridge is
+the host machine. The case that cannot be detected is the host's own LAN
+address, because a bridged container has no knowledge of it — which is why the
+form warns as well as checks. Capture this host from a different machine.
+
+
 ## Security
 
 A packet capture is one of the most sensitive files a machine can produce: it

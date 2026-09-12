@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
+from xml.etree import ElementTree
 
 from backend.models import PacketDetail, PacketSummary
 from backend.pcapsource import PcapSource
@@ -246,60 +248,190 @@ def _mac(parts: list[str], *indexes: int) -> str:
 
 
 async def get_packet_detail(source: PcapSource, frame_number: int) -> PacketDetail:
+    """The dissection tree for one frame, plus its raw bytes.
+
+    PDML, not `-T json`. The JSON output gives a field's name and value and
+    nothing else; PDML gives four more things the viewer cannot work without:
+
+        <field name="tcp.srcport" showname="Source Port: 51234"
+               size="2" pos="34" show="51234" value="c822"/>
+
+    `name` and `show` are what a click turns into `tcp.srcport == 51234`.
+    `pos` and `size` are what lets that same click highlight bytes 34-35 in the
+    hex pane, and what lets a click in the hex pane find the field covering the
+    byte under the cursor. `showname` is Wireshark's own label, including the
+    bit diagrams for flag fields (".... ..1. = Syn: Set"), which would otherwise
+    have to be reconstructed from a bitmask by hand.
+
+    Two tool runs, the same as before: PDML carries no frame bytes, so the
+    second run fetches them. It asks for `-T json -x` rather than plain `-x`
+    because that reports the frame data source as one unambiguous hex string in
+    `frame_raw`, where the text form has to be scraped and can carry a second
+    block for reassembled data whose offsets do not match PDML's `pos`.
+    """
     cmd = [
         "tshark", "-r", "-",
-        "-T", "json",
+        "-T", "pdml",
         "-Y", f"frame.number == {int(frame_number)}",
-        "--no-duplicate-keys",
     ]
-    stdout, _, _ = await _run_tool(cmd, source)
-    data = json.loads(stdout.decode())
-    if not data:
+    stdout, stderr, _ = await _run_tool(cmd, source)
+    layers = _parse_pdml(stdout)
+    if layers is None:
+        logger.warning("tshark stderr: %s", stderr.decode(errors="replace")[:500])
         raise ValueError(f"frame {frame_number} not found")
 
-    pkt = data[0]
-    # Named pkt_source, not source: `source` is the PcapSource parameter, and
-    # shadowing it here silently fed a dict to the hex dump.
-    pkt_source = pkt.get("_source", {})
-    layers_raw = pkt_source.get("layers", {})
-
-    layers = []
-    for layer_name, layer_data in layers_raw.items():
-        if isinstance(layer_data, dict):
-            layers.append({"name": layer_name, "fields": _flatten_fields(layer_data)})
-
     timestamp = ""
-    if "frame" in layers_raw and isinstance(layers_raw["frame"], dict):
-        timestamp = layers_raw["frame"].get("frame.time_relative", "")
+    for layer in layers:
+        if layer["name"] == "frame":
+            timestamp = _find_field_value(layer["fields"], "frame.time_relative")
+            break
 
-    hex_dump = await _get_hex_dump(source, frame_number)
+    frame_hex, hex_dump = await _get_frame_bytes(source, frame_number)
 
     return PacketDetail(
         number=frame_number,
-        timestamp=str(timestamp),
+        timestamp=timestamp,
         layers=layers,
         hex_dump=hex_dump,
+        frame_hex=frame_hex,
     )
 
 
-async def _get_hex_dump(source: PcapSource, frame_number: int) -> str:
+def _find_field_value(fields: list[dict], name: str) -> str:
+    for field in fields:
+        if field.get("name") == name:
+            return field.get("value", "")
+        found = _find_field_value(field.get("children") or [], name)
+        if found:
+            return found
+    return ""
+
+
+# tshark's PDML carries no document type declaration and no entities. Anything
+# claiming to is not tshark's output, so it is refused rather than handed to a
+# parser: expat resolves internal entity definitions, which is the one way a
+# packet's own bytes could turn into an expansion attack against this process.
+# Matched case-insensitively even though XML only permits these uppercase: the
+# cost is nothing and it does not depend on the parser rejecting the lowercase
+# form for us.
+_XML_REFUSED = (b"<!doctype", b"<!entity")
+
+
+def _parse_pdml(raw: bytes) -> list[dict] | None:
+    """PDML for a single packet, as a list of protocol layers.
+
+    Returns None when the filter matched no frame, which the caller reports as
+    a missing frame -- distinct from a frame that dissects to nothing.
+    """
+    lowered = raw.lower()
+    for marker in _XML_REFUSED:
+        if marker in lowered:
+            raise ValueError("refusing to parse PDML containing a document type declaration")
+
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError as exc:
+        raise ValueError(f"could not parse tshark PDML output: {exc}") from None
+
+    packet = root.find("packet")
+    if packet is None:
+        return None
+
+    layers = []
+    for proto in packet.findall("proto"):
+        name = proto.get("name", "")
+        # geninfo is PDML's own synthetic summary, not a protocol in the frame.
+        # Wireshark does not show it and its fields have no meaningful offsets.
+        if name == "geninfo":
+            continue
+        layers.append({
+            "name": name,
+            "label": proto.get("showname") or name,
+            "pos": _int_attr(proto, "pos"),
+            "size": _int_attr(proto, "size"),
+            "fields": [_pdml_field(child) for child in proto.findall("field")],
+        })
+    return layers
+
+
+def _pdml_field(el) -> dict:
+    """One PDML <field> and everything nested under it.
+
+    `show` is the displayed value and the one to filter on; `value` is the raw
+    hex of the same bytes. Where a field has no `show` -- some container fields
+    do not -- the hex stands in so the row is not blank.
+    """
+    show = el.get("show")
+    return {
+        "name": el.get("name", ""),
+        "label": el.get("showname") or el.get("name", ""),
+        "value": show if show is not None else (el.get("value") or ""),
+        "pos": _int_attr(el, "pos"),
+        "size": _int_attr(el, "size"),
+        "hidden": el.get("hide") == "yes",
+        "children": [_pdml_field(child) for child in el.findall("field")],
+    }
+
+
+def _int_attr(el, attr: str) -> int:
+    try:
+        return int(el.get(attr, ""))
+    except ValueError:
+        return -1 if attr == "pos" else 0
+
+
+async def _get_frame_bytes(source: PcapSource, frame_number: int) -> tuple[str, str]:
+    """The frame's raw bytes, as a hex string and as a printable dump.
+
+    The hex string is what the viewer renders its own panes from. The text dump
+    is kept because it is what a copy-paste into a bug report wants, and because
+    removing it would change the API for no gain.
+    """
     stdout, _, _ = await _run_tool(
-        ["tshark", "-r", "-", "-Y", f"frame.number == {int(frame_number)}", "-x"], source
+        [
+            "tshark", "-r", "-",
+            "-T", "json", "-x",
+            "-Y", f"frame.number == {int(frame_number)}",
+        ],
+        source,
     )
-    return stdout.decode(errors="replace")
+    try:
+        data = json.loads(stdout.decode())
+    except json.JSONDecodeError:
+        return "", ""
+    if not data:
+        return "", ""
+
+    raw = data[0].get("_source", {}).get("layers", {}).get("frame_raw")
+    # frame_raw is [hex, pos, size, bitmask, type]; only the hex is wanted, and
+    # a tshark that ever reports it as a bare string is handled rather than
+    # indexed into character by character.
+    if isinstance(raw, list) and raw:
+        frame_hex = str(raw[0])
+    elif isinstance(raw, str):
+        frame_hex = raw
+    else:
+        return "", ""
+
+    frame_hex = frame_hex.strip().lower()
+    if not _HEX_ONLY.fullmatch(frame_hex):
+        return "", ""
+    return frame_hex, _hex_dump_text(frame_hex)
 
 
-def _flatten_fields(d: dict, prefix: str = "") -> list[dict]:
-    result = []
-    for key, value in d.items():
-        display_key = key
-        if isinstance(value, dict):
-            result.append({"key": display_key, "value": "", "children": _flatten_fields(value, key)})
-        elif isinstance(value, list):
-            result.append({"key": display_key, "value": ", ".join(str(v) for v in value)})
-        else:
-            result.append({"key": display_key, "value": str(value)})
-    return result
+_HEX_ONLY = re.compile(r"(?:[0-9a-f]{2})*")
+
+
+def _hex_dump_text(frame_hex: str) -> str:
+    """The classic offset / hex / ASCII dump, built from the bytes themselves."""
+    data = bytes.fromhex(frame_hex)
+    lines = []
+    for offset in range(0, len(data), 16):
+        chunk = data[offset:offset + 16]
+        hex_part = " ".join(f"{b:02x}" for b in chunk)
+        text = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        lines.append(f"{offset:04x}  {hex_part:<47}  {text}")
+    return "\n".join(lines)
 
 
 class DisplayFilterError(ValueError):

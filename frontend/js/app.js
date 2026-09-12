@@ -535,13 +535,57 @@ function renderPrereqs(box, res) {
     box.append(wrap);
 }
 
+// The SSH key picker. On a new server nothing is chosen: the browser selects
+// the first <option> by default, which silently picked whichever key happened
+// to sort first and made "I never chose this" the normal outcome. A blank
+// option that is selected and disabled means the field starts empty, cannot be
+// returned to once a real key is picked, and fails the check below until the
+// operator actually decides.
+const NO_KEY_CHOSEN = "";
+
+function sshKeyPicker(idPrefix, keys, current = "") {
+    if (!keys.length) {
+        return `<label>SSH Key</label>
+            <select id="${idPrefix}-key"><option value="">No keys found</option></select>
+            <div class="field-hint">No SSH keys are available. Upload one in the Admin panel first.</div>`;
+    }
+    const opts = keys
+        .map((k) => `<option value="${escHtml(k)}"${k === current ? " selected" : ""}>${escHtml(k)}</option>`)
+        .join("");
+    const placeholder = current
+        ? ""
+        : `<option value="" selected disabled>— select a key —</option>`;
+    return `<label>SSH Key</label>
+        <select id="${idPrefix}-key">${placeholder}${opts}</select>
+        <div class="field-hint">${current
+            ? "The key this server authenticates with."
+            : "Open the list and choose the key this server authenticates with."}</div>`;
+}
+
+// Read alongside the reject that already happens on submit. describe_if_local
+// catches loopback, this container's own addresses and its default gateway --
+// but a container on a bridge network knows nothing about the host's LAN
+// address, so pointing pcap-server at the very machine it runs on is the one
+// case detection cannot see. Hence saying so here, before the address is typed.
+const SELF_CAPTURE_WARNING = `
+    <div class="form-warning">
+        <strong>Do not point this at the machine running pcap-server.</strong>
+        Capturing from its own host records pcap-server's own traffic — your
+        session cookie and TOTP code, and over plain HTTP your password — into a
+        capture this UI then stores and serves back. On a Docker host the
+        <code>any</code> interface also sweeps every other container's traffic.
+        Obvious cases (localhost, this container's own addresses, its gateway)
+        are refused automatically, but a Docker host's LAN address looks like any
+        other target from in here. Capture this host from a different machine.
+    </div>`;
+
 function showAddServer() {
     Promise.all([loadSSHKeys(), loadUsernames()]).then(([keys, usernames]) => {
-        const opts = keys.map((k) => `<option value="${escHtml(k)}">${escHtml(k)}</option>`).join("");
         // A datalist suggests without constraining: previous usernames are offered,
         // and a new one can still be typed straight over them.
         $("server-form-area").innerHTML = `
             <h3>Add server</h3>
+            ${SELF_CAPTURE_WARNING}
             <div class="form-group"><label>Name <span class="hint">(optional — labels captures from this host)</span></label><input type="text" id="new-srv-name" placeholder="e.g. edge-firewall"></div>
             <div class="form-group"><label>Hostname / IP</label><input type="text" id="new-srv-host"></div>
             <div class="form-row">
@@ -550,10 +594,7 @@ function showAddServer() {
                     ${usernamePicker("new-srv", usernames.length ? usernames[0].username : "root")}
                 </div>
             </div>
-            <div class="form-group">
-                <label>SSH Key</label>
-                <select id="new-srv-key">${opts || '<option value="">No keys found</option>'}</select>
-            </div>
+            <div class="form-group">${sshKeyPicker("new-srv", keys)}</div>
             <div class="form-group">${sudoOption("new-srv-sudo", false)}</div>
             <div class="form-actions">
                 <button class="btn btn-sm btn-primary" data-action="add-server">Add server</button>
@@ -625,6 +666,17 @@ function bindUsernamePicker(idPrefix) {
     };
 }
 
+// What the form is missing before it is worth sending anywhere. Shared by add,
+// test and prereq: a probe against a server with no key chosen fails deep in
+// the SSH layer with a message about a missing file, which reads as a broken
+// tool rather than an unanswered question.
+function serverFormProblem(idPrefix) {
+    if (!$(`${idPrefix}-host`).value.trim()) return "Enter a hostname or IP address.";
+    if (!$(`${idPrefix}-key`).value) return "Choose an SSH key from the list.";
+    if (!usernameValue(idPrefix)) return "Enter a username.";
+    return "";
+}
+
 // The add form's details, as the API wants them. Shared by add, test and
 // prereq so all three always probe exactly what the form says.
 function addFormServer() {
@@ -640,6 +692,11 @@ function addFormServer() {
 
 async function probeTest() {
     const el = $("server-test-result");
+    const problem = serverFormProblem("new-srv");
+    if (problem) {
+        el.innerHTML = `<span style="color:var(--danger)">${escHtml(problem)}</span>`;
+        return;
+    }
     $("add-server-error").textContent = "";
     el.innerHTML = '<span class="spinner"></span> Testing...';
     try {
@@ -653,6 +710,11 @@ async function probeTest() {
 
 async function probePrereq() {
     const box = $("prereq-result");
+    const problem = serverFormProblem("new-srv");
+    if (problem) {
+        box.innerHTML = `<div class="prereq-error">${escHtml(problem)}</div>`;
+        return;
+    }
     $("add-server-error").textContent = "";
     box.innerHTML = '<div class="prereq-pending"><span class="spinner"></span> Probing host (read-only)...</div>';
     try {
@@ -674,6 +736,11 @@ async function loadSSHKeys() {
 
 async function addServer() {
     $("add-server-error").textContent = "";
+    const problem = serverFormProblem("new-srv");
+    if (problem) {
+        $("add-server-error").textContent = problem;
+        return;
+    }
     try {
         const added = await api("/api/servers", {
             method: "POST",
@@ -743,9 +810,6 @@ async function editServer(id) {
     const srv = activeServers.find((s) => s.id === id);
     if (!srv) return;
     const [keys, usernames] = await Promise.all([loadSSHKeys(), loadUsernames()]);
-    const opts = keys
-        .map((k) => `<option value="${escHtml(k)}"${k === srv.ssh_key_name ? " selected" : ""}>${escHtml(k)}</option>`)
-        .join("");
     $("server-form-area").innerHTML = `
         <h3>Edit ${escHtml(srv.name || srv.hostname)}</h3>
         <div class="form-group"><label>Name <span class="hint">(optional — labels captures from this host)</span></label><input type="text" id="edit-srv-name" value="${escHtml(srv.name)}"></div>
@@ -756,10 +820,7 @@ async function editServer(id) {
                 ${usernamePicker("edit-srv", srv.username)}
             </div>
         </div>
-        <div class="form-group">
-            <label>SSH Key</label>
-            <select id="edit-srv-key">${opts || '<option value="">No keys found</option>'}</select>
-        </div>
+        <div class="form-group">${sshKeyPicker("edit-srv", keys, srv.ssh_key_name)}</div>
         <div class="form-group">${sudoOption("edit-srv-sudo", srv.use_sudo)}</div>
         <div class="form-actions">
             <button class="btn btn-sm btn-primary" data-action="save-server-edit" data-id="${escHtml(srv.id)}">Save changes</button>
@@ -772,6 +833,11 @@ async function editServer(id) {
 
 async function saveServerEdit(id) {
     $("edit-server-error").textContent = "";
+    const problem = serverFormProblem("edit-srv");
+    if (problem) {
+        $("edit-server-error").textContent = problem;
+        return;
+    }
     try {
         await api(`/api/servers/${id}`, {
             method: "PUT",
@@ -1638,6 +1704,11 @@ function setDetailVisible(visible) {
     $("packet-viewer")?.classList.toggle("no-selection", !visible);
 }
 
+// The loaded frame, kept so the hex pane and the tree can find each other
+// without another round trip: both are views onto this one object.
+let currentDetail = null;
+let selectedFieldEl = null;
+
 async function selectPacket(frameNumber) {
     setDetailVisible(true);
     if (selectedPacketRow) selectedPacketRow.classList.remove("selected");
@@ -1646,56 +1717,376 @@ async function selectPacket(frameNumber) {
 
     $("packet-detail-tree").innerHTML = '<div class="empty-state" style="font-size:0.75rem"><span class="spinner"></span></div>';
     $("hex-dump").textContent = "Loading...";
+    currentDetail = null;
+    selectedFieldEl = null;
 
     try {
         const detail = await api(`/api/captures/${viewingCaptureId}/packets/${frameNumber}`);
+        currentDetail = detail;
         renderDetailTree(detail.layers);
-        $("hex-dump").textContent = detail.hex_dump || "(no hex data)";
+        renderHexPane(detail.frame_hex || "");
     } catch (e) {
         $("packet-detail-tree").innerHTML = `<div style="color:var(--danger);padding:8px">${escHtml(e.message)}</div>`;
         $("hex-dump").textContent = "";
     }
 }
 
+// --- detail tree ---
+
 function renderDetailTree(layers) {
     const container = $("packet-detail-tree");
     container.innerHTML = "";
     for (const layer of layers) {
-        container.appendChild(buildTreeNode(layer.name, layer.fields));
+        container.appendChild(buildTreeNode(layer.label || layer.name, layer.fields, layer));
     }
 }
 
-function buildTreeNode(label, fields) {
+// A node is a disclosure row plus its children. `field` is the PDML field the
+// row stands for, so a protocol header and a nested field behave identically:
+// both highlight their bytes and both can be turned into a filter.
+function buildTreeNode(label, fields, field) {
     const node = document.createElement("div");
     node.className = "tree-node";
 
     const toggle = document.createElement("div");
     toggle.className = "tree-toggle";
     toggle.textContent = " " + label;
-    toggle.addEventListener("click", () => {
+    applyFieldData(toggle, field);
+    toggle.addEventListener("click", (ev) => {
+        // The arrow expands; the label selects. Without this a click meant to
+        // inspect a header collapses it instead.
         toggle.classList.toggle("open");
         children.classList.toggle("open");
+        selectField(toggle, ev);
     });
     node.appendChild(toggle);
 
     const children = document.createElement("div");
     children.className = "tree-children";
 
-    if (fields) {
-        for (const field of fields) {
-            if (field.children && field.children.length) {
-                children.appendChild(buildTreeNode(field.key, field.children));
-            } else {
-                const leaf = document.createElement("div");
-                leaf.className = "tree-leaf";
-                leaf.innerHTML = `<span class="field-name">${escHtml(field.key)}</span>: <span class="field-value">${escHtml(field.value || "")}</span>`;
-                children.appendChild(leaf);
-            }
+    for (const child of fields || []) {
+        // Wireshark does not draw generated duplicates such as ip.src_host
+        // beside ip.src, and drawing them doubles the length of every tree.
+        if (child.hidden) continue;
+        if (child.children && child.children.length) {
+            children.appendChild(buildTreeNode(child.label || child.name, child.children, child));
+        } else {
+            children.appendChild(buildTreeLeaf(child));
         }
     }
 
     node.appendChild(children);
     return node;
+}
+
+function buildTreeLeaf(field) {
+    const leaf = document.createElement("div");
+    leaf.className = "tree-leaf";
+    // showname already reads "Source Port: 51234", so it is shown whole rather
+    // than split back into name and value and reassembled with a colon.
+    leaf.textContent = field.label || field.name;
+    applyFieldData(leaf, field);
+    leaf.addEventListener("click", (ev) => selectField(leaf, ev));
+    return leaf;
+}
+
+function applyFieldData(el, field) {
+    if (!field) return;
+    if (field.name) el.dataset.field = field.name;
+    if (field.value !== undefined) el.dataset.value = field.value;
+    if (field.pos >= 0 && field.size > 0) {
+        el.dataset.pos = field.pos;
+        el.dataset.size = field.size;
+        el.classList.add("has-bytes");
+    }
+}
+
+// Selecting a row is what drives the hex pane. Kept separate from the click
+// handler so a click in the hex pane can select a row the same way.
+function selectField(el, ev) {
+    if (ev) ev.stopPropagation();
+    if (selectedFieldEl) selectedFieldEl.classList.remove("field-selected");
+    selectedFieldEl = el;
+    el.classList.add("field-selected");
+    const pos = parseInt(el.dataset.pos, 10);
+    const size = parseInt(el.dataset.size, 10);
+    highlightBytes(Number.isNaN(pos) ? -1 : pos, Number.isNaN(size) ? 0 : size);
+}
+
+// --- hex pane ---
+//
+// Rendered here rather than pasted from tshark's -x output, because a single
+// text node has nothing to highlight: every byte needs to be its own element
+// before a field can point at it.
+
+const HEX_BYTES_PER_ROW = 16;
+
+function renderHexPane(frameHex) {
+    const pane = $("hex-dump");
+    pane.textContent = "";
+    if (!frameHex) {
+        pane.textContent = "(no hex data)";
+        return;
+    }
+    const bytes = [];
+    for (let i = 0; i + 1 < frameHex.length; i += 2) {
+        bytes.push(parseInt(frameHex.substr(i, 2), 16));
+    }
+
+    const frag = document.createDocumentFragment();
+    for (let off = 0; off < bytes.length; off += HEX_BYTES_PER_ROW) {
+        const row = document.createElement("div");
+        row.className = "hex-row";
+
+        const gutter = document.createElement("span");
+        gutter.className = "hex-offset";
+        gutter.textContent = off.toString(16).padStart(4, "0");
+        row.appendChild(gutter);
+
+        const hexCells = document.createElement("span");
+        hexCells.className = "hex-bytes";
+        const asciiCells = document.createElement("span");
+        asciiCells.className = "hex-ascii";
+
+        for (let i = 0; i < HEX_BYTES_PER_ROW; i++) {
+            const at = off + i;
+            if (at >= bytes.length) {
+                const pad = document.createElement("span");
+                pad.className = "hex-pad";
+                pad.textContent = "   ";
+                hexCells.appendChild(pad);
+                continue;
+            }
+            const b = bytes[at];
+            const cell = document.createElement("span");
+            cell.className = "hex-byte";
+            cell.dataset.off = at;
+            cell.textContent = b.toString(16).padStart(2, "0");
+            hexCells.appendChild(cell);
+
+            const ch = document.createElement("span");
+            ch.className = "hex-char";
+            ch.dataset.off = at;
+            ch.textContent = b >= 32 && b < 127 ? String.fromCharCode(b) : ".";
+            asciiCells.appendChild(ch);
+        }
+
+        row.append(hexCells, asciiCells);
+        frag.appendChild(row);
+    }
+    pane.appendChild(frag);
+}
+
+function highlightBytes(pos, size) {
+    document.querySelectorAll("#hex-dump .hl").forEach((el) => el.classList.remove("hl"));
+    if (pos < 0 || size <= 0) return;
+    let first = null;
+    for (let off = pos; off < pos + size; off++) {
+        document.querySelectorAll(`#hex-dump [data-off="${off}"]`).forEach((el) => {
+            el.classList.add("hl");
+            if (!first) first = el;
+        });
+    }
+    if (first) first.scrollIntoView({ block: "nearest" });
+}
+
+// The other direction: a byte in the pane finds the field that covers it. The
+// innermost one wins -- every byte is inside the frame and inside its protocol
+// header too, and naming those instead of the actual field would be useless.
+function selectFieldAtOffset(offset) {
+    let best = null;
+    let bestSize = Infinity;
+    document.querySelectorAll("#packet-detail-tree .has-bytes").forEach((el) => {
+        const pos = parseInt(el.dataset.pos, 10);
+        const size = parseInt(el.dataset.size, 10);
+        if (offset >= pos && offset < pos + size && size < bestSize) {
+            best = el;
+            bestSize = size;
+        }
+    });
+    if (!best) return;
+    // Open every ancestor, or the row highlights somewhere the user cannot see.
+    let parent = best.parentElement;
+    while (parent && parent.id !== "packet-detail-tree") {
+        if (parent.classList.contains("tree-children")) {
+            parent.classList.add("open");
+            const t = parent.previousElementSibling;
+            if (t && t.classList.contains("tree-toggle")) t.classList.add("open");
+        }
+        parent = parent.parentElement;
+    }
+    selectField(best, null);
+    best.scrollIntoView({ block: "nearest" });
+}
+
+// --- click-to-filter ---
+//
+// Values become filter expressions here. Anything that is not plainly numeric
+// is quoted, because a bare string is a syntax error in a display filter and a
+// value containing a space would silently truncate the expression.
+
+// Which values go into a filter bare and which get quoted. Wireshark's syntax
+// takes addresses as literals: `ip.addr == "192.168.1.50"` is a type error, not
+// a string comparison, and tshark rejects the whole expression. Quoting is for
+// values that really are text -- a Host header, a DNS name, a user agent.
+function isBareLiteral(v) {
+    if (/^(0x[0-9a-fA-F]+|-?\d+(\.\d+)?)$/.test(v)) return true;          // numbers
+    if (/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(v)) return true;        // IPv4, with or without a prefix
+    if (/^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(v)) return true;      // MAC
+    if (/^[0-9a-fA-F:]+(\/\d{1,3})?$/.test(v) && v.includes("::")) return true;   // IPv6, compressed
+    if (/^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}(\/\d{1,3})?$/.test(v)) return true;  // IPv6, full
+    return false;
+}
+
+// PDML reports boolean fields as show="True"/"False". The filter is written
+// against 1 and 0 because that is the canonical form -- what Wireshark's own
+// filter bar produces, and what every tshark takes. This tshark also accepts
+// == True, so the mapping is for consistency rather than to fix a rejection.
+function normaliseValue(v) {
+    if (v === "True") return "1";
+    if (v === "False") return "0";
+    return v;
+}
+
+// The display filter rejects these characters on the way into tshark
+// (packet_parser._FILTER_FORBIDDEN). Rather than relax that rule to suit
+// click-to-filter, a value carrying one falls back to testing that the field is
+// merely present -- a filter that is still useful and still passes validation.
+const FILTER_UNSAFE = /[;$`\\]/;
+
+function buildFieldFilter(name, value, op = "==") {
+    if (!name) return "";
+    if (value === undefined || value === null || value === "") return name;
+    if (FILTER_UNSAFE.test(value)) return name;
+    const v = normaliseValue(value);
+    const literal = isBareLiteral(v) ? v : `"${v.replace(/"/g, '\\"')}"`;
+    if (FILTER_UNSAFE.test(literal)) return name;
+    return `${name} ${op} ${literal}`;
+}
+
+// Wireshark's Apply-as-Filter menu, with the same four combinators.
+function combineFilter(expr, mode) {
+    const current = $("display-filter").value.trim();
+    if (mode === "selected") return expr;
+    if (mode === "not") return `!(${expr})`;
+    if (!current) return mode === "or" ? expr : expr;
+    return mode === "and" ? `(${current}) && (${expr})` : `(${current}) || (${expr})`;
+}
+
+function applyBuiltFilter(expr, mode, run = true) {
+    if (!expr) return;
+    const box = $("display-filter");
+    box.value = combineFilter(expr, mode);
+    if (run) applyDisplayFilter();
+    else box.focus();
+}
+
+// --- the right-click menu ---
+
+function closeFilterMenu() {
+    const el = $("filter-menu");
+    if (el) el.remove();
+}
+
+function openFilterMenu(x, y, items) {
+    closeFilterMenu();
+    if (!items.length) return;
+    const menu = document.createElement("div");
+    menu.id = "filter-menu";
+    menu.className = "filter-menu";
+    for (const item of items) {
+        if (item.separator) {
+            const sep = document.createElement("div");
+            sep.className = "filter-menu-sep";
+            menu.appendChild(sep);
+            continue;
+        }
+        const row = document.createElement("div");
+        row.className = "filter-menu-item";
+        row.textContent = item.label;
+        if (item.hint) {
+            const hint = document.createElement("span");
+            hint.className = "filter-menu-hint";
+            hint.textContent = item.hint;
+            row.appendChild(hint);
+        }
+        row.addEventListener("click", () => {
+            closeFilterMenu();
+            item.run();
+        });
+        menu.appendChild(row);
+    }
+    document.body.appendChild(menu);
+    // Placed after insertion so the real size is known and the menu can be
+    // pulled back inside the window instead of opening off the edge.
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.min(x, window.innerWidth - r.width - 8) + "px";
+    menu.style.top = Math.min(y, window.innerHeight - r.height - 8) + "px";
+}
+
+function filterMenuItems(expr, label) {
+    const show = expr.length > 46 ? expr.slice(0, 45) + "…" : expr;
+    return [
+        { label: `Apply as filter: ${show}`, run: () => applyBuiltFilter(expr, "selected") },
+        { label: "  …and not selected", hint: "!( )", run: () => applyBuiltFilter(expr, "not") },
+        { label: "  …and selected", hint: "&&", run: () => applyBuiltFilter(expr, "and") },
+        { label: "  …or selected", hint: "||", run: () => applyBuiltFilter(expr, "or") },
+        { separator: true },
+        { label: "Prepare as filter", hint: "does not run", run: () => applyBuiltFilter(expr, "selected", false) },
+        { label: "Copy value", run: () => navigator.clipboard?.writeText(label).catch(() => {}) },
+    ];
+}
+
+function onDetailContextMenu(ev) {
+    const row = ev.target.closest(".tree-leaf, .tree-toggle");
+    if (!row || !row.dataset.field) return;
+    ev.preventDefault();
+    selectField(row, null);
+    const expr = buildFieldFilter(row.dataset.field, row.dataset.value);
+    openFilterMenu(ev.clientX, ev.clientY, filterMenuItems(expr, row.dataset.value || row.dataset.field));
+}
+
+// A row in the list has no PDML behind it, so its filters are built from the
+// columns themselves. Which field an address belongs to is decided by the shape
+// of the address: a colon means IPv6, and a MAC is six hex pairs.
+function addressField(value) {
+    if (/^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(value)) return "eth.addr";
+    if (value.includes(":")) return "ipv6.addr";
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return "ip.addr";
+    return "";
+}
+
+function onPacketRowContextMenu(ev) {
+    const row = ev.target.closest("tr[data-frame]");
+    if (!row) return;
+    const cell = ev.target.closest("td");
+    if (!cell) return;
+    ev.preventDefault();
+
+    const text = cell.textContent.trim();
+    const items = [];
+    if (cell.classList.contains("col-proto") && text) {
+        items.push(...filterMenuItems(text.toLowerCase(), text));
+    } else if (cell.classList.contains("col-len") && text) {
+        items.push(...filterMenuItems(buildFieldFilter("frame.len", text), text));
+    } else if (cell.classList.contains("col-no") && text) {
+        items.push(...filterMenuItems(buildFieldFilter("frame.number", text), text));
+    } else {
+        const field = addressField(text);
+        if (field) items.push(...filterMenuItems(buildFieldFilter(field, text), text));
+    }
+
+    // Wireshark's Conversation Filter, which is the reason most right-clicks on
+    // a row happen at all: both endpoints of this exchange and nothing else.
+    const src = row.querySelector(".col-src")?.textContent.trim() || "";
+    const dst = row.querySelector(".col-dst")?.textContent.trim() || "";
+    const sf = addressField(src);
+    if (sf && sf === addressField(dst)) {
+        const conv = `${buildFieldFilter(sf, src)} && ${buildFieldFilter(sf, dst)}`;
+        items.push({ separator: true });
+        items.push({ label: "Conversation filter", hint: `${src} ↔ ${dst}`, run: () => applyBuiltFilter(conv, "selected") });
+    }
+    openFilterMenu(ev.clientX, ev.clientY, items);
 }
 
 // --- resizer ---
@@ -1927,6 +2318,10 @@ async function unlockEncryption() {
 const SETTING_LABELS = {
     max_capture_seconds: "Max capture duration (seconds)",
     max_capture_packets: "Max capture packets",
+    // Enforced since captures were first written -- each running capture holds
+    // an SSH session and a local file handle -- but absent from this map, so
+    // the panel never drew it and the only way to change it was the database.
+    max_concurrent_captures: "Max simultaneous captures",
     session_duration_hours: "Session duration (hours)",
     session_idle_timeout_minutes: "Session idle timeout (minutes)",
     device_trust_days: "Device trust duration (days)",
@@ -2335,6 +2730,23 @@ function initEventDelegation() {
     document.querySelectorAll(".drawer-toggle").forEach((el) => {
         el.addEventListener("click", () => toggleDrawer(el.dataset.id));
     });
+
+    // --- viewer: field/byte linkage and the Apply-as-Filter menu ---
+    $("packet-detail-tree")?.addEventListener("contextmenu", onDetailContextMenu);
+    $("packet-tbody")?.addEventListener("contextmenu", onPacketRowContextMenu);
+    $("hex-dump")?.addEventListener("click", (ev) => {
+        const cell = ev.target.closest("[data-off]");
+        if (cell) selectFieldAtOffset(parseInt(cell.dataset.off, 10));
+    });
+    // Any click elsewhere, Escape, or a scroll dismisses the menu -- a menu
+    // that outlives the thing it was opened on points at the wrong packet.
+    document.addEventListener("click", (ev) => {
+        if (!ev.target.closest("#filter-menu")) closeFilterMenu();
+    });
+    document.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape") closeFilterMenu();
+    });
+    window.addEventListener("resize", closeFilterMenu);
     $("filter-library-search")?.addEventListener("input", (e) => {
         filterLibraryQuery = e.target.value;
         renderFilterLibrary();

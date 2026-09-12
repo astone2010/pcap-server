@@ -205,11 +205,41 @@ class PacketSummary(BaseModel):
     dst_mac: str = ""
 
 
+class PacketField(BaseModel):
+    """One row of the detail tree, carrying what Wireshark shows and what it filters on.
+
+    `name` is the display-filter field (`tcp.srcport`) and `value` the value to
+    filter against; together they are what a click on this row turns into an
+    expression. `label` is tshark's own `showname` -- "Source Port: 51234", or
+    the bit diagram ".... ..1. = Syn: Set" for a flag -- so the tree reads the
+    way Wireshark's does rather than showing raw field identifiers.
+
+    `pos` and `size` are the field's byte offset and length within the frame.
+    They are the entire reason this comes from PDML instead of `-T json`, which
+    reports neither: without them a field cannot highlight its own bytes.
+    """
+
+    name: str = ""
+    label: str = ""
+    value: str = ""
+    pos: int = -1
+    size: int = 0
+    # tshark marks generated and duplicate fields (ip.src_host beside ip.src)
+    # hide="yes". Wireshark does not draw them; neither do we, but they are
+    # carried rather than dropped so the viewer can offer them behind a toggle.
+    hidden: bool = False
+    children: list["PacketField"] = []
+
+
 class PacketDetail(BaseModel):
     number: int
     timestamp: str
     layers: list[dict]
     hex_dump: str
+    # The frame's bytes as one lowercase hex string. The viewer renders its own
+    # offset/hex/ASCII panes from this so individual bytes are addressable and
+    # can be highlighted; tshark's own -x text is a single blob that cannot be.
+    frame_hex: str = ""
 
 
 CAPTURE_NAME_MAX = 120

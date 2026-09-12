@@ -10,6 +10,10 @@ opened -- not just that a well-behaved caller sees an error afterward.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+from backend.database import Database
+
 import asyncio
 from datetime import datetime, timezone
 
@@ -530,3 +534,19 @@ async def test_the_kept_stderr_is_the_tail_that_diagnoses_the_exit():
     buf: list[str] = []
     await _pump_stderr(Proc(), buf, lambda c: None)
     assert "sudo: a password is required" in "".join(buf)
+
+
+def test_every_setting_the_backend_defaults_is_editable_in_the_admin_panel():
+    """A setting the panel cannot draw can only be changed in the database.
+
+    max_concurrent_captures was enforced from the start and missing from the
+    panel's label map, so the limit on simultaneous captures was real and
+    unreachable.
+    """
+    labels = re.search(
+        r"const SETTING_LABELS = \{(.*?)\n\};",
+        (Path(__file__).resolve().parents[1] / "frontend/js/app.js").read_text(),
+        re.S,
+    ).group(1)
+    for key in Database.DEFAULTS:
+        assert f"{key}:" in labels, f"{key} has a default but no row in the admin panel"

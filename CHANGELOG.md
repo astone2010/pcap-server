@@ -1,5 +1,94 @@
 # Changelog
 
+## 0.1.0-dev.13 — 2026-09-12
+
+### Added
+
+- **Click a field, see its bytes. Click a byte, find its field.** The detail
+  tree and the hex pane are now two views of the same frame. Selecting a field
+  highlights exactly the bytes it occupies, in both the hex and ASCII columns;
+  clicking a byte selects the innermost field covering it and opens every
+  ancestor so the row is actually on screen. This is the interaction the viewer
+  existed to provide and could not, because `-T json` reports no offsets.
+- **Right-click to filter, from the tree or from a packet row.** Wireshark's
+  Apply as Filter menu, with the same four combinators — selected, not
+  selected, and selected, or selected — plus Prepare as Filter, which fills the
+  box without running it, and Copy value. On a packet row the menu builds from
+  the column under the cursor: an address, a protocol, a length, a frame
+  number. Right-clicking a row also offers a Conversation filter, both
+  endpoints of the exchange and nothing else.
+- **Individual flag bits are filterable.** Because the tree carries real field
+  names all the way down, a TCP flag bit is a row like any other:
+  right-clicking `.... .... ..1. = Syn: Set` produces `tcp.flags.syn == 1`.
+
+### Changed
+
+- **The SSH key field starts empty on a new server.** A `<select>` selects its
+  first option by default, so the add form silently arrived with whichever key
+  sorted first already chosen — and a server added without looking would
+  authenticate with a key nobody picked. The field now opens on a disabled
+  "— select a key —" placeholder that cannot be chosen back, and Add, Test
+  connection and Check prerequisites all refuse with a plain sentence until a
+  key, a hostname and a username are actually present. Editing an existing
+  server still shows that server's own key, because there the value is a fact
+  rather than an unanswered question.
+- **The Add server form carries a standing warning about capturing from its own
+  host.** Pointing pcap-server at the machine it runs on writes your session
+  cookie and TOTP code — and over plain HTTP your password — into a capture this
+  UI then stores and serves back. The obvious cases were already refused
+  outright: hostname aliases, loopback, the container's own addresses, and the
+  default gateway, which on a Docker bridge is the host. What that cannot see is
+  the host's own LAN address, because a bridged container has no knowledge of
+  it — and that is the address an operator would actually type. Detection stays
+  and is unchanged; the warning covers the case detection is structurally unable
+  to reach, and a test now pins that limitation rather than leaving it implied.
+- **The dissection tree comes from PDML instead of `-T json`.** The JSON output
+  gives a field's name and value and nothing else. PDML gives four more things
+  the viewer cannot work without: `pos` and `size`, the byte offset and length
+  that make highlighting possible at all; `showname`, Wireshark's own label, so
+  a row reads "Source Port: 51234" rather than "tcp.srcport: 51234", and so the
+  bit diagrams for flag fields arrive already drawn; and `hide`, which marks
+  the generated duplicates — `ip.src_host` beside `ip.src`, `tcp.port` beside
+  `tcp.srcport` — that Wireshark does not display and that were doubling the
+  length of every tree here.
+- **The hex pane is rendered from the frame's bytes rather than pasted from
+  tshark.** `-x` output is a single block of text with nothing in it to
+  address; a field cannot highlight a range of a text node. Each byte is now
+  its own element, with the offset gutter and ASCII column laid out here. The
+  bytes come from `-T json -x`, which reports the frame data source as one
+  unambiguous hex string, where the text form has to be scraped and can carry a
+  second block for reassembled data whose offsets do not match PDML's.
+- Tool runs per packet click are unchanged at two — PDML carries no frame
+  bytes, so fetching them is still a second pass.
+
+### Security
+
+- PDML is parsed only after the bytes are checked for a document type
+  declaration, which tshark never emits. Expat resolves internal entities, so a
+  declaration reaching the parser is the one route by which a captured packet's
+  own contents could mount an expansion attack against this process.
+- Filter values built by clicking are quoted before they are sent, and a value
+  containing any character the display filter rejects (`;`, `$`, a backtick, a
+  backslash) falls back to testing that the field is merely present. The
+  validator was not relaxed to accommodate click-to-filter.
+
+### Fixed
+
+- **The limit on simultaneous captures was unreachable.** `max_concurrent_captures`
+  has been enforced since captures were first written — five at once by default,
+  because each running capture holds an SSH session to the target and a local
+  file handle — but it was missing from the Admin panel's list of settings, so
+  the only way to change it was to edit the database. It is now a field like any
+  other, and a test asserts that every setting the backend defaults has a row in
+  the panel, so the next one cannot go missing the same way.
+- **An address in a generated filter was quoted, which tshark rejects
+  outright.** Anything non-numeric was being wrapped in quotes, so the first
+  conversation filter produced `ip.addr == "192.168.1.50"` — a type error, not
+  a string comparison, and a 400 from the API. Addresses, MACs and IPv6
+  literals now go in bare; genuine strings such as a Host header still get
+  quoted. Found in a browser, not by the test suite, which is why the rule
+  tshark enforces is now pinned by tests of its own.
+
 ## 0.1.0-dev.12 — 2026-09-12
 
 ### Added

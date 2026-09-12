@@ -16,6 +16,7 @@ import shutil
 import stat
 import struct
 import sys
+from xml.etree import ElementTree
 
 import pytest
 
@@ -155,31 +156,6 @@ def test_name_resolution_args_returns_a_copy_not_the_module_constant():
     args = packet_parser._name_resolution_args(False)
     args.append("--corrupted")
     assert packet_parser._name_resolution_args(False) == ["-n"]
-
-
-# --- _flatten_fields: pure, no tools -------------------------------------------
-
-
-def test_flatten_fields_scalar_values():
-    result = packet_parser._flatten_fields({"ip.ttl": "64", "ip.len": 52})
-    assert {"key": "ip.ttl", "value": "64"} in result
-    assert {"key": "ip.len", "value": "52"} in result
-
-
-def test_flatten_fields_nested_dict_becomes_children():
-    result = packet_parser._flatten_fields({"tcp.flags": {"tcp.flags.syn": "1"}})
-    assert len(result) == 1
-    assert result[0]["key"] == "tcp.flags"
-    assert result[0]["children"] == [{"key": "tcp.flags.syn", "value": "1"}]
-
-
-def test_flatten_fields_list_values_are_joined():
-    result = packet_parser._flatten_fields({"tcp.options": ["MSS", "SACK"]})
-    assert result == [{"key": "tcp.options", "value": "MSS, SACK"}]
-
-
-def test_flatten_fields_empty_dict():
-    assert packet_parser._flatten_fields({}) == []
 
 
 # --- get_packet_list: filter validation happens before any tool runs -------
@@ -492,3 +468,203 @@ async def test_mac_columns_stay_empty_when_the_flag_is_off():
     packets = await packet_parser.get_packet_list(BytesSource(_build_cooked_pcap()))
     assert packets[0].src_mac == ""
     assert packets[0].dst_mac == ""
+
+
+# --- PDML parsing: pure, no tools ---------------------------------------------
+#
+# get_packet_detail moved from `-T json` to `-T pdml` so a field carries its own
+# byte offset and length. Those two numbers are what lets a field highlight its
+# bytes and a byte find its field; nothing else in the JSON output supplies
+# them, so these tests pin the shape of what is parsed out.
+
+_PDML_SAMPLE = b"""<?xml version="1.0"?>
+<pdml version="0" creator="wireshark/4.2.2">
+<packet>
+  <proto name="geninfo" pos="0" showname="General information" size="58">
+    <field name="num" pos="0" show="1" size="58"/>
+  </proto>
+  <proto name="frame" showname="Frame 1: 58 bytes" size="58" pos="0">
+    <field name="frame.time_relative" showname="Time since reference: 0.000000000" size="0" pos="0" show="0.000000000"/>
+  </proto>
+  <proto name="tcp" showname="Transmission Control Protocol, Src Port: 51234" size="24" pos="34">
+    <field name="tcp.srcport" showname="Source Port: 51234" size="2" pos="34" show="51234" value="c822"/>
+    <field name="tcp.port" showname="Source or Destination Port: 51234" hide="yes" size="2" pos="34" show="51234" value="c822"/>
+    <field name="tcp.flags" showname="Flags: 0x002 (SYN)" size="2" pos="46" show="0x0002" value="2">
+      <field name="tcp.flags.syn" showname=".... .... ..1. = Syn: Set" size="1" pos="47" show="True" value="1"/>
+    </field>
+  </proto>
+</packet>
+</pdml>
+"""
+
+
+def test_parse_pdml_drops_geninfo():
+    """PDML's own synthetic summary is not a protocol in the frame."""
+    layers = packet_parser._parse_pdml(_PDML_SAMPLE)
+    assert [layer["name"] for layer in layers] == ["frame", "tcp"]
+
+
+def test_parse_pdml_keeps_wiresharks_own_labels():
+    layers = packet_parser._parse_pdml(_PDML_SAMPLE)
+    tcp = layers[1]
+    assert tcp["label"] == "Transmission Control Protocol, Src Port: 51234"
+    assert tcp["fields"][0]["label"] == "Source Port: 51234"
+
+
+def test_parse_pdml_carries_byte_offsets():
+    """The entire reason for PDML over -T json."""
+    tcp = packet_parser._parse_pdml(_PDML_SAMPLE)[1]
+    srcport = tcp["fields"][0]
+    assert srcport["pos"] == 34
+    assert srcport["size"] == 2
+
+
+def test_parse_pdml_field_name_and_value_make_a_filter():
+    tcp = packet_parser._parse_pdml(_PDML_SAMPLE)[1]
+    srcport = tcp["fields"][0]
+    assert srcport["name"] == "tcp.srcport"
+    # `show`, not `value`: the filter is written against 51234, not 0xc822.
+    assert srcport["value"] == "51234"
+
+
+def test_parse_pdml_marks_generated_duplicates_hidden():
+    """tcp.port sits beside tcp.srcport with hide="yes"; Wireshark draws neither."""
+    tcp = packet_parser._parse_pdml(_PDML_SAMPLE)[1]
+    assert tcp["fields"][0]["hidden"] is False
+    assert tcp["fields"][1]["name"] == "tcp.port"
+    assert tcp["fields"][1]["hidden"] is True
+
+
+def test_parse_pdml_nests_the_flag_bits():
+    """The bit display: tshark writes the diagram, so it never has to be built."""
+    tcp = packet_parser._parse_pdml(_PDML_SAMPLE)[1]
+    flags = tcp["fields"][2]
+    assert flags["name"] == "tcp.flags"
+    syn = flags["children"][0]
+    assert syn["name"] == "tcp.flags.syn"
+    assert syn["label"] == ".... .... ..1. = Syn: Set"
+    assert syn["pos"] == 47
+
+
+def test_parse_pdml_returns_none_when_no_packet_matched():
+    empty = b'<?xml version="1.0"?><pdml version="0" creator="w"></pdml>'
+    assert packet_parser._parse_pdml(empty) is None
+
+
+def test_parse_pdml_refuses_a_document_type_declaration():
+    """A billion-laughs expansion is the one way packet bytes could attack expat."""
+    hostile = b'<?xml version="1.0"?><!DOCTYPE p [<!ENTITY a "x">]><pdml><packet/></pdml>'
+    with pytest.raises(ValueError, match="document type declaration"):
+        packet_parser._parse_pdml(hostile)
+
+
+def test_parse_pdml_rejects_malformed_xml():
+    with pytest.raises(ValueError, match="could not parse"):
+        packet_parser._parse_pdml(b"<pdml><packet>")
+
+
+def test_int_attr_survives_a_missing_or_unparseable_value():
+    element = ElementTree.fromstring('<field pos="oops"/>')
+    assert packet_parser._int_attr(element, "pos") == -1
+    assert packet_parser._int_attr(element, "size") == 0
+
+
+# --- the hex dump is built from the bytes, not scraped from tshark ------------
+
+
+def test_hex_dump_text_lays_out_offset_hex_and_ascii():
+    dump = packet_parser._hex_dump_text("48656c6c6f")
+    assert dump == "0000  48 65 6c 6c 6f                                   Hello"
+
+
+def test_hex_dump_text_wraps_at_sixteen_bytes():
+    lines = packet_parser._hex_dump_text("00" * 20).splitlines()
+    assert len(lines) == 2
+    assert lines[0].startswith("0000  ")
+    assert lines[1].startswith("0010  ")
+
+
+def test_hex_dump_text_renders_unprintable_bytes_as_dots():
+    assert packet_parser._hex_dump_text("00ff41").endswith("..A")
+
+
+def test_hex_dump_text_of_nothing_is_nothing():
+    assert packet_parser._hex_dump_text("") == ""
+
+
+@needs_tshark
+async def test_get_packet_detail_reports_offsets_and_frame_bytes():
+    """End to end: the two things the viewer cannot render without."""
+    detail = await packet_parser.get_packet_detail(BytesSource(_build_minimal_pcap()), 1)
+    assert detail.frame_hex
+    assert len(detail.frame_hex) % 2 == 0
+    every_field = []
+
+    def walk(fields):
+        for field in fields:
+            every_field.append(field)
+            walk(field.get("children") or [])
+
+    for layer in detail.layers:
+        walk(layer["fields"])
+    assert any(f["pos"] >= 0 and f["size"] > 0 for f in every_field)
+    # Every offset a field claims has to exist in the bytes the viewer renders.
+    frame_len = len(detail.frame_hex) // 2
+    for field in every_field:
+        if field["pos"] >= 0 and field["size"] > 0:
+            assert field["pos"] + field["size"] <= frame_len
+
+
+@needs_tshark
+async def test_get_packet_detail_rejects_a_frame_that_is_not_there():
+    with pytest.raises(ValueError, match="not found"):
+        await packet_parser.get_packet_detail(BytesSource(_build_minimal_pcap()), 99)
+
+
+# --- the rule click-to-filter is built on ------------------------------------
+#
+# The viewer turns a clicked field into `name == value`, and has to decide
+# whether to quote the value. Addresses are literals in Wireshark's syntax and
+# quoting one is a type error, not a string comparison -- the whole expression
+# is rejected. That rule lives in the frontend (isBareLiteral in app.js), which
+# the Python suite cannot execute, so what is pinned here is the tshark
+# behaviour the rule exists to satisfy. If this ever stops being true, the
+# frontend's quoting is wrong too.
+
+
+@needs_tshark
+async def test_an_address_literal_is_accepted_unquoted():
+    packets = await packet_parser.get_packet_list(
+        BytesSource(_build_minimal_pcap()), display_filter="ip.addr == 192.168.1.1"
+    )
+    assert isinstance(packets, list)
+
+
+@needs_tshark
+async def test_a_quoted_address_is_rejected():
+    """The bug this pins: quoting every non-numeric value broke every address filter."""
+    with pytest.raises(packet_parser.DisplayFilterError):
+        await packet_parser.get_packet_list(
+            BytesSource(_build_minimal_pcap()), display_filter='ip.addr == "192.168.1.1"'
+        )
+
+
+@needs_tshark
+async def test_a_boolean_flag_filters_on_one():
+    """PDML reports a flag as show="True"; the viewer writes == 1.
+
+    tshark 4.2 happens to accept == True as well, so this is a canonical-form
+    choice rather than a correctness fix: 1 and 0 are what Wireshark itself puts
+    in the filter bar, and what older and newer tshark both take.
+    """
+    packets = await packet_parser.get_packet_list(
+        BytesSource(_build_minimal_pcap()), display_filter="tcp.flags.syn == 1"
+    )
+    assert isinstance(packets, list)
+
+
+def test_parse_pdml_refuses_a_lowercase_doctype_too():
+    """XML only allows the uppercase form; not depending on that costs nothing."""
+    hostile = b'<?xml version="1.0"?><!doctype p [<!entity a "x">]><pdml><packet/></pdml>'
+    with pytest.raises(ValueError, match="document type declaration"):
+        packet_parser._parse_pdml(hostile)

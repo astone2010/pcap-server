@@ -164,3 +164,24 @@ def test_local_addresses_is_the_union(monkeypatch):
     monkeypatch.setattr(localnet, "_own_addresses", lambda: {"127.0.0.1", "10.0.0.5"})
     monkeypatch.setattr(localnet, "_default_gateways", lambda: {"10.0.0.1"})
     assert localnet.local_addresses() == {"127.0.0.1", "10.0.0.5", "10.0.0.1"}
+
+
+def test_a_docker_hosts_lan_address_is_not_detected():
+    """The limit of what detection can see, asserted rather than assumed.
+
+    describe_if_local knows this container's own addresses and its default
+    gateway. A bridged container knows nothing about the host's LAN address, so
+    pointing pcap-server at the very machine it runs on -- by the address an
+    operator would actually type -- is invisible from in here. That is not a bug
+    to fix at this layer; it is why the Add server form carries a standing
+    warning as well as this check. If this ever starts returning a finding, the
+    warning can be reconsidered.
+    """
+    assert localnet.describe_if_local("192.168.1.10") == ""
+    assert localnet.describe_if_local("10.0.0.5") == ""
+
+
+def test_the_obvious_self_targets_are_still_caught():
+    """The other half: what detection does cover is not weakened by the above."""
+    assert localnet.describe_if_local("localhost") != ""
+    assert localnet.describe_if_local("127.0.0.1") != ""

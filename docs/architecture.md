@@ -269,6 +269,19 @@ that property rather than leaving it as a claim in a comment. The capture filter
 keeps the stricter rule, because that one does travel inside a command string
 over SSH where a shell parses it.
 
+**PDML** is parsed only after the raw bytes are checked for a document type
+declaration. tshark never emits one, so its presence means the input is not
+tshark's output; expat resolves internal entity definitions, which is the single
+route by which a captured packet's own contents could turn into an expansion
+attack against this process. Nothing is fetched over the network during parsing
+and no external entity is ever resolved.
+
+**Click-built filters** are quoted before they are sent, and a value containing
+any character the display filter rejects degrades to an existence test on the
+field rather than an equality. The validator was deliberately not relaxed to
+make click-to-filter more expressive: the filter language's own quoting is the
+thing that was made correct instead.
+
 **tcpdump paths** must be absolute and end in `/tcpdump`.
 
 **SSH key names** must be plain filenames with no path separators and no `..`.

@@ -699,6 +699,18 @@ body {
 .tree-leaf .field-name { color: var(--accent); }
 .tree-leaf .field-value { color: var(--text-primary); }
 
+/* A row that knows which bytes it occupies is clickable; one that does not
+   looks inert on purpose, so a click that will do nothing is not invited. */
+.tree-leaf.has-bytes, .tree-toggle.has-bytes { cursor: pointer; }
+.tree-leaf:hover { color: var(--text-primary); }
+
+.tree-leaf.field-selected,
+.tree-toggle.field-selected {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-radius: 3px;
+}
+
 .hex-dump {
     flex: 1;
     overflow-y: auto;
@@ -710,6 +722,106 @@ body {
     color: var(--text-secondary);
     background: var(--bg-secondary);
     min-height: 0;
+}
+
+/* --- hex pane ---
+   Three columns in one row: offset, bytes, ASCII. Every byte is its own
+   element so a field in the tree can highlight exactly its own range. */
+
+.hex-row { display: flex; gap: 12px; }
+
+.hex-offset {
+    color: var(--text-muted);
+    flex: 0 0 auto;
+    user-select: none;
+}
+
+.hex-bytes, .hex-ascii { flex: 0 0 auto; }
+
+.hex-byte, .hex-char {
+    cursor: pointer;
+    border-radius: 2px;
+}
+
+.hex-byte { padding-right: 4px; }
+.hex-byte:last-child { padding-right: 0; }
+.hex-pad { padding-right: 4px; }
+
+.hex-byte:hover, .hex-char:hover { color: var(--accent); }
+
+.hex-byte.hl, .hex-char.hl {
+    background: var(--accent);
+    color: var(--accent-fg);
+}
+
+/* A standing warning inside a form -- not an error, so it is not red, but not
+   a hint either: it has to survive being read past. */
+.form-warning {
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--warning);
+    border-left-width: 3px;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.5;
+}
+
+.form-warning strong {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--text-primary);
+}
+
+.form-warning code {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: var(--bg-secondary);
+}
+
+/* --- Apply-as-filter menu --- */
+
+.filter-menu {
+    position: fixed;
+    z-index: 1000;
+    min-width: 220px;
+    padding: 4px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    font-size: 0.75rem;
+}
+
+.filter-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-primary);
+    white-space: pre;
+}
+
+.filter-menu-item:hover { background: var(--accent); color: var(--accent-fg); }
+
+.filter-menu-hint {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+}
+
+.filter-menu-item:hover .filter-menu-hint { color: var(--accent-fg); }
+
+.filter-menu-sep {
+    height: 1px;
+    margin: 4px 2px;
+    background: var(--border);
 }
 
 .empty-state {
