@@ -212,6 +212,15 @@ class Cryptor:
                 if len(length_raw) < 4:
                     raise CryptoError("truncated: stream ended without a terminator")
                 (length,) = struct.unpack(">I", length_raw)
+                # The length prefix is read before anything authenticates it,
+                # so a corrupted or tampered file could otherwise ask this
+                # process to allocate up to 4 GiB for one chunk. Nothing this
+                # module writes ever exceeds CHUNK_SIZE, so a larger figure is
+                # damage rather than a longer chunk.
+                if length > CHUNK_SIZE:
+                    raise CryptoError(
+                        f"chunk {index} declares {length} bytes, above the {CHUNK_SIZE}-byte maximum"
+                    )
                 nonce = fh.read(NONCE_LEN)
                 body = fh.read(length + TAG_LEN)
                 if len(nonce) < NONCE_LEN or len(body) < length + TAG_LEN:

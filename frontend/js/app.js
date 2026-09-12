@@ -1475,7 +1475,185 @@ async function viewCapture(id) {
     $("packet-detail-tree").innerHTML = '<div class="empty-state" style="font-size:0.75rem">Click a packet above</div>';
     $("hex-dump").textContent = "";
 
-    await loadPackets(id);
+    activeViewId = ALL_PACKETS_VIEW;
+    savedViews = [];
+    renderViewTabs();
+
+    await Promise.all([loadPackets(id), loadSavedViews(id)]);
+}
+
+// --- saved views --------------------------------------------------------
+//
+// A named display filter, kept against the capture on the server. The point is
+// coming back: a capture opened a week later still has "kerberos", "the
+// retransmissions" and "everything to the DC" as tabs, and each one downloads
+// as its own pcap containing only what it selects.
+//
+// Server-side, unlike the drawer and split-height state above. Those are
+// per-viewer conveniences worth nothing if lost; these are named work, and the
+// filtered download has to be able to read the filter server-side anyway.
+
+// The unfiltered capture. Not a stored row -- it is what the viewer shows with
+// an empty filter, so it has no id, cannot be renamed, and cannot be deleted.
+const ALL_PACKETS_VIEW = "";
+
+let savedViews = [];
+let activeViewId = ALL_PACKETS_VIEW;
+
+async function loadSavedViews(captureId) {
+    try {
+        savedViews = await api(`/api/captures/${captureId}/views`);
+    } catch {
+        // A capture still readable without its tabs is better than a viewer
+        // that refuses to open because one request failed.
+        savedViews = [];
+    }
+    renderViewTabs();
+}
+
+function renderViewTabs() {
+    const el = $("view-tabs");
+    if (!el) return;
+    if (!savedViews.length) {
+        el.hidden = true;
+        el.innerHTML = "";
+        return;
+    }
+    const tabs = [{ id: ALL_PACKETS_VIEW, name: "All packets", display_filter: "" }, ...savedViews];
+    el.innerHTML = tabs
+        .map((v) => {
+            const selected = v.id === activeViewId;
+            const actions = v.id === ALL_PACKETS_VIEW ? "" : `
+                <span class="view-tab-actions">
+                    <button type="button" class="view-tab-action" title="Download this view as a pcap"
+                            data-action="download-view" data-id="${escHtml(v.id)}" aria-label="Download view">&darr;</button>
+                    <button type="button" class="view-tab-action" title="Rename, or update to the current filter"
+                            data-action="edit-view" data-id="${escHtml(v.id)}" aria-label="Edit view">&#9998;</button>
+                    <button type="button" class="view-tab-action" title="Delete this view"
+                            data-action="delete-view" data-id="${escHtml(v.id)}" aria-label="Delete view">&times;</button>
+                </span>`;
+            return `
+            <button type="button" class="view-tab" role="tab" aria-selected="${selected}"
+                    data-action="select-view" data-id="${escHtml(v.id)}"
+                    title="${escHtml(v.display_filter || "the whole capture, unfiltered")}">
+                <span class="view-tab-name">${escHtml(v.name)}</span>${actions}
+            </button>`;
+        })
+        .join("");
+    el.hidden = false;
+}
+
+function selectView(viewId) {
+    // The action buttons sit inside the tab, so a click on one bubbles to the
+    // tab as well. Selecting the tab you are already on is harmless; running
+    // its filter again is a wasted tshark spawn.
+    if (viewId === activeViewId) return;
+    const view = savedViews.find((v) => v.id === viewId);
+    activeViewId = view ? view.id : ALL_PACKETS_VIEW;
+    $("display-filter").value = view ? view.display_filter : "";
+    renderViewTabs();
+    applyDisplayFilter();
+}
+
+async function saveCurrentView() {
+    if (!viewingCaptureId) return;
+    const filter = $("display-filter").value.trim();
+    if (!filter) {
+        showDisplayFilterError(
+            "There is no filter to save. Type or build one first -- the unfiltered "
+            + "capture is already the \"All packets\" tab."
+        );
+        return;
+    }
+    const name = prompt("Name this view", suggestViewName(filter));
+    if (name === null) return;
+    try {
+        const view = await api(`/api/captures/${viewingCaptureId}/views`, {
+            method: "POST",
+            body: JSON.stringify({ name, display_filter: filter }),
+        });
+        savedViews.push(view);
+        activeViewId = view.id;
+        renderViewTabs();
+        showDisplayFilterError("");
+    } catch (e) {
+        if (!e.httpsRequired) showDisplayFilterError(e.message);
+    }
+}
+
+// The filter itself is the best default name anyone is going to type, right up
+// until it is 200 characters of combinators.
+function suggestViewName(filter) {
+    return filter.length <= 40 ? filter : filter.slice(0, 37) + "...";
+}
+
+async function editView(viewId) {
+    const view = savedViews.find((v) => v.id === viewId);
+    if (!view) return;
+    const name = prompt("Rename this view", view.name);
+    if (name === null) return;
+    const current = $("display-filter").value.trim();
+    // Offered rather than assumed: the common reason to edit a view is that
+    // you refined its filter in the box and want the tab to keep the new one.
+    const filter = (current && current !== view.display_filter
+        && confirm(`Also update this view's filter to:\n\n${current}\n\n(Cancel keeps "${view.display_filter}".)`))
+        ? current
+        : view.display_filter;
+    try {
+        const updated = await api(`/api/captures/${viewingCaptureId}/views/${viewId}`, {
+            method: "PUT",
+            body: JSON.stringify({ name, display_filter: filter }),
+        });
+        savedViews = savedViews.map((v) => (v.id === viewId ? updated : v));
+        renderViewTabs();
+        showDisplayFilterError("");
+    } catch (e) {
+        if (!e.httpsRequired) showDisplayFilterError(e.message);
+    }
+}
+
+async function deleteView(viewId) {
+    const view = savedViews.find((v) => v.id === viewId);
+    if (!view) return;
+    if (!confirm(`Delete the view "${view.name}"?\n\nThe capture itself is not affected.`)) return;
+    try {
+        await api(`/api/captures/${viewingCaptureId}/views/${viewId}`, { method: "DELETE" });
+    } catch (e) {
+        if (!e.httpsRequired) showDisplayFilterError(e.message);
+        return;
+    }
+    savedViews = savedViews.filter((v) => v.id !== viewId);
+    if (activeViewId === viewId) {
+        activeViewId = ALL_PACKETS_VIEW;
+        $("display-filter").value = "";
+        applyDisplayFilter();
+    }
+    renderViewTabs();
+}
+
+function downloadView(viewId) {
+    if (!secureTransport) {
+        showHttpsRefusal({
+            reason: "A filtered view is still packet data -- often the most sensitive slice "
+                + "of a capture rather than a less sensitive one. Downloading it over an "
+                + "unencrypted connection would put it on the wire in the clear.",
+            remedy: "Serve pcap-server over HTTPS, then set TRUST_PROXY_HEADERS=true if a "
+                + "reverse proxy terminates TLS.",
+        });
+        return;
+    }
+    window.open(`/api/captures/${viewingCaptureId}/views/${viewId}/download`, "_blank");
+}
+
+// Typing over a saved view's filter means you are no longer looking at that
+// view, and the tab should stop claiming you are.
+function noteFilterEditedByHand() {
+    if (activeViewId === ALL_PACKETS_VIEW) return;
+    const view = savedViews.find((v) => v.id === activeViewId);
+    if (view && $("display-filter").value.trim() !== view.display_filter) {
+        activeViewId = ALL_PACKETS_VIEW;
+        renderViewTabs();
+    }
 }
 
 // Wireshark-style row coloring. First match wins, so problems outrank protocols.
@@ -1570,6 +1748,323 @@ function renderFilterSuggestions(containerId, suggestions) {
                 `<button type="button" class="filter-chip" data-action="use-filter"
                          data-id="${escHtml(expr)}" title="${escHtml(why)}">${escHtml(expr)}</button>`)
             .join("");
+}
+
+// --- display-filter autocomplete ----------------------------------------
+//
+// The "Try:" chips are eight worked examples; they teach the shape of a filter
+// and then have nothing more to offer. This is the part after that: you know
+// the protocol is called something like "kerberos" or the field starts
+// "tcp.analysis.", and you want the rest of the name without going to look it
+// up. Protocol names come first in the list because a bare protocol is a
+// complete filter on its own -- `dns` is valid where `dns.qry.name` is not.
+//
+// Matching is on the token under the caret, not the whole box, so it keeps
+// working in the middle of `ip.addr == 10.0.0.1 && tc|`.
+const DISPLAY_FILTER_PROTOCOLS = [
+    ["arp", "address resolution"],
+    ["bootp", "DHCP (tshark's name for it)"],
+    ["data", "undissected payload"],
+    ["dhcp", "DHCP"],
+    ["dhcpv6", "DHCPv6"],
+    ["dns", "DNS queries and answers"],
+    ["eth", "Ethernet"],
+    ["ftp", "FTP control"],
+    ["ftp-data", "FTP transfers"],
+    ["gquic", "Google QUIC"],
+    ["gre", "GRE tunnel"],
+    ["http", "HTTP/1.x"],
+    ["http2", "HTTP/2"],
+    ["icmp", "ICMP"],
+    ["icmpv6", "ICMPv6"],
+    ["igmp", "IGMP"],
+    ["imap", "IMAP"],
+    ["ip", "IPv4"],
+    ["ipv6", "IPv6"],
+    ["isakmp", "IKE / IPsec key exchange"],
+    ["kerberos", "Kerberos"],
+    ["ldap", "LDAP"],
+    ["llmnr", "link-local name resolution"],
+    ["lldp", "link layer discovery"],
+    ["mdns", "multicast DNS"],
+    ["mysql", "MySQL"],
+    ["nbns", "NetBIOS name service"],
+    ["nfs", "NFS"],
+    ["ntp", "NTP"],
+    ["ospf", "OSPF"],
+    ["pgsql", "PostgreSQL"],
+    ["pop", "POP3"],
+    ["quic", "QUIC"],
+    ["radius", "RADIUS"],
+    ["rdp", "RDP"],
+    ["rtp", "RTP media"],
+    ["sip", "SIP"],
+    ["sll", "Linux cooked capture (tcpdump -i any)"],
+    ["smb", "SMB1"],
+    ["smb2", "SMB2/3"],
+    ["smtp", "SMTP"],
+    ["snmp", "SNMP"],
+    ["ssdp", "SSDP discovery"],
+    ["ssh", "SSH"],
+    ["stun", "STUN / NAT traversal"],
+    ["syslog", "syslog"],
+    ["tcp", "TCP"],
+    ["telnet", "telnet"],
+    ["tftp", "TFTP"],
+    ["tls", "TLS (was ssl)"],
+    ["udp", "UDP"],
+    ["vlan", "802.1Q VLAN"],
+    ["vrrp", "VRRP"],
+    ["wireguard", "WireGuard"],
+    ["websocket", "WebSocket"],
+];
+
+const DISPLAY_FILTER_FIELDS = [
+    ["frame.number", "packet number"],
+    ["frame.len", "frame length in bytes"],
+    ["frame.time", "absolute time"],
+    ["frame.time_epoch", "epoch seconds"],
+    ["frame.time_relative", "seconds since the first packet"],
+    ["frame.protocols", "protocol stack, colon separated"],
+    ["frame.contains", "raw bytes anywhere in the frame"],
+    ["eth.src", "source MAC"],
+    ["eth.dst", "destination MAC"],
+    ["eth.addr", "either MAC"],
+    ["ip.src", "source IPv4"],
+    ["ip.dst", "destination IPv4"],
+    ["ip.addr", "either IPv4 address"],
+    ["ip.proto", "protocol number"],
+    ["ip.ttl", "time to live"],
+    ["ip.len", "total length"],
+    ["ip.id", "identification"],
+    ["ip.flags.df", "don't fragment"],
+    ["ipv6.src", "source IPv6"],
+    ["ipv6.dst", "destination IPv6"],
+    ["ipv6.addr", "either IPv6 address"],
+    ["tcp.port", "either TCP port"],
+    ["tcp.srcport", "source TCP port"],
+    ["tcp.dstport", "destination TCP port"],
+    ["tcp.stream", "one TCP conversation by index"],
+    ["tcp.seq", "sequence number"],
+    ["tcp.ack", "acknowledgement number"],
+    ["tcp.len", "payload bytes"],
+    ["tcp.window_size", "advertised window"],
+    ["tcp.flags", "all flags as a bitmask"],
+    ["tcp.flags.syn", "SYN bit"],
+    ["tcp.flags.ack", "ACK bit"],
+    ["tcp.flags.fin", "FIN bit"],
+    ["tcp.flags.reset", "RST bit"],
+    ["tcp.flags.push", "PSH bit"],
+    ["tcp.analysis.flags", "anything tshark flagged"],
+    ["tcp.analysis.retransmission", "retransmissions"],
+    ["tcp.analysis.duplicate_ack", "duplicate ACKs"],
+    ["tcp.analysis.zero_window", "receiver window exhausted"],
+    ["udp.port", "either UDP port"],
+    ["udp.srcport", "source UDP port"],
+    ["udp.dstport", "destination UDP port"],
+    ["udp.stream", "one UDP conversation by index"],
+    ["icmp.type", "ICMP type"],
+    ["icmp.code", "ICMP code"],
+    ["arp.opcode", "request (1) or reply (2)"],
+    ["dns.qry.name", "queried name"],
+    ["dns.qry.type", "record type"],
+    ["dns.flags.response", "answer rather than query"],
+    ["dns.flags.rcode", "response code"],
+    ["http.request", "requests only"],
+    ["http.response", "responses only"],
+    ["http.request.method", "GET, POST, ..."],
+    ["http.request.uri", "requested path"],
+    ["http.host", "Host header"],
+    ["http.response.code", "status code"],
+    ["http.user_agent", "User-Agent header"],
+    ["http.content_type", "Content-Type header"],
+    ["tls.handshake.type", "1 = client hello, 2 = server hello"],
+    ["tls.handshake.extensions_server_name", "SNI host"],
+    ["tls.record.version", "record version"],
+    ["tls.alert_message", "TLS alerts"],
+    ["smb2.cmd", "SMB2 command"],
+    ["ldap.messageID", "LDAP message id"],
+    ["kerberos.CNameString", "Kerberos principal"],
+    ["ntp.stratum", "NTP stratum"],
+    ["vlan.id", "VLAN id"],
+];
+
+// Written as an operator rather than a name, so accepting one leaves the box
+// in a state that is already valid syntax.
+const DISPLAY_FILTER_KEYWORDS = [
+    ["and", "combine, same as &&"],
+    ["or", "either, same as ||"],
+    ["not", "negate, same as !"],
+    ["contains", "byte or string containment"],
+    ["matches", "regular expression"],
+    ["in", "membership: tcp.port in {80 443}"],
+];
+
+// One list, ordered by how complete an answer each entry is: a protocol name
+// is a filter by itself, a field needs a comparison, a keyword needs both
+// sides. Built once -- it never changes.
+const DISPLAY_FILTER_VOCAB = [
+    ...DISPLAY_FILTER_PROTOCOLS.map(([token, hint]) => ({ token, hint, rank: 0 })),
+    ...DISPLAY_FILTER_FIELDS.map(([token, hint]) => ({ token, hint, rank: 1 })),
+    ...DISPLAY_FILTER_KEYWORDS.map(([token, hint]) => ({ token, hint, rank: 2 })),
+];
+
+const AC_MAX_ITEMS = 10;
+
+// A display-filter token: field names are dotted, and an underscore or digit
+// can appear anywhere after the first character.
+const AC_TOKEN = /[A-Za-z][A-Za-z0-9_.]*$/;
+
+function displayFilterToken(value, caret) {
+    const before = value.slice(0, caret);
+    const match = AC_TOKEN.exec(before);
+    if (!match) return null;
+    return { text: match[0], start: caret - match[0].length, end: caret };
+}
+
+// Prefix matches first, then anything containing the text -- so typing "syn"
+// offers tcp.flags.syn, and typing "tcp.f" offers the flags before it offers
+// anything else that merely mentions them.
+function displayFilterMatches(text) {
+    const q = text.toLowerCase();
+    const scored = [];
+    for (const entry of DISPLAY_FILTER_VOCAB) {
+        const at = entry.token.toLowerCase().indexOf(q);
+        if (at === -1) continue;
+        scored.push({ entry, prefix: at === 0 ? 0 : 1 });
+    }
+    scored.sort((a, b) =>
+        a.prefix - b.prefix
+        || a.entry.rank - b.entry.rank
+        || a.entry.token.length - b.entry.token.length
+        || a.entry.token.localeCompare(b.entry.token));
+    return scored.slice(0, AC_MAX_ITEMS).map((s) => s.entry);
+}
+
+const filterAc = { items: [], active: -1, token: null };
+
+function acBox() { return $("display-filter-ac"); }
+
+function closeFilterAutocomplete() {
+    const box = acBox();
+    if (!box) return;
+    box.hidden = true;
+    box.innerHTML = "";
+    filterAc.items = [];
+    filterAc.active = -1;
+    filterAc.token = null;
+    $("display-filter")?.setAttribute("aria-expanded", "false");
+}
+
+function renderFilterAutocomplete() {
+    const box = acBox();
+    if (!box) return;
+    box.innerHTML = filterAc.items
+        .map((entry, i) => `
+        <li class="filter-ac-item" role="option" data-index="${i}"
+            aria-selected="${i === filterAc.active}">
+            <span class="filter-ac-token">${escHtml(entry.token)}</span>
+            <span class="filter-ac-hint">${escHtml(entry.hint)}</span>
+        </li>`)
+        .join("");
+    box.hidden = false;
+    $("display-filter")?.setAttribute("aria-expanded", "true");
+    box.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+}
+
+function updateFilterAutocomplete() {
+    const input = $("display-filter");
+    if (!input) return;
+    const token = displayFilterToken(input.value, input.selectionStart ?? input.value.length);
+    if (!token || token.text.length < 1) {
+        closeFilterAutocomplete();
+        return;
+    }
+    // Whatever is already typed in full is dropped from the list: accepting it
+    // would change nothing, and it pushes a genuinely useful completion off
+    // the bottom. Typing "tcp" therefore offers tcp.port and the rest, not
+    // "tcp" again.
+    const items = displayFilterMatches(token.text)
+        .filter((entry) => entry.token !== token.text);
+    if (!items.length) {
+        closeFilterAutocomplete();
+        return;
+    }
+    filterAc.items = items;
+    filterAc.token = token;
+    filterAc.active = 0;
+    renderFilterAutocomplete();
+}
+
+function acceptFilterAutocomplete(index) {
+    const input = $("display-filter");
+    const entry = filterAc.items[index];
+    const token = filterAc.token;
+    if (!input || !entry || !token) return;
+    const completed = input.value.slice(0, token.start) + entry.token + input.value.slice(token.end);
+    input.value = completed;
+    // A protocol is a complete filter on its own; a field or keyword still
+    // needs something after it, so the caret lands on a space ready for it.
+    const needsMore = entry.rank !== 0;
+    const caret = token.start + entry.token.length;
+    if (needsMore && completed.slice(caret, caret + 1) !== " ") {
+        input.value = completed.slice(0, caret) + " " + completed.slice(caret);
+    }
+    input.setSelectionRange(caret + (needsMore ? 1 : 0), caret + (needsMore ? 1 : 0));
+    closeFilterAutocomplete();
+    input.focus();
+}
+
+function moveFilterAutocomplete(delta) {
+    if (!filterAc.items.length) return;
+    const count = filterAc.items.length;
+    filterAc.active = (filterAc.active + delta + count) % count;
+    renderFilterAutocomplete();
+}
+
+function initDisplayFilterAutocomplete() {
+    const input = $("display-filter");
+    const box = acBox();
+    if (!input || !box) return;
+
+    input.addEventListener("input", updateFilterAutocomplete);
+    // Moving the caret with the arrows or a click changes which token is under
+    // it, so the list has to follow rather than keep offering the old one.
+    input.addEventListener("click", updateFilterAutocomplete);
+
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && !box.hidden) {
+            closeFilterAutocomplete();
+            e.stopPropagation();
+            return;
+        }
+        if (box.hidden) return;
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            moveFilterAutocomplete(e.key === "ArrowDown" ? 1 : -1);
+            e.preventDefault();
+            return;
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+            acceptFilterAutocomplete(filterAc.active);
+            e.preventDefault();
+            // The document-level handler applies the filter on Enter. With the
+            // list open, Enter means "take this completion" -- applying a
+            // half-typed filter at the same moment would be two actions from
+            // one keypress.
+            e.stopPropagation();
+        }
+    });
+
+    // mousedown, not click: the input would blur first and close the list out
+    // from under the pointer before the click landed.
+    box.addEventListener("mousedown", (e) => {
+        const item = e.target.closest(".filter-ac-item");
+        if (!item) return;
+        e.preventDefault();
+        acceptFilterAutocomplete(Number(item.dataset.index));
+    });
+
+    input.addEventListener("blur", closeFilterAutocomplete);
 }
 
 // Drawer state is a per-viewer convenience, so localStorage is the right home
@@ -2753,6 +3248,15 @@ function initStaticHandlers() {
     $("btn-add-server")?.addEventListener("click", showAddServer);
     $("btn-start-capture")?.addEventListener("click", startCapture);
     $("btn-apply-filter")?.addEventListener("click", applyDisplayFilter);
+    $("btn-save-view")?.addEventListener("click", saveCurrentView);
+    $("display-filter")?.addEventListener("input", noteFilterEditedByHand);
+    initDisplayFilterAutocomplete();
+    delegate("view-tabs", {
+        "select-view": (id) => selectView(id),
+        "download-view": (id) => downloadView(id),
+        "edit-view": (id) => editView(id),
+        "delete-view": (id) => deleteView(id),
+    });
     $("btn-download-capture")?.addEventListener("click", downloadCapture);
     $("resolve-names")?.addEventListener("change", onResolveNamesToggled);
     $("btn-save-settings")?.addEventListener("click", saveSettings);

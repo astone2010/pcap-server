@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.1.0-dev.16 — 2026-09-12
+
+### Added
+
+- **Saved views.** A display filter worth keeping can be saved as a named tab
+  on the capture it belongs to. The tabs are still there the next time that
+  capture is opened -- they are stored server-side against the account and the
+  capture, not in the browser -- and each one downloads as its own pcap
+  containing only the packets its filter selects. "All packets" is always
+  first and is the unfiltered capture rather than a saved row, so it cannot be
+  renamed or deleted. A filtered download is refused over plain HTTP for the
+  same reason the full one is: a filtered capture is not a less sensitive one,
+  and "just the authentication traffic" is frequently the most sensitive slice
+  there is.
+- **The display filter autocompletes.** Typing offers matching protocol and
+  field names -- protocols first, because a bare protocol is a complete filter
+  on its own where a field name is not, and a field completion leaves the
+  caret on a space ready for the comparison. Matching is on the token under
+  the caret rather than the whole box, so it still works partway through an
+  expression, and it is substring rather than prefix-only, so `syn` finds
+  `tcp.flags.syn`. The eight "Try:" chips remain; they teach the shape of a
+  filter and had nothing to offer after that.
+
+### Fixed
+
+- **The capture filter library can be scrolled.** `.panel` is
+  `overflow: hidden` and the library -- eighty-odd expressions inside a
+  `<details>` -- expanded past the bottom of the capture panel and was simply
+  clipped: no scrollbar, no way to reach the end of the list. The library now
+  has its own bounded scroll box, and the capture tab scrolls as a whole. The
+  scroll box is a wrapper rather than the multi-column element itself, because
+  a multi-column element given a fixed height fragments sideways into more
+  columns instead of growing taller.
+- **A capture's monitor deadline is its own.** The timeout lived on the
+  manager, written by `start()` and read by whichever monitor task got there
+  first. With `max_concurrent_captures` above 1 that is a race: a ten-minute
+  capture started alongside a five-second one had its deadline rewritten to
+  the short one's and was abandoned after 65 seconds with "capture did not
+  finish in time".
+
+### Security
+
+- **An unknown username costs the same as a real one.** Login short-circuited
+  on `bool(user)`, so a username that does not exist answered in microseconds
+  where a real one took the ~100 ms scrypt is deliberately tuned to. That
+  difference is a username oracle measurable from anywhere that can reach the
+  login endpoint. A failed lookup now verifies against a fixed hash that no
+  password can satisfy, at identical cost.
+- **Packet detail is rate-limited.** Listing packets was capped in dev.15;
+  fetching one packet's detail was not, despite spawning tshark twice per call
+  (PDML, then the frame bytes). It now draws on the same per-user budget.
+- **A chunk's declared length is bounded before it is allocated.** The 4-byte
+  length prefix is read before anything authenticates it -- it has to be,
+  because it says how much to read in order to authenticate it. Unbounded, a
+  corrupted or tampered capture could ask for a 4 GiB allocation per chunk.
+  Nothing the sealer writes ever exceeds the 64 KiB chunk size.
+- **Path containment uses `Path.is_relative_to`, in one place.** Four separate
+  copies of `str(path).startswith(str(base))` decided whether an SSH key name
+  escaped the keys directory. That test is wrong in the same way in all four:
+  with a base of `/app/ssh-keys` it accepts `/app/ssh-keys-backup/id_rsa`,
+  because the string genuinely is a prefix. Nothing reachable gets past the
+  model validators to exercise it, which is exactly why it should not have
+  been four checks waiting for a fifth caller to forget one.
+- **Expired rows and aged-out limiter keys are actually deleted.**
+  `cleanup_expired_sessions` was imported and never called, and both rate
+  limiters only ever pruned the one key they were asked about. Nothing was
+  ever *served* from the dead state, but a long-running container accumulated
+  expired session rows, expired trusted-device rows, and a limiter entry per
+  client address seen since boot. An hourly sweep now clears all three.
+
 ## 0.1.0-dev.15 — 2026-09-12
 
 ### Security

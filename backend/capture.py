@@ -175,7 +175,6 @@ class CaptureManager:
         self._get_setting = get_setting
         self._db = db
         self._vault = vault
-        self._monitor_timeout: float = 600 + _MONITOR_GRACE_SECONDS
         self._captures: dict[str, CaptureInfo] = {}
         # RemoteCapture objects: the tcpdump process bound to its SSH connection,
         # so closing one closes both.
@@ -296,8 +295,12 @@ class CaptureManager:
             duration = min(duration, max_seconds)
         else:
             duration = max_seconds
-        # Grace for tcpdump to flush and exit after timeout(1) fires.
-        self._monitor_timeout = duration + _MONITOR_GRACE_SECONDS
+        # Grace for tcpdump to flush and exit after timeout(1) fires. Carried
+        # to this capture's own monitor rather than held on the manager: with
+        # max_concurrent_captures above 1, a second start() overwrote the
+        # shared value before the first monitor had read it, so a 10-minute
+        # capture started alongside a 5-second one was abandoned after 65s.
+        monitor_timeout = duration + _MONITOR_GRACE_SECONDS
 
         binary = server.tcpdump_path or "tcpdump"
         full_cmd = [binary, "-w", remote_path] + args
@@ -343,7 +346,12 @@ class CaptureManager:
 
         self._processes[capture_id] = process
 
-        task = asyncio.create_task(self._monitor(capture_id, server, process, remote_path, local_path))
+        task = asyncio.create_task(
+            self._monitor(
+                capture_id, server, process, remote_path, local_path,
+                monitor_timeout=monitor_timeout,
+            )
+        )
         self._tasks[capture_id] = task
 
         return info
@@ -423,6 +431,8 @@ class CaptureManager:
         process: object,
         remote_path: str,
         local_path: Path,
+        *,
+        monitor_timeout: float,
     ) -> None:
         """Own a running capture from launch to a terminal status.
 
@@ -436,7 +446,7 @@ class CaptureManager:
             _pump_stderr(process, stderr, _LiveCount(info, self._persist))
         )
         try:
-            await self._await_exit(process, pump)
+            await self._await_exit(process, pump, monitor_timeout)
 
             info.stopped_at = datetime.now(timezone.utc)
             info.status = CaptureStatus.TRANSFERRING
@@ -470,12 +480,12 @@ class CaptureManager:
             self._persist(info)
             self._tasks.pop(capture_id, None)
 
-    async def _await_exit(self, process: object, pump: asyncio.Task) -> None:
+    async def _await_exit(self, process: object, pump: asyncio.Task, timeout: float) -> None:
         """Wait for tcpdump to finish, then let the rest of its stderr land."""
         # The remote command is wrapped in timeout(1), but that only helps if
         # timeout(1) is present and behaves. This is the backstop: without it a
         # process that never exits holds its SSH connection open forever.
-        await asyncio.wait_for(process.wait(), timeout=self._monitor_timeout)
+        await asyncio.wait_for(process.wait(), timeout=timeout)
         try:
             await asyncio.wait_for(pump, timeout=_STDERR_DRAIN_SECONDS)
         except Exception:

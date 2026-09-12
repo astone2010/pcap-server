@@ -8,7 +8,14 @@ import re
 from pathlib import Path
 from xml.etree import ElementTree
 
-from backend.models import PacketDetail, PacketSummary
+from backend.models import (
+    DisplayFilterError,
+    FILTER_FORBIDDEN,
+    FILTER_MAX_LEN,
+    PacketDetail,
+    PacketSummary,
+    validate_display_filter,
+)
 from backend.pcapsource import PcapSource
 
 logger = logging.getLogger(__name__)
@@ -247,6 +254,82 @@ def _mac(parts: list[str], *indexes: int) -> str:
     return ""
 
 
+async def stream_filtered_pcap(
+    source: PcapSource,
+    display_filter: str,
+) -> AsyncIterator[bytes]:
+    """Yield a pcap containing only the packets a display filter selects.
+
+    Streamed rather than buffered, unlike every other tool call here. A packet
+    list is bounded by its own limit parameter and a PDML tree is one frame,
+    but this is a whole capture minus whatever the filter removed -- reading it
+    into memory to hand it to a response would put a multi-gigabyte object in
+    the process just to copy it out again.
+
+    `-F pcap` because tshark writes pcapng by default. A saved view downloads
+    beside the full capture and should be the same kind of file, not a second
+    format that some tools read and others do not.
+
+    The filter is validated here as well as wherever it was stored: this is the
+    function that turns it into an argument, and validation belongs next to
+    the thing it protects.
+    """
+    validate_display_filter(display_filter)
+    cmd = ["tshark", "-r", "-", "-Y", display_filter, "-w", "-", "-F", "pcap"]
+
+    read_fd, write_fd = os.pipe()
+    try:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=read_fd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        finally:
+            os.close(read_fd)
+    except BaseException:
+        os.close(write_fd)
+        raise
+
+    async def feed() -> None:
+        try:
+            async for chunk in source.chunks():
+                await asyncio.to_thread(_write_all, write_fd, chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+
+    feeder = asyncio.create_task(feed())
+    try:
+        while True:
+            chunk = await proc.stdout.read(CHUNK_BYTES)
+            if not chunk:
+                break
+            yield chunk
+        stderr = await proc.stderr.read()
+        await proc.wait()
+    finally:
+        # A client that disconnects mid-download leaves both of these running.
+        if not feeder.done():
+            feeder.cancel()
+        if proc.returncode is None:
+            proc.kill()
+        await asyncio.gather(feeder, proc.wait(), return_exceptions=True)
+
+    if proc.returncode not in (0, None):
+        raise DisplayFilterError(_filter_rejection(stderr))
+
+
+# What to read off tshark's stdout at a time. Matches the crypto layer's chunk
+# size so a filtered download moves in the same units the capture was sealed in.
+CHUNK_BYTES = 64 * 1024
+
+
 async def get_packet_detail(source: PcapSource, frame_number: int) -> PacketDetail:
     """The dissection tree for one frame, plus its raw bytes.
 
@@ -434,39 +517,13 @@ def _hex_dump_text(frame_hex: str) -> str:
     return "\n".join(lines)
 
 
-class DisplayFilterError(ValueError):
-    """The display filter was rejected -- by us, or by tshark itself.
-
-    Distinct from "nothing matched", which is a legitimate empty result. Both
-    used to reach the user as the same thing: a mistyped field name produced an
-    empty packet list reading "No packets match", so a typo was indistinguishable
-    from a filter that genuinely selected nothing.
-    """
-
-
-# Rejected on the way in. `&` and `|` are deliberately NOT here: the display
-# filter reaches tshark through create_subprocess_exec as a single argv element,
-# with no shell anywhere on the path, and Wireshark's syntax needs both -- `&&`
-# and `||` are the operators most people type, and `&` is bitwise matching such
-# as `tcp.flags & 0x02`. Rejecting them turned correct filter syntax into
-# "contains forbidden characters".
-#
-# The capture filter is a different matter and keeps the stricter rule: it goes
-# to tcpdump inside a command string over SSH, where a shell does parse it.
-_FILTER_FORBIDDEN = set(";$`\\")
-_FILTER_MAX_LEN = 1024
-
-
-def _validate_display_filter(f: str) -> None:
-    if len(f) > _FILTER_MAX_LEN:
-        raise DisplayFilterError(
-            f"display filter is too long (limit {_FILTER_MAX_LEN} characters)"
-        )
-    found = sorted(set(f) & _FILTER_FORBIDDEN)
-    if found:
-        raise DisplayFilterError(
-            "display filter cannot contain " + " ".join(repr(c) for c in found)
-        )
+# The rule itself lives in backend.models, so that a filter being *saved* as a
+# view and a filter being *run* right now are checked by one function rather
+# than two that can drift. These names are kept because they are what this
+# module's callers and tests already reach for.
+_FILTER_FORBIDDEN = FILTER_FORBIDDEN
+_FILTER_MAX_LEN = FILTER_MAX_LEN
+_validate_display_filter = validate_display_filter
 
 
 def _filter_rejection(stderr: bytes) -> str:

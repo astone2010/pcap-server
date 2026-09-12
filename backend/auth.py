@@ -44,6 +44,20 @@ class RateLimiter:
         self.max_attempts = max_attempts
         self.lockout_minutes = lockout_minutes
 
+    def prune(self, now: float | None = None) -> None:
+        """Drop keys whose attempts have all aged out.
+
+        is_locked() only ever prunes the one key it was asked about, so a key
+        that is never asked about again is never removed. The key is a client
+        address, and an attacker who can reach the login endpoint from many of
+        them -- or through a proxy that reports what it is told -- would
+        otherwise grow this dict for the life of the process.
+        """
+        now = time.monotonic() if now is None else now
+        cutoff = now - (self.lockout_minutes * 60)
+        for key in [k for k, v in self._attempts.items() if not any(t > cutoff for t in v)]:
+            del self._attempts[key]
+
 
 class SlidingWindowLimiter:
     """Throttles the *rate* of calls, not failures.
@@ -70,6 +84,13 @@ class SlidingWindowLimiter:
 
     def update_config(self, max_per_minute: int) -> None:
         self.max_per_minute = max_per_minute
+
+    def prune(self, now: float | None = None) -> None:
+        """Drop keys with nothing left inside the window -- same reason as
+        RateLimiter.prune, one window shorter."""
+        cutoff = (time.monotonic() if now is None else now) - 60
+        for key in [k for k, v in self._hits.items() if not any(t > cutoff for t in v)]:
+            del self._hits[key]
 
 
 # scrypt cost. The old format stored only salt$hash, so the parameters were
@@ -134,6 +155,25 @@ def needs_rehash(stored: str) -> bool:
         return (int(n_s), int(r_s), int(p_s)) != (SCRYPT_N, SCRYPT_R, SCRYPT_P)
     except (ValueError, TypeError):
         return True
+
+
+# A hash in the current format whose salt and digest are fixed zeros, so no
+# password can ever verify against it. Verifying an unknown username against
+# this costs exactly what verifying a real one does.
+#
+# Without it, `bool(user) and verify_password(...)` returned in microseconds for
+# a username that does not exist and in ~100 ms for one that does -- scrypt at
+# N = 2**17 is deliberately slow, which makes the difference trivially
+# measurable and turns the login endpoint into a username oracle.
+_ABSENT_USER_HASH = (
+    f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${'0' * 32}${'0' * (SCRYPT_DKLEN * 2)}"
+)
+
+
+def verify_absent_user(password: str) -> bool:
+    """Always False, at the same cost as verifying a real account."""
+    verify_password(password, _ABSENT_USER_HASH)
+    return False
 
 
 def hash_token(token: str) -> str:

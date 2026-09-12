@@ -231,7 +231,9 @@
                     </p>
                     <input type="search" id="filter-library-search"
                            placeholder="Search by name, port or expression">
-                    <div id="filter-library" class="filter-library"></div>
+                    <div class="filter-library-scroll">
+                        <div id="filter-library" class="filter-library"></div>
+                    </div>
                 </div>
             </details>
 
@@ -317,10 +319,32 @@
             <div id="packet-viewer" class="packet-viewer" hidden>
                 <div class="packet-toolbar">
                     <span id="viewer-capture-label" style="font-size:0.8125rem;white-space:nowrap;color:var(--text-secondary)"></span>
-                    <input type="text" id="display-filter" placeholder="Display filter (e.g. tcp, ip.addr == 10.0.0.1)">
+                    <!-- Wrapped so the suggestion list can be positioned against
+                         the box it belongs to. .packet-toolbar input carries the
+                         flex:1 that used to size the input directly, so the
+                         wrapper takes the flex and the input fills it. -->
+                    <div class="filter-input-wrap">
+                        <input type="text" id="display-filter"
+                               placeholder="Display filter (e.g. tcp, ip.addr == 10.0.0.1)"
+                               autocomplete="off" autocapitalize="off" spellcheck="false"
+                               role="combobox" aria-expanded="false" aria-haspopup="listbox"
+                               aria-autocomplete="list" aria-controls="display-filter-ac">
+                        <ul id="display-filter-ac" class="filter-autocomplete"
+                            role="listbox" aria-label="Display filter suggestions" hidden></ul>
+                    </div>
                     <button id="btn-apply-filter" class="btn btn-sm btn-secondary">Apply</button>
+                    <button id="btn-save-view" class="btn btn-sm btn-secondary"
+                            title="Save the current display filter as a tab on this capture">Save view</button>
                     <button id="btn-download-capture" class="btn btn-sm btn-secondary">Download .pcap</button>
                 </div>
+
+                <!-- Saved views. One tab per named filter, plus "All packets"
+                     for the unfiltered capture, which is not a saved row and
+                     cannot be renamed or deleted. The strip is hidden until
+                     the first view is saved: an operator who never saves one
+                     should not pay a line of chrome for the feature. -->
+                <div id="view-tabs" class="view-tabs" role="tablist"
+                     aria-label="Saved views of this capture" hidden></div>
                 <!-- One line of chrome. Everything that is reference material
                      rather than something you look at while reading packets
                      lives in a drawer behind it, closed until asked for: the

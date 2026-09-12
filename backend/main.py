@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import logging
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -28,6 +29,7 @@ from backend.auth import (
     hash_password,
     needs_rehash,
     validate_session,
+    verify_absent_user,
     verify_password,
     verify_totp,
 )
@@ -38,6 +40,8 @@ from backend.models import (
     CaptureRename,
     CaptureRequest,
     CaptureStatus,
+    CaptureView,
+    CaptureViewRequest,
     KnownHostEndpoint,
     ServerAuth,
     ServerInfo,
@@ -48,9 +52,10 @@ from backend.packet_parser import (
     DisplayFilterError,
     get_packet_detail,
     get_packet_list,
+    stream_filtered_pcap,
 )
 from backend.localnet import SELF_CAPTURE_EXPLANATION, describe_if_local
-from backend.ssh_manager import SSHManager
+from backend.ssh_manager import SSHManager, resolve_key_path
 from backend.vault import CaptureVault, StartupRefused
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -60,20 +65,60 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.15"
+APP_VERSION = "0.1.0-dev.16"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
+
+# Expired rows and aged-out limiter keys are rejected wherever they are read,
+# so nothing is ever *served* from them -- but nothing deleted them either.
+# cleanup_expired_sessions was imported and never called, and the two limiters
+# only ever pruned the one key they were asked about, so a long-running
+# container accumulated dead session rows, dead trusted-device rows, and a
+# limiter entry per client address seen since boot. Hourly is far more often
+# than any of them needs.
+_HOUSEKEEPING_INTERVAL_SECONDS = 3600
+
+
+async def _housekeeping() -> None:
+    while True:
+        await asyncio.sleep(_HOUSEKEEPING_INTERVAL_SECONDS)
+        try:
+            sessions = cleanup_expired_sessions(db)
+            devices = db.cleanup_expired_devices()
+            rate_limiter.prune()
+            packet_rate_limiter.prune()
+            capture_start_rate_limiter.prune()
+            if sessions or devices:
+                logger.info(
+                    "housekeeping: removed %d expired session(s), %d expired device(s)",
+                    sessions, devices,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Housekeeping failing is not a reason to take the app down with
+            # it; the next pass will try again in an hour.
+            logger.warning("housekeeping pass failed", exc_info=True)
+
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    """Shutdown only; there is no startup work to do here.
+    """Start the housekeeping sweep, and shut the capture manager down.
 
     capture_manager is built further down this module, so it is resolved when
     the app shuts down rather than captured now -- by then the module has
     finished importing. This replaced @app.on_event("shutdown"), which
     starlette 1.x removed.
     """
-    yield
-    await capture_manager.shutdown()
+    sweeper = asyncio.create_task(_housekeeping())
+    try:
+        yield
+    finally:
+        sweeper.cancel()
+        # Awaiting is what runs the task's cancellation to completion; without
+        # it the coroutine is finalised by the garbage collector after the loop
+        # has closed, same as the capture monitors.
+        await asyncio.gather(sweeper, return_exceptions=True)
+        await capture_manager.shutdown()
 
 
 app = FastAPI(title="pcap-server", version=APP_VERSION, lifespan=_lifespan)
@@ -500,9 +545,16 @@ async def login(req: LoginRequest, request: Request, response: Response):
         raise HTTPException(429, "too many failed attempts, try again later")
 
     user = db.get_user_by_username(req.username)
-    password_ok = bool(user) and await asyncio.to_thread(
-        verify_password, req.password, user["password_hash"]
-    )
+    if user:
+        password_ok = await asyncio.to_thread(
+            verify_password, req.password, user["password_hash"]
+        )
+    else:
+        # Deliberately does the same scrypt work as a real verification.
+        # `bool(user) and verify_password(...)` short-circuited, so an unknown
+        # username answered in microseconds where a real one took ~100 ms --
+        # a username oracle measurable from anywhere that can reach /login.
+        password_ok = await asyncio.to_thread(verify_absent_user, req.password)
     if not password_ok:
         rate_limiter.record_failure(client_ip)
         raise HTTPException(401, "invalid credentials")
@@ -780,11 +832,16 @@ async def _reject_self_target(hostname: str) -> None:
         })
 
 
-def _require_key(ssh_key_name: str) -> None:
-    key_path = (SSH_KEYS_DIR / ssh_key_name).resolve()
-    if not str(key_path).startswith(str(SSH_KEYS_DIR.resolve())):
+def _key_path(key_name: str) -> Path:
+    """The stored key by that name. 400, not 500, when the name escapes the directory."""
+    try:
+        return resolve_key_path(SSH_KEYS_DIR, key_name)
+    except ValueError:
         raise HTTPException(400, "invalid key path")
-    if not key_path.exists():
+
+
+def _require_key(ssh_key_name: str) -> None:
+    if not _key_path(ssh_key_name).exists():
         raise HTTPException(400, f"SSH key '{ssh_key_name}' not found in keys directory")
 
 
@@ -996,15 +1053,12 @@ async def list_ssh_keys(user: dict = Depends(get_current_user)):
 
 @app.post("/api/admin/ssh-keys")
 async def upload_ssh_key(file: UploadFile, user: dict = Depends(require_admin)):
-    import re
     name = file.filename or ""
     if not name or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
         raise HTTPException(400, "invalid key name — use only letters, digits, dots, dashes, underscores")
     if len(name) > 255:
         raise HTTPException(400, "filename too long")
-    dest = (SSH_KEYS_DIR / name).resolve()
-    if not str(dest).startswith(str(SSH_KEYS_DIR.resolve())):
-        raise HTTPException(400, "invalid key path")
+    dest = _key_path(name)
     if dest.exists():
         raise HTTPException(409, f"key '{name}' already exists")
     content = await file.read()
@@ -1021,12 +1075,9 @@ async def upload_ssh_key(file: UploadFile, user: dict = Depends(require_admin)):
 
 @app.delete("/api/admin/ssh-keys/{key_name}")
 async def delete_ssh_key(key_name: str, user: dict = Depends(require_admin)):
-    import re
     if not re.fullmatch(r"[A-Za-z0-9._-]+", key_name):
         raise HTTPException(400, "invalid key name")
-    path = (SSH_KEYS_DIR / key_name).resolve()
-    if not str(path).startswith(str(SSH_KEYS_DIR.resolve())):
-        raise HTTPException(400, "invalid key path")
+    path = _key_path(key_name)
     if not path.exists():
         raise HTTPException(404, "key not found")
     path.unlink()
@@ -1034,6 +1085,29 @@ async def delete_ssh_key(key_name: str, user: dict = Depends(require_admin)):
 
 
 # --- captures ---
+
+def _require_own_capture(capture_id: str, user: dict):
+    """This user's capture, or 404.
+
+    404 rather than 403 on someone else's: a 403 would confirm that the id
+    exists, which is the one thing a caller guessing ids should not learn.
+    """
+    info = capture_manager.get(capture_id)
+    if not info or info.user_id != user["id"]:
+        raise HTTPException(404, "capture not found")
+    return info
+
+
+def _require_readable_capture(capture_id: str, user: dict):
+    """...and it finished, and its file is still on the volume."""
+    info = _require_own_capture(capture_id, user)
+    if info.status != CaptureStatus.COMPLETED:
+        raise HTTPException(400, "capture not yet completed")
+    path = Path(info.local_path)
+    if not path.exists():
+        raise HTTPException(404, "pcap file not found on disk")
+    return info, path
+
 
 @app.get("/api/captures")
 async def list_captures(user: dict = Depends(get_current_user)):
@@ -1061,9 +1135,7 @@ async def start_capture(req: CaptureRequest, user: dict = Depends(get_current_us
 
 @app.post("/api/captures/{capture_id}/stop")
 async def stop_capture(capture_id: str, user: dict = Depends(get_current_user)):
-    info = capture_manager.get(capture_id)
-    if not info or info.user_id != user["id"]:
-        raise HTTPException(404, "capture not found")
+    _require_own_capture(capture_id, user)
     try:
         return await capture_manager.stop(capture_id)
     except KeyError:
@@ -1077,27 +1149,20 @@ async def rename_capture(
     user: dict = Depends(get_current_user),
 ):
     """Give a capture a label. Allowed in any state, including while running."""
-    info = capture_manager.get(capture_id)
-    if not info or info.user_id != user["id"]:
-        raise HTTPException(404, "capture not found")
+    _require_own_capture(capture_id, user)
     return capture_manager.rename(capture_id, body.name)
 
 
 @app.delete("/api/captures/{capture_id}")
 async def delete_capture(capture_id: str, user: dict = Depends(get_current_user)):
-    info = capture_manager.get(capture_id)
-    if not info or info.user_id != user["id"]:
-        raise HTTPException(404, "capture not found")
+    _require_own_capture(capture_id, user)
     await capture_manager.delete(capture_id)
     return {"ok": True}
 
 
 @app.get("/api/captures/{capture_id}")
 async def get_capture(capture_id: str, user: dict = Depends(get_current_user)):
-    info = capture_manager.get(capture_id)
-    if not info or info.user_id != user["id"]:
-        raise HTTPException(404, "capture not found")
-    return info
+    return _require_own_capture(capture_id, user)
 
 
 @app.get("/api/captures/{capture_id}/download")
@@ -1105,14 +1170,7 @@ async def download_capture(capture_id: str, request: Request, user: dict = Depen
     # Encrypting at rest and then handing the plaintext to a cleartext socket
     # would defeat the point of the storage work entirely.
     _require_secure_transport(request)
-    info = capture_manager.get(capture_id)
-    if not info or info.user_id != user["id"]:
-        raise HTTPException(404, "capture not found")
-    if info.status != CaptureStatus.COMPLETED:
-        raise HTTPException(400, "capture not yet completed")
-    path = Path(info.local_path)
-    if not path.exists():
-        raise HTTPException(404, "pcap file not found on disk")
+    _info, path = _require_readable_capture(capture_id, user)
 
     try:
         source = vault.source_for(path)
@@ -1137,6 +1195,147 @@ async def download_capture(capture_id: str, request: Request, user: dict = Depen
     )
 
 
+# --- saved views ---
+#
+# A named display filter, remembered against one capture for the user who
+# saved it. The viewer offers them as tabs, so a capture you come back to a
+# week later still has "auth traffic" and "retransmissions" where you left
+# them, and each one downloads as its own pcap containing only what it selects.
+#
+# Stored in SQLite rather than the browser, unlike the drawer and split-height
+# state in app.js. Those are per-viewer conveniences worth nothing if lost;
+# these are named, deliberate work that the user expects to find again -- and
+# a download endpoint has to be able to read the filter server-side anyway.
+
+
+def _view_or_404(capture_id: str, view_id: str, user: dict) -> dict:
+    row = db.get_capture_view(view_id, user["id"])
+    # capture_id is checked as well as the view's owner: a view id is only
+    # meaningful against the capture it belongs to, and accepting a mismatched
+    # pair would let one capture's URL serve another's filter.
+    if not row or row["capture_id"] != capture_id:
+        raise HTTPException(404, "view not found")
+    return row
+
+
+@app.get("/api/captures/{capture_id}/views")
+async def list_capture_views(capture_id: str, user: dict = Depends(get_current_user)):
+    _require_own_capture(capture_id, user)
+    return [CaptureView(**row) for row in db.list_capture_views(capture_id, user["id"])]
+
+
+@app.post("/api/captures/{capture_id}/views")
+async def create_capture_view(
+    capture_id: str,
+    body: CaptureViewRequest,
+    user: dict = Depends(get_current_user),
+):
+    _require_own_capture(capture_id, user)
+    try:
+        row = db.add_capture_view(capture_id, user["id"], body.name, body.display_filter)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return CaptureView(**row)
+
+
+@app.put("/api/captures/{capture_id}/views/{view_id}")
+async def update_capture_view(
+    capture_id: str,
+    view_id: str,
+    body: CaptureViewRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Rename a view, change the filter behind it, or both."""
+    _require_own_capture(capture_id, user)
+    _view_or_404(capture_id, view_id, user)
+    try:
+        row = db.update_capture_view(view_id, user["id"], body.name, body.display_filter)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    if not row:
+        raise HTTPException(404, "view not found")
+    return CaptureView(**row)
+
+
+@app.delete("/api/captures/{capture_id}/views/{view_id}")
+async def delete_capture_view(
+    capture_id: str,
+    view_id: str,
+    user: dict = Depends(get_current_user),
+):
+    _require_own_capture(capture_id, user)
+    _view_or_404(capture_id, view_id, user)
+    if not db.delete_capture_view(view_id, user["id"]):
+        raise HTTPException(404, "view not found")
+    return {"ok": True}
+
+
+@app.get("/api/captures/{capture_id}/views/{view_id}/download")
+async def download_capture_view(
+    capture_id: str,
+    view_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """The capture, filtered to this view, as its own pcap.
+
+    HTTPS-only for the same reason the full download is: what comes back is
+    still packet data, and a filtered capture is not a less sensitive one --
+    "just the authentication traffic" is frequently the most sensitive slice
+    there is.
+    """
+    _require_secure_transport(request)
+    _info, path = _require_readable_capture(capture_id, user)
+    view = _view_or_404(capture_id, view_id, user)
+
+    if not view["display_filter"]:
+        # A view with no filter is the whole capture. Saying so beats handing
+        # back a copy through a second code path that means the same thing.
+        raise HTTPException(
+            400,
+            "this view has no filter -- download the capture itself instead",
+        )
+
+    # tshark spawns per download, same as a packet list, so it draws on the
+    # same per-user budget.
+    if not packet_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many filtered download requests, slow down")
+
+    try:
+        source = vault.source_for(path)
+    except CryptoError as exc:
+        raise HTTPException(503, str(exc))
+
+    filename = _view_download_name(capture_id, view["name"])
+
+    async def body():
+        try:
+            async for chunk in stream_filtered_pcap(source, view["display_filter"]):
+                yield chunk
+        except (CryptoError, DisplayFilterError):
+            logger.exception("filtered download failed for view %s", view_id)
+            # The response has begun, so cutting it off is the only signal
+            # left -- same reasoning as the full download.
+            raise
+
+    return StreamingResponse(
+        body(),
+        media_type="application/vnd.tcpdump.pcap",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# A view name is free text; a Content-Disposition filename is not. Everything
+# outside this set is replaced rather than quoted, so the header can never be
+# split by a newline or terminated early by a quote.
+_FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _view_download_name(capture_id: str, view_name: str) -> str:
+    slug = _FILENAME_SAFE.sub("-", view_name).strip("-")[:60]
+    return f"{capture_id}-{slug}.pcap" if slug else f"{capture_id}-view.pcap"
+
+
 # --- packets ---
 
 @app.get("/api/captures/{capture_id}/packets")
@@ -1155,14 +1354,7 @@ async def list_packets(
     unknown = set(view_flags) - ALLOWED_VIEW_FLAGS
     if unknown:
         raise HTTPException(400, f"unknown view flags: {sorted(unknown)}")
-    info = capture_manager.get(capture_id)
-    if not info or info.user_id != user["id"]:
-        raise HTTPException(404, "capture not found")
-    if info.status != CaptureStatus.COMPLETED:
-        raise HTTPException(400, "capture not yet completed")
-    path = Path(info.local_path)
-    if not path.exists():
-        raise HTTPException(404, "pcap file missing")
+    info, path = _require_readable_capture(capture_id, user)
     try:
         packets = await get_packet_list(
             vault.source_for(path), offset=offset, limit=limit,
@@ -1181,14 +1373,12 @@ async def list_packets(
 
 @app.get("/api/captures/{capture_id}/packets/{frame_number}")
 async def packet_detail(capture_id: str, frame_number: int, user: dict = Depends(get_current_user)):
-    info = capture_manager.get(capture_id)
-    if not info or info.user_id != user["id"]:
-        raise HTTPException(404, "capture not found")
-    if info.status != CaptureStatus.COMPLETED:
-        raise HTTPException(400, "capture not yet completed")
-    path = Path(info.local_path)
-    if not path.exists():
-        raise HTTPException(404, "pcap file missing")
+    # Shares the packet-listing budget: this spawns tshark twice per call
+    # (PDML, then the frame bytes), so leaving it unthrottled left the more
+    # expensive of the two packet routes as the one with no cap at all.
+    if not packet_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many packet detail requests, slow down")
+    _info, path = _require_readable_capture(capture_id, user)
     try:
         return await get_packet_detail(vault.source_for(path), frame_number)
     except Exception:

@@ -115,8 +115,25 @@ class Database:
                 UNIQUE(user_id, username)
             );
 
+            -- Saved filtered views of one capture: a named display filter the
+            -- viewer offers back as a tab. Scoped to the user who saved it,
+            -- like servers and usernames, and removed with the capture by the
+            -- foreign key rather than by anything remembering to.
+            CREATE TABLE IF NOT EXISTS capture_views (
+                id TEXT PRIMARY KEY,
+                capture_id TEXT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                display_filter TEXT NOT NULL DEFAULT '',
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(capture_id, user_id, name)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_captures_user_id ON captures(user_id);
             CREATE INDEX IF NOT EXISTS idx_active_servers_user_id ON active_servers(user_id);
+            CREATE INDEX IF NOT EXISTS idx_capture_views_owner
+                ON capture_views(capture_id, user_id, position);
         """)
         active_columns = {r["name"] for r in conn.execute("PRAGMA table_info(active_servers)")}
         if "tcpdump_path" not in active_columns:
@@ -494,6 +511,87 @@ class Database:
             {"hostname": hostname, "port": port, "labels": labels}
             for (hostname, port), labels in sorted(endpoints.items())
         ]
+
+    # --- saved capture views ---
+
+    def list_capture_views(self, capture_id: str, user_id: str) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT id, capture_id, name, display_filter, position, created_at "
+            "FROM capture_views WHERE capture_id = ? AND user_id = ? "
+            "ORDER BY position, created_at",
+            (capture_id, user_id),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_capture_view(self, view_id: str, user_id: str) -> dict | None:
+        row = self._conn().execute(
+            "SELECT id, capture_id, name, display_filter, position, created_at "
+            "FROM capture_views WHERE id = ? AND user_id = ?",
+            (view_id, user_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def add_capture_view(
+        self, capture_id: str, user_id: str, name: str, display_filter: str
+    ) -> dict:
+        """Appends to the end of this capture's tab strip.
+
+        Raises ValueError on a duplicate name rather than letting the UNIQUE
+        constraint surface as a 500: two tabs with the same label on the same
+        capture is a mistake worth naming, not an internal error.
+        """
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) AS top FROM capture_views "
+            "WHERE capture_id = ? AND user_id = ?",
+            (capture_id, user_id),
+        ).fetchone()
+        view_id = str(uuid.uuid4())
+        try:
+            conn.execute(
+                "INSERT INTO capture_views "
+                "(id, capture_id, user_id, name, display_filter, position, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (view_id, capture_id, user_id, name, display_filter,
+                 row["top"] + 1, _utcnow().isoformat()),
+            )
+        except sqlite3.IntegrityError as exc:
+            # Roll back before raising. sqlite3 opens an implicit transaction
+            # for the INSERT, and a failed statement does not close it -- the
+            # connection would keep a RESERVED lock on the database for the
+            # rest of its life, and every other thread's write would then fail
+            # with "database is locked" rather than with the name clash.
+            conn.rollback()
+            raise ValueError(f"a view named {name!r} already exists on this capture") from exc
+        conn.commit()
+        return self.get_capture_view(view_id, user_id)
+
+    def update_capture_view(
+        self, view_id: str, user_id: str, name: str, display_filter: str
+    ) -> dict | None:
+        conn = self._conn()
+        try:
+            cur = conn.execute(
+                "UPDATE capture_views SET name = ?, display_filter = ? "
+                "WHERE id = ? AND user_id = ?",
+                (name, display_filter, view_id, user_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()  # same reason as add_capture_view above
+            raise ValueError(f"a view named {name!r} already exists on this capture") from exc
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_capture_view(view_id, user_id)
+
+    def delete_capture_view(self, view_id: str, user_id: str) -> bool:
+        conn = self._conn()
+        cur = conn.execute(
+            "DELETE FROM capture_views WHERE id = ? AND user_id = ?",
+            (view_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
     # --- settings ---
 

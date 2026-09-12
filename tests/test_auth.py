@@ -335,3 +335,84 @@ def test_sliding_window_update_config_changes_threshold():
     limiter.update_config(max_per_minute=1)
     assert limiter.allow("user-1") is True
     assert limiter.allow("user-1") is False
+
+
+# --- constant-cost verification for an unknown username ----------------------
+#
+# login() used to short-circuit: `bool(user) and verify_password(...)`. A
+# username that does not exist skipped scrypt entirely and answered in
+# microseconds, where a real one took ~100ms. That difference is a username
+# oracle anyone who can reach the login endpoint can measure.
+
+
+def test_verify_absent_user_is_always_false():
+    assert auth.verify_absent_user("anything at all") is False
+    assert auth.verify_absent_user("") is False
+
+
+def test_absent_user_hash_is_in_the_current_format():
+    """It has to go down verify_password's current-format path, or it would not
+    cost what a real verification costs."""
+    prefix, n, r, p, salt, digest = auth._ABSENT_USER_HASH.split("$", 5)
+    assert prefix == "scrypt"
+    assert (int(n), int(r), int(p)) == (auth.SCRYPT_N, auth.SCRYPT_R, auth.SCRYPT_P)
+    assert len(digest) == auth.SCRYPT_DKLEN * 2
+    assert len(salt) == 32  # what secrets.token_hex(16) produces
+
+
+def test_absent_user_costs_the_same_scrypt_work_as_a_real_account(monkeypatch):
+    """Asserted on the parameters, not the clock: a wall-clock comparison is a
+    flaky test on shared CI, and the parameters are what actually decide the
+    cost."""
+    calls: list[tuple] = []
+    real = auth._scrypt
+
+    def spy(password, salt, n, r, p, dklen):
+        calls.append((n, r, p, dklen))
+        return real(password, salt, n, r, p, dklen)
+
+    monkeypatch.setattr(auth, "_scrypt", spy)
+
+    auth.verify_password("pw", auth.hash_password("pw"))
+    auth.verify_absent_user("pw")
+
+    # hash_password, then the real verify, then the absent-user verify.
+    assert calls[-1] == calls[-2]
+
+
+# --- limiter state is bounded ------------------------------------------------
+
+
+def test_rate_limiter_prune_drops_keys_whose_attempts_aged_out():
+    limiter = auth.RateLimiter(max_attempts=5, lockout_minutes=15)
+    limiter.record_failure("198.51.100.1")
+    limiter.record_failure("198.51.100.2")
+    assert len(limiter._attempts) == 2
+
+    # An hour later, nothing recorded is still inside a 15-minute window.
+    limiter.prune(now=time.monotonic() + 3600)
+    assert limiter._attempts == {}
+
+
+def test_rate_limiter_prune_keeps_keys_still_inside_the_window():
+    limiter = auth.RateLimiter(max_attempts=5, lockout_minutes=15)
+    limiter.record_failure("198.51.100.1")
+    limiter.prune()
+    assert "198.51.100.1" in limiter._attempts
+
+
+def test_sliding_window_limiter_prune_drops_stale_keys():
+    limiter = auth.SlidingWindowLimiter(max_per_minute=5)
+    limiter.allow("user-a")
+    limiter.allow("user-b")
+    assert len(limiter._hits) == 2
+
+    limiter.prune(now=time.monotonic() + 120)
+    assert limiter._hits == {}
+
+
+def test_sliding_window_limiter_prune_keeps_keys_inside_the_window():
+    limiter = auth.SlidingWindowLimiter(max_per_minute=5)
+    limiter.allow("user-a")
+    limiter.prune()
+    assert "user-a" in limiter._hits

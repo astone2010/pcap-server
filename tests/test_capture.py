@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import pytest
 
 from backend.capture import (
+    _MONITOR_GRACE_SECONDS,
     _STDERR_COLLAPSE_PARTS,
     _STDERR_KEEP_CHARS,
     _pump_stderr,
@@ -662,3 +663,62 @@ async def test_interface_survives_a_persist_and_restore_round_trip(manager, tmp_
     row = next(r for r in mgr._db.list_captures() if r["id"] == info.id)
     assert row["interface"] == "eth2"
     assert CaptureInfo(**row).interface == "eth2"
+
+
+# --- per-capture monitor timeout ---------------------------------------------
+#
+# The timeout was an attribute on the manager, written by start() and read by
+# whichever monitor task happened to get there first. With
+# max_concurrent_captures above 1 that is a race between two captures for one
+# variable: a long capture started before a short one had its deadline
+# rewritten to the short one's and was abandoned at that point instead of its
+# own.
+
+
+async def test_each_capture_monitor_gets_its_own_timeout(manager):
+    mgr, _ssh, _settings = manager
+    server = make_server()
+    seen: list[float] = []
+
+    async def record(process, pump, timeout):
+        seen.append(timeout)
+        await asyncio.Event().wait()
+
+    mgr._await_exit = record
+
+    # Different interfaces, so the one-capture-per-interface rule stays out of
+    # this; the point is two live captures with different durations.
+    await mgr.start(
+        CaptureRequest(server_id=server.id, interface="eth0", duration_seconds=300),
+        server, "user-1",
+    )
+    await mgr.start(
+        CaptureRequest(server_id=server.id, interface="eth1", duration_seconds=5),
+        server, "user-1",
+    )
+    # Let both monitor tasks reach _await_exit.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert sorted(seen) == [5 + _MONITOR_GRACE_SECONDS, 300 + _MONITOR_GRACE_SECONDS]
+
+
+async def test_capture_duration_is_capped_by_max_capture_seconds(manager):
+    mgr, _ssh, settings = manager
+    server = make_server()
+    seen: list[float] = []
+
+    async def record(process, pump, timeout):
+        seen.append(timeout)
+        await asyncio.Event().wait()
+
+    mgr._await_exit = record
+
+    await mgr.start(
+        CaptureRequest(server_id=server.id, interface="eth0", duration_seconds=600),
+        server, "user-1",
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert seen == [settings["max_capture_seconds"] + _MONITOR_GRACE_SECONDS]

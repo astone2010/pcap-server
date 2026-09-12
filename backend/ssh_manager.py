@@ -111,6 +111,24 @@ class RemoteCapture:
             logger.debug("connection already gone while closing capture", exc_info=True)
 
 
+def resolve_key_path(keys_dir: Path, key_name: str) -> Path:
+    """The file a key name refers to, or ValueError if it escapes keys_dir.
+
+    Path.is_relative_to, not `str(path).startswith(str(base))`. The string test
+    was in four places and is wrong in the same way in all of them: with a base
+    of /app/ssh-keys it accepts /app/ssh-keys-backup/id_rsa, because the string
+    genuinely is a prefix even though the directory is a different one. Nothing
+    reachable today gets past the model validators to exercise that -- which is
+    exactly why it should not be four separately-written checks waiting for the
+    fifth caller who forgets one.
+    """
+    base = keys_dir.resolve()
+    path = (base / key_name).resolve()
+    if path == base or not path.is_relative_to(base):
+        raise ValueError("path traversal blocked")
+    return path
+
+
 class SSHManager:
     def __init__(self, keys_dir: Path, db: Database, data_dir: Path, vault=None) -> None:
         self._keys_dir = keys_dir
@@ -119,10 +137,7 @@ class SSHManager:
         self._vault = vault
 
     def _key_path(self, key_name: str) -> Path:
-        path = (self._keys_dir / key_name).resolve()
-        if not str(path).startswith(str(self._keys_dir.resolve())):
-            raise ValueError("path traversal blocked")
-        return path
+        return resolve_key_path(self._keys_dir, key_name)
 
     def _read_key_bytes(self, path: Path) -> bytes:
         """Sealed keys are content-sniffed, not named by suffix -- same reason

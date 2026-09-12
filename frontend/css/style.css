@@ -435,9 +435,20 @@ body {
     min-width: 200px;
 }
 
-.capture-list {
-    flex: 1;
+/* The capture tab is a form, two expandable explainers and a list stacked
+   top to bottom -- not a fixed-height split like the viewer -- so it scrolls
+   as one document. .panel is overflow:hidden, and without this the filter
+   library (eighty-odd expressions inside a <details>) expanded past the
+   bottom of the panel and was simply clipped: no scrollbar, no way to reach
+   the end of the list. The capture list therefore takes its natural height
+   rather than claiming the leftover space and scrolling separately, which
+   would put a second scrollbar inside the first. */
+#panel-capture {
     overflow-y: auto;
+}
+
+.capture-list {
+    flex: 0 0 auto;
     padding: 8px 16px;
 }
 
@@ -1502,6 +1513,129 @@ body {
 
 .enc-notice-bad strong { color: var(--danger); }
 
+/* --- saved view tabs ---------------------------------------------------- */
+/* A capture you come back to keeps the filters you named on it. The strip
+   reads as tabs rather than a dropdown because the point is seeing at a
+   glance which slices of this capture you already carved out. */
+.view-tabs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    padding: 6px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.view-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-family: inherit;
+    cursor: pointer;
+    max-width: 320px;
+}
+
+.view-tab:hover { color: var(--text-primary); border-color: var(--accent); }
+
+.view-tab[aria-selected="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
+}
+
+.view-tab-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The per-tab actions only appear on the tab you are on: six buttons of
+   furniture across a strip of saved views is louder than the views. */
+.view-tab-actions { display: none; gap: 2px; }
+.view-tab[aria-selected="true"] .view-tab-actions { display: inline-flex; }
+
+.view-tab-action {
+    background: none;
+    border: none;
+    padding: 0 2px;
+    color: inherit;
+    opacity: 0.75;
+    cursor: pointer;
+    font-size: 0.75rem;
+    line-height: 1;
+}
+
+.view-tab-action:hover { opacity: 1; }
+
+/* --- display-filter autocomplete --------------------------------------- */
+/* Typeahead over protocol and field names. The "Try:" chips below are still
+   the fastest way to learn the syntax; this is for the point after that,
+   where you know roughly what the field is called and want the rest of it
+   without leaving the box. */
+.filter-input-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.filter-input-wrap input { width: 100%; }
+
+.filter-autocomplete {
+    position: absolute;
+    z-index: 60;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    max-height: 280px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.filter-ac-item {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.filter-ac-item[aria-selected="true"],
+.filter-ac-item:hover {
+    background: var(--accent);
+    color: var(--accent-fg);
+}
+
+.filter-ac-token {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.filter-ac-hint {
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+    margin-left: auto;
+    text-align: right;
+}
+
+.filter-ac-item[aria-selected="true"] .filter-ac-hint,
+.filter-ac-item:hover .filter-ac-hint { color: var(--accent-fg); }
+
 /* --- filter suggestions and errors ------------------------------------- */
 /* Chips rather than a wall of prose: the fastest way to learn a filter
    language is to run one and edit it. */
@@ -1725,6 +1859,17 @@ body {
 }
 
 #filter-library-search:focus { border-color: var(--accent); outline: none; }
+
+/* The scroll box goes on the wrapper, never on .filter-library itself: a
+   multi-column element given a fixed height fragments sideways into more
+   columns instead of growing taller, so the overflow would be horizontal. The
+   wrapper has no columns, so it scrolls the way it looks like it should. */
+.filter-library-scroll {
+    max-height: min(60vh, 520px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 4px;
+}
 
 /* Two columns where there is room: the list is long, and scrolling past
    Databases to reach TCP behaviour is the whole problem with a single column. */

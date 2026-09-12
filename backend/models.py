@@ -47,6 +47,93 @@ def validate_ssh_hostname(v: str) -> str:
     return v
 
 
+class DisplayFilterError(ValueError):
+    """The display filter was rejected -- by us, or by tshark itself.
+
+    Distinct from "nothing matched", which is a legitimate empty result. Both
+    used to reach the user as the same thing: a mistyped field name produced an
+    empty packet list reading "No packets match", so a typo was indistinguishable
+    from a filter that genuinely selected nothing.
+    """
+
+
+# Rejected on the way in. `&` and `|` are deliberately NOT here: the display
+# filter reaches tshark through create_subprocess_exec as a single argv element,
+# with no shell anywhere on the path, and Wireshark's syntax needs both -- `&&`
+# and `||` are the operators most people type, and `&` is bitwise matching such
+# as `tcp.flags & 0x02`. Rejecting them turned correct filter syntax into
+# "contains forbidden characters".
+#
+# The capture filter is a different matter and keeps the stricter rule: it goes
+# to tcpdump inside a command string over SSH, where a shell does parse it.
+#
+# Lives here rather than in packet_parser because a saved view stores a filter
+# long before any tool runs it, and the rule that decides what may be run has
+# to be the same one that decides what may be stored.
+FILTER_FORBIDDEN = frozenset(";$`\\")
+FILTER_MAX_LEN = 1024
+
+
+def validate_display_filter(f: str) -> str:
+    """Returns the filter, or raises DisplayFilterError."""
+    if len(f) > FILTER_MAX_LEN:
+        raise DisplayFilterError(
+            f"display filter is too long (limit {FILTER_MAX_LEN} characters)"
+        )
+    found = sorted(set(f) & FILTER_FORBIDDEN)
+    if found:
+        raise DisplayFilterError(
+            "display filter cannot contain " + " ".join(repr(c) for c in found)
+        )
+    return f
+
+
+VIEW_NAME_MAX = 60
+
+
+class CaptureViewRequest(BaseModel):
+    """A saved filtered view of one capture: a name and the filter behind it.
+
+    The filter goes through the same validator the live query parameter does.
+    A view is stored once and replayed on every later visit, so a filter that
+    would be refused when typed must not become storable by being typed into a
+    different box.
+    """
+
+    name: str
+    display_filter: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        cleaned = "".join(ch for ch in v if ch.isprintable()).strip()
+        if not cleaned:
+            raise ValueError("a view needs a name")
+        if len(cleaned) > VIEW_NAME_MAX:
+            raise ValueError(f"name must be at most {VIEW_NAME_MAX} characters")
+        return cleaned
+
+    @field_validator("display_filter")
+    @classmethod
+    def validate_filter(cls, v: str) -> str:
+        try:
+            return validate_display_filter(v.strip())
+        except DisplayFilterError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+class CaptureView(BaseModel):
+    id: str
+    capture_id: str
+    name: str
+    display_filter: str = ""
+    # Tab order, as the operator arranged it. Assigned on create as one past
+    # the current highest, so a new view lands on the right rather than
+    # wherever an id happens to sort.
+    position: int = 0
+    created_at: str = ""
+
+
 class StoredUsername(BaseModel):
     id: str
     username: str

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import os
+import struct
 
 import pytest
 
@@ -267,3 +268,49 @@ def test_derive_kek_from_passphrase_differs_by_salt():
     key1 = crypto.derive_kek_from_passphrase("same passphrase", b"\x00" * 16)
     key2 = crypto.derive_kek_from_passphrase("same passphrase", b"\x01" * 16)
     assert key1 != key2
+
+
+# --- a declared chunk length is bounded before it is allocated ---------------
+#
+# The 4-byte length prefix is read before anything in the chunk has been
+# authenticated -- it has to be, because it says how much to read in order to
+# authenticate it. Unbounded, a corrupted or tampered file could ask this
+# process for a 4 GiB allocation per chunk. Nothing seal_chunks writes ever
+# exceeds CHUNK_SIZE.
+
+
+def _sealed_with_declared_length(tmp_path, declared: int):
+    cryptor = crypto.Cryptor(b"\x22" * 32)
+    path = tmp_path / "capture.pcap.enc"
+    path.write_bytes(cryptor.seal_bytes(b"packet data"))
+
+    raw = bytearray(path.read_bytes())
+    # The first chunk's length prefix sits immediately after the header.
+    start = crypto.HEADER_LEN
+    raw[start:start + 4] = struct.pack(">I", declared)
+    tampered = tmp_path / "tampered.pcap.enc"
+    tampered.write_bytes(bytes(raw))
+    return cryptor, tampered
+
+
+def test_open_stream_refuses_a_chunk_longer_than_chunk_size(tmp_path):
+    cryptor, path = _sealed_with_declared_length(tmp_path, crypto.CHUNK_SIZE + 1)
+    with pytest.raises(crypto.CryptoError) as exc:
+        cryptor.open_bytes(path)
+    assert "maximum" in str(exc.value)
+
+
+def test_open_stream_refuses_a_four_gigabyte_chunk_without_allocating_it(tmp_path):
+    cryptor, path = _sealed_with_declared_length(tmp_path, 0xFFFFFFFF)
+    with pytest.raises(crypto.CryptoError):
+        cryptor.open_bytes(path)
+
+
+def test_open_stream_still_accepts_a_full_size_chunk(tmp_path):
+    """The bound is CHUNK_SIZE, not less than it -- a capture whose chunks are
+    exactly full must still open."""
+    cryptor = crypto.Cryptor(b"\x33" * 32)
+    path = tmp_path / "full.pcap.enc"
+    payload = b"\xab" * crypto.CHUNK_SIZE
+    path.write_bytes(cryptor.seal_bytes(payload))
+    assert cryptor.open_bytes(path) == payload
