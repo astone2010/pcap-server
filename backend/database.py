@@ -379,6 +379,7 @@ class Database:
     DEFAULTS: dict[str, str] = {
         "max_capture_seconds": "300",
         "max_capture_packets": "100000",
+        "max_concurrent_captures": "5",
         "session_duration_hours": "8",
         "session_idle_timeout_minutes": "60",
         "device_trust_days": "30",

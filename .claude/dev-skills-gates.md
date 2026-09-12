@@ -379,3 +379,51 @@ the table (crypto, vault, auth, main, localnet, ssh_manager,
 packet_parser) now has real tests, plus the scaffolding to run them
 identically in CI and locally. 🔨 BUILD is no longer a historical claim --
 scripts/check.sh is a build/test workflow a fresh clone can run today.
+
+---
+
+## Fix: concurrent captures were unbounded (session 4, continued)
+
+User picked this as the first of the remaining outstanding items (from a
+prior session's punch list: concurrent captures / seal the SSH keys / CSP
+unsafe-inline). CaptureManager.start() had no check at all on how many
+captures were already running -- any authenticated user could call
+POST /api/captures without limit, each one opening a new SSH connection to
+a target host plus a local file, with nothing capping simultaneous SSH
+connections, file descriptors, or disk usage.
+
+Fix: a new `active_count()` on CaptureManager counts captures in
+RUNNING/STOPPING/TRANSFERRING (every state that still holds a connection
+or a file, not just RUNNING), checked against a new `max_concurrent_captures`
+setting (default 5, same DEFAULTS/admin-settings pattern as
+max_capture_seconds/max_capture_packets -- automatically admin-editable via
+the existing generic PUT /api/admin/settings endpoint, no separate wiring
+needed). The check runs FIRST in start(), before any SSH connection is
+opened or file created, raising a new CaptureLimitExceeded that main.py's
+POST /api/captures maps to HTTP 429 instead of the generic 500.
+
+Track: work commit (bug fix, no version bump)
+🔒 SECURITY   ✅ 0 Critical, 0 High -- limit checked before any resource is
+  opened (rejection wastes nothing), error message is a static string with
+  no sensitive detail, new setting follows the existing validation path.
+
+Landed: tests/test_capture.py -- 12 tests, all passing (237+12=249 total).
+active_count() per-status (PENDING/COMPLETED/FAILED don't count,
+RUNNING/STOPPING/TRANSFERRING do) and summed across several; start()
+succeeds below the limit; start() raises CaptureLimitExceeded at the limit
+AND proves zero SSH connections were opened (a FakeSSHManager tracks
+call count -- this is the test that actually matters, since a limit that
+merely returns an error after already opening the connection isn't a fix
+at all); the limit counts STOPPING/TRANSFERRING too, not just RUNNING;
+capacity frees up once a capture completes; the exception message names
+the actual configured limit. Captures are seeded directly into
+CaptureManager._captures (bypassing start()) since active_count() only
+reads that dict -- avoids needing N real fake processes/monitor tasks to
+simulate N already-running captures. Async fixture teardown calls
+manager.shutdown() to cancel the one real monitor task each test does
+spin up, same cleanup path production uses.
+
+Next: from the same punch list -- seal the SSH keys (plaintext private
+keys currently sit on the data volume; asyncssh.import_private_key takes
+bytes, so no plaintext copy needs to exist on disk), then CSP
+unsafe-inline (33 inline onclick handlers -> addEventListener, mechanical).

@@ -26,6 +26,15 @@ _STDERR_NOISE = ("listening on", "packets captured", "packets received", "packet
 # releases the connection.
 _MONITOR_GRACE_SECONDS = 60
 
+# Captures that are still consuming a resource -- an SSH connection to the
+# target, a local file being written, a monitor task -- as opposed to ones
+# that have finished one way or another and are just sitting in history.
+_ACTIVE_STATUSES = (CaptureStatus.RUNNING, CaptureStatus.STOPPING, CaptureStatus.TRANSFERRING)
+
+
+class CaptureLimitExceeded(Exception):
+    """Raised when starting a capture would exceed max_concurrent_captures."""
+
 
 def server_label(server: ServerInfo) -> str:
     """A human-readable stamp of where a capture ran, frozen at start time."""
@@ -114,6 +123,9 @@ class CaptureManager:
     def list_for_user(self, user_id: str) -> list[CaptureInfo]:
         return [c for c in self._captures.values() if c.user_id == user_id]
 
+    def active_count(self) -> int:
+        return sum(1 for c in self._captures.values() if c.status in _ACTIVE_STATUSES)
+
     def build_command_args(self, req: CaptureRequest) -> list[str]:
         """The complete set of things that change what a -w capture contains.
 
@@ -138,6 +150,17 @@ class CaptureManager:
         return args
 
     async def start(self, req: CaptureRequest, server: ServerInfo, user_id: str) -> CaptureInfo:
+        # Checked first, before any connection is opened or file created: each
+        # running capture holds an SSH connection to a target host plus a local
+        # file handle, and neither this container's descriptor table nor the
+        # remote host's tolerance for simultaneous sessions is unlimited.
+        max_concurrent = self._get_setting("max_concurrent_captures")
+        if self.active_count() >= max_concurrent:
+            raise CaptureLimitExceeded(
+                f"{max_concurrent} capture(s) already running or finishing up -- "
+                "stop or wait for one to finish before starting another"
+            )
+
         max_seconds = self._get_setting("max_capture_seconds")
         capture_id = str(uuid.uuid4())
         remote_path = f"/tmp/pcap_{capture_id}.pcap"
