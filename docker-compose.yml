@@ -1,14 +1,64 @@
-# Create the bind-mount directories before starting:
-#   mkdir -p ssh-keys data captures secrets
+# ============================================================================
+# FIRST-TIME SETUP -- run these in order. Copy-pasteable as written.
+# ============================================================================
 #
-# Generate the master key ONCE, before the first start:
-#   openssl rand -base64 32 > secrets/master.key
-#   chmod 0400 secrets/master.key
+# Every `./` path below is resolved by Docker relative to THE DIRECTORY THIS
+# FILE IS IN -- not your home directory, and not wherever you happen to be
+# standing when you type `docker compose`. So this file's location IS the
+# install directory, and the four subdirectories it names are created next to
+# it. Pick that directory deliberately: it will hold your captures and the key
+# that decrypts them.
 #
-# KEEP A COPY OF THAT FILE SOMEWHERE ELSE. Captures are encrypted with it and
-# there is no recovery path: lose the key and every stored capture is gone.
-# Keep it OUT of the data/ and captures/ directories -- a key stored beside the
-# data it protects protects nothing.
+#   1. Make the install directory and go there. /opt/docker/pcap is a
+#      reasonable choice on a Linux host; anywhere you control is fine.
+#
+#        sudo mkdir -p /opt/docker/pcap
+#        sudo chown "$USER" /opt/docker/pcap
+#        cd /opt/docker/pcap
+#
+#   2. Put this file in that directory, named docker-compose.yml.
+#
+#   3. Create the four directories it bind-mounts. They must exist before the
+#      first start -- Docker would otherwise create them as root-owned, or
+#      create a directory where you meant a file:
+#
+#        mkdir -p ssh-keys data captures secrets
+#
+#   4. Generate the master key ONCE, before the first start:
+#
+#        openssl rand -base64 32 > secrets/master.key
+#        chmod 0400 secrets/master.key
+#
+#   5. Start it, from this same directory:
+#
+#        docker compose up -d
+#        docker compose logs pcap-server | grep -i encryption
+#
+#      You want `encryption enabled (key id ...)`. Then open http://<host>:8080
+#      and create the admin account.
+#
+# Run every later `docker compose` command from this directory too. Run it from
+# somewhere else and Docker looks for a compose file that isn't there -- or, if
+# one is, mounts that directory's data instead of yours.
+#
+# ----------------------------------------------------------------------------
+# Prefer absolute paths? Supported, and worth it if anyone else will administer
+# this host: nothing then depends on which directory the command was run from.
+# Replace each `source:` and the `secrets: file:` at the bottom with a full
+# path, keeping every `target:` exactly as it is:
+#
+#        source: /opt/docker/pcap/captures
+#        target: /app/captures          # unchanged -- this is inside the container
+#
+# ----------------------------------------------------------------------------
+# KEEP A COPY OF secrets/master.key SOMEWHERE ELSE. Captures are encrypted with
+# it and there is no recovery path: lose the key and every stored capture is
+# gone. Keep it OUT of data/ and captures/ -- a key stored beside the data it
+# protects protects nothing.
+#
+# If that key is ever exposed, do not just overwrite it: the app will refuse to
+# start against captures the new key cannot open. Rotate it properly --
+# see "Rotating the master key" in the README.
 #
 # The entrypoint automatically fixes ownership for the container's
 # non-root user (appuser, UID 1000). No manual chown needed.

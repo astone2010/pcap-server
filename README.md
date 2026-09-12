@@ -55,8 +55,29 @@ phone width.
 ```bash
 git clone https://github.com/darthrater78/pcap-server.git
 cd pcap-server
+
+# The bind-mounted directories, created next to docker-compose.yml.
+# Only ssh-keys/ is in the repo; the rest hold your data and are not.
+# Create them yourself so they belong to you rather than to root.
+mkdir -p data captures secrets
+
+# The master key. Generated once, before the first start -- the app refuses to
+# start without it rather than storing captures in the clear.
+openssl rand -base64 32 > secrets/master.key
+chmod 0400 secrets/master.key
+
 docker compose up -d
+docker compose logs pcap-server | grep -i encryption   # encryption enabled (key id ...)
 ```
+
+**Back that key up somewhere else before you capture anything.** It is the only
+thing that can decrypt your captures, and there is no recovery path without it.
+Keep it out of `data/` and `captures/`.
+
+Every relative path in `docker-compose.yml` is resolved against the directory
+that file is in, so run later `docker compose` commands from this directory too.
+Absolute paths are supported and documented in the comments at the top of
+`docker-compose.yml`.
 
 Open `http://localhost:8080`. The first user to register becomes the admin.
 
