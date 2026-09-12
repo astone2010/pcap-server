@@ -1,7 +1,7 @@
 # Dev Skills gate state
 Track: release sequence (dev pre-release — branch not merged to main)
 Version: 0.1.0-dev.8  (NOT yet tagged — user deferred tagging; prereq work folded in rather than burning dev.9)
-Updated: 2026-09-12
+Updated: 2026-09-12 (session 3 resume)
 
 🔢 VERSION    ✅ 0.1.0-dev.8 in main.py, docker-compose.yml, CHANGELOG; v0.1.0-dev.7 tagged on remote at 9085701
 🔨 BUILD      ✅ 249 checks green across 9 suites (adds SSH connection-leak measurement against a live server, CaptureManager lifecycle, and always-visible repo/release links). This container now HAS tcpdump 4.99.4 + tshark, so for the first time the viewer was tested against a real 40-packet capture and the probe against a real SSH server running a real /bin/sh. Caveat: no docker daemon, image not rebuilt (Dockerfile unchanged)
@@ -11,7 +11,11 @@ Updated: 2026-09-12
 🚀 SHIP       ⬜ — user has deferred tagging until more work lands
 
 Env: remote container (Claude executes git after approval; tag pushes handed to user)
-Branch: claude/admiring-wright-k20ptf
+Branch: claude/admiring-wright-k20ptf  <- canonical, by user decision 2026-09-12.
+  The harness designated claude/load-dev-skills-62vxv4 this session; user chose to
+  keep pushing to the original branch so dev.8 history stays continuous and the
+  eventual tag has one unambiguous parent. Future sessions: if handed a new branch
+  name again, reset it to this branch's head and push back here.
 
 CORRECTION ON RECORD: dev.7's changelog claimed -n/-nn were fixed in the viewer.
 Testing against real tshark showed that was over-stated. tshark's Info column
@@ -96,3 +100,18 @@ Deferred by user decision:
   Original note: Recommendation on record: Caddy sidecar over certbot.
   Reachability (HTTP-01 vs DNS-01) unanswered and must be settled first.
 - Tagging: user wants more work landed before any tag is cut.
+
+SESSION 3 RESUME NOTES (2026-09-12, fresh container):
+- Gates 1-4 above were passed in the previous container against THIS commit
+  (cdd5509), and the state file is committed at it, so they stand as evidence.
+  Any new edit in this session invalidates 🔒 SECURITY for the new diff.
+- This container is NOT the one the checks ran in. It has no docker daemon, no
+  tcpdump, no tshark and no `gh`. The 🔨 BUILD evidence is therefore historical,
+  not reproducible here.
+- NO LOCAL DEV WORKFLOW IS COMMITTED (gate-reference step 6). There is no
+  scripts/, no tests/, no Makefile, no package.json. Every check suite counted in
+  🔨 BUILD above was written ad-hoc in a previous container and died with it.
+  Gate 2 has nothing in the repo to run. Committing the harness would make the
+  BUILD gate reproducible instead of a claim.
+- Branch rename RESOLVED: user chose claude/admiring-wright-k20ptf as canonical
+  rather than let the harness's per-session branch name fork the history.
