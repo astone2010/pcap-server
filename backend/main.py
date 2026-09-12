@@ -37,6 +37,7 @@ from backend.models import (
     CaptureRename,
     CaptureRequest,
     CaptureStatus,
+    KnownHostEndpoint,
     ServerAuth,
     ServerInfo,
     UsernameRequest,
@@ -341,6 +342,50 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+# A body is refused by its Content-Length before anything parses it.
+#
+# The SSH key upload has always checked its own 64 KB limit -- but only after
+# `await file.read()`, and by then starlette has parsed the whole multipart
+# body. Starlette's max_part_size guards *field* parts; a *file* part is
+# appended to _file_parts_to_write with no cap at all and spools to a temp file
+# once it passes 1 MB. So the limit ran after the cost it exists to prevent,
+# and the cost landed on the same volume the captures are written to.
+#
+# Two caps rather than one, because the shapes are not comparable: every JSON
+# body this API takes is a handful of fields, and the one upload it accepts is
+# a private key.
+#
+# The residual, stated rather than implied: a chunked request carries no
+# Content-Length and cannot be refused up front. Those still reach the
+# per-endpoint checks, which is where every request stood before this. Closing
+# that too means counting bytes off the stream, which is a larger change than
+# the hole justifies while the only upload route is admin-only and HTTPS-only.
+_MAX_BODY_BYTES = 64 * 1024
+_MAX_UPLOAD_BYTES = 128 * 1024  # the 64 KB key limit, with room for multipart framing
+
+
+def _body_limit(path: str) -> int:
+    return _MAX_UPLOAD_BYTES if path.startswith("/api/admin/ssh-keys") else _MAX_BODY_BYTES
+
+
+@app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    """Refuse an oversized body on the headers, before it is read."""
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        limit = _body_limit(request.url.path)
+        try:
+            length = int(declared)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "invalid Content-Length"})
+        if length > limit:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"request body too large (max {limit // 1024} KB)"},
+            )
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def enforce_read_only_over_http(request: Request, call_next):
     """Read-only over plain HTTP: refuse anything that changes state."""
@@ -612,28 +657,9 @@ async def admin_list_known_hosts(user: dict = Depends(require_admin)):
     return db.list_known_hosts()
 
 
-def _endpoint_from_body(body: dict) -> tuple[str, int]:
-    """The (hostname, port) pair both host-key endpoints take.
-
-    Shared so the two cannot drift apart. A non-numeric port used to reach
-    int() unguarded and surface as a 500; it is a bad request.
-    """
-    hostname = str(body.get("hostname", "")).strip()
-    if not hostname or any(c in hostname for c in " ;|&$`\\\n\r"):
-        raise HTTPException(400, "invalid hostname")
-    try:
-        port = int(body.get("port", 22))
-    except (TypeError, ValueError):
-        raise HTTPException(400, "invalid port")
-    if not (1 <= port <= 65535):
-        raise HTTPException(400, "invalid port")
-    return hostname, port
-
-
 @app.post("/api/admin/known-hosts/scan")
-async def admin_scan_host(request: Request, user: dict = Depends(require_admin)):
-    hostname, port = _endpoint_from_body(await request.json())
-    keys = await ssh_manager.scan_host_keys(hostname, port, user["id"])
+async def admin_scan_host(req: KnownHostEndpoint, user: dict = Depends(require_admin)):
+    keys = await ssh_manager.scan_host_keys(req.hostname, req.port, user["id"])
     if not keys:
         raise HTTPException(502, "no host keys found")
     return {"ok": True, "keys": keys}
@@ -685,14 +711,13 @@ async def admin_delete_known_host(host_id: int, user: dict = Depends(require_adm
 
 
 @app.post("/api/admin/known-hosts/forget")
-async def admin_forget_host(request: Request, user: dict = Depends(require_admin)):
+async def admin_forget_host(req: KnownHostEndpoint, user: dict = Depends(require_admin)):
     """Drop every key for one endpoint at once.
 
     Per-key removal reads as broken: the remaining keys still verify the host,
     and the next scan brings the removed one back with them.
     """
-    hostname, port = _endpoint_from_body(await request.json())
-    removed = db.forget_known_host(hostname, port)
+    removed = db.forget_known_host(req.hostname, req.port)
     if not removed:
         raise HTTPException(404, "no stored keys for that host")
     return {"ok": True, "removed": removed}

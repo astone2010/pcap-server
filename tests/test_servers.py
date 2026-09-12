@@ -406,27 +406,36 @@ def test_endpoint_label_containing_a_comma_stays_one_label(db):
     ],
 )
 def test_endpoint_body_is_rejected_as_a_bad_request(body, field):
-    """A non-numeric port used to hit int() unguarded and surface as a 500."""
-    from fastapi import HTTPException
+    """These rules used to live in a hand-written parser beside the routes.
 
-    from backend.main import _endpoint_from_body
+    They are a model now, so the same table is checked against the model. The
+    parser answered a bad body with a 400 and anything that was not a dict at
+    all with a 500; the model answers both with a 422, and which field was
+    wrong is still named. The route wiring is covered in test_main.py.
+    """
+    from pydantic import ValidationError
 
-    with pytest.raises(HTTPException) as excinfo:
-        _endpoint_from_body(body)
-    assert excinfo.value.status_code == 400
-    assert field in excinfo.value.detail
+    from backend.models import KnownHostEndpoint
+
+    with pytest.raises(ValidationError) as excinfo:
+        KnownHostEndpoint(**body)
+    assert field in {loc for err in excinfo.value.errors() for loc in err["loc"]}
 
 
 def test_endpoint_body_defaults_the_port_to_22():
-    from backend.main import _endpoint_from_body
+    from backend.models import KnownHostEndpoint
 
-    assert _endpoint_from_body({"hostname": "ok.example"}) == ("ok.example", 22)
+    endpoint = KnownHostEndpoint(hostname="ok.example")
+    assert (endpoint.hostname, endpoint.port) == ("ok.example", 22)
 
 
 def test_endpoint_body_accepts_a_numeric_string_port():
-    from backend.main import _endpoint_from_body
+    """The parser ran int() over whatever arrived, so "2222" worked. Anything
+    that used to be accepted has to stay accepted."""
+    from backend.models import KnownHostEndpoint
 
-    assert _endpoint_from_body({"hostname": "ok.example", "port": "2222"}) == ("ok.example", 2222)
+    endpoint = KnownHostEndpoint(hostname="ok.example", port="2222")
+    assert (endpoint.hostname, endpoint.port) == ("ok.example", 2222)
 
 
 def test_existing_servers_are_backfilled_into_the_username_list(tmp_path):

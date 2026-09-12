@@ -376,3 +376,105 @@ def test_csp_hash_matches_the_inline_script():
         f"  script-src expects: {expected}\n"
         f"  update _CSP in backend/main.py to match"
     )
+
+
+# --- host-key endpoints: a model, not a hand-parsed dict --------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs, label",
+    [
+        ({"json": []}, "a JSON array"),
+        ({"json": "nope"}, "a bare JSON string"),
+        ({"json": 5}, "a bare JSON number"),
+        ({"content": b"{not json", "headers": {"Content-Type": "application/json"}}, "not JSON"),
+        ({"content": b"", "headers": {"Content-Type": "application/json"}}, "an empty body"),
+    ],
+)
+def test_a_malformed_host_key_body_is_a_422_not_a_500(secure_client, enrolled, kwargs, label):
+    """These two routes read their body as a raw dict and answered 500.
+
+    `await request.json()` raises on anything that is not JSON, and `.get` on
+    anything that is JSON but not an object -- neither was caught, so four
+    different shapes of bad input came back as server errors. A 500 says the
+    server is broken; every one of these is the caller's mistake.
+    """
+    resp = secure_client.post("/api/admin/known-hosts/forget", **kwargs)
+    assert resp.status_code == 422, f"{label} produced {resp.status_code}"
+
+
+def test_the_model_rules_are_actually_wired_to_the_route(secure_client, enrolled):
+    """One case each, to prove the model is on the route.
+
+    The exhaustive table of hostnames and ports is checked against the model
+    itself in test_servers.py; repeating it over HTTP would test pydantic
+    twice and the wiring once.
+    """
+    assert secure_client.post(
+        "/api/admin/known-hosts/forget", json={"hostname": "a;rm -rf /", "port": 22}
+    ).status_code == 422
+    assert secure_client.post(
+        "/api/admin/known-hosts/forget", json={"hostname": "ok.example", "port": 70000}
+    ).status_code == 422
+
+
+def test_a_well_formed_host_key_body_still_reaches_the_endpoint(secure_client, enrolled):
+    """The model must not have narrowed the happy path.
+
+    404 is the endpoint answering: nothing is stored for that host. Anything
+    else would mean validation is now refusing input it used to accept.
+    """
+    resp = secure_client.post(
+        "/api/admin/known-hosts/forget", json={"hostname": "nothing.example", "port": 22}
+    )
+    assert resp.status_code == 404
+
+
+# --- middleware: a body is refused on its headers ---------------------------
+
+
+def test_an_oversized_body_is_refused_before_it_is_parsed(secure_client, enrolled):
+    resp = secure_client.post(
+        "/api/admin/known-hosts/forget",
+        content=b"x" * (main._MAX_BODY_BYTES + 1),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 413
+    assert "too large" in resp.json()["detail"]
+
+
+def test_the_upload_route_has_its_own_larger_limit(secure_client, enrolled):
+    """A private key is bigger than any JSON this API takes, so one cap cannot
+    serve both. The upload's own 64 KB check still applies after this one."""
+    assert main._body_limit("/api/admin/ssh-keys") == main._MAX_UPLOAD_BYTES
+    assert main._body_limit("/api/servers") == main._MAX_BODY_BYTES
+
+    resp = secure_client.post(
+        "/api/admin/ssh-keys",
+        content=b"x" * (main._MAX_UPLOAD_BYTES + 1),
+        headers={"Content-Type": "application/octet-stream"},
+    )
+    assert resp.status_code == 413
+
+
+def test_a_body_within_the_upload_limit_gets_past_the_middleware(secure_client, enrolled):
+    """Between the two caps: refused by the route, not by the middleware.
+
+    422 is FastAPI reporting a missing multipart file field -- which means the
+    request reached the endpoint, which is the point of the assertion.
+    """
+    resp = secure_client.post(
+        "/api/admin/ssh-keys",
+        content=b"x" * (main._MAX_BODY_BYTES + 1),
+        headers={"Content-Type": "application/octet-stream"},
+    )
+    assert resp.status_code != 413
+
+
+def test_an_unparseable_content_length_is_refused(secure_client, enrolled):
+    resp = secure_client.post(
+        "/api/admin/known-hosts/forget",
+        content=b"{}",
+        headers={"Content-Type": "application/json", "Content-Length": "not-a-number"},
+    )
+    assert resp.status_code == 400

@@ -1,10 +1,41 @@
 # Dev Skills gate state
-Track: RELEASE SEQUENCE for 0.1.0-dev.14
+Track: 0.1.0-dev.14 SHIPPED. API hardening in progress (work commits).
 Version: 0.1.0-dev.14
 Updated: 2026-09-12
 Branch: claude/admiring-wright-k20ptf (the user's choice this session)
 
-## 0.1.0-dev.14
+## API hardening -- work commits since dev.14
+
+🔒 SECURITY ✅ reviewed per commit. Both changes narrow input handling; neither
+              widens it. No new dependencies, no new I/O.
+
+Done:
+- Item 1: limit_request_body refuses an oversized body on Content-Length,
+  before anything parses it. 64 KB for JSON routes, 128 KB for the key upload.
+  The SSH key upload's own 64 KB check ran only after `await file.read()`, and
+  starlette's max_part_size guards field parts but not file parts -- those
+  spool to a temp file uncapped, on the volume the captures live on.
+  Residual, deliberately left and documented in the code: a chunked request
+  sends no Content-Length and cannot be refused up front.
+- Item 2: KnownHostEndpoint replaces the hand-written _endpoint_from_body.
+  The two host-key routes were the only ones in the API without a model, and
+  the only ones answering malformed input with a 500 -- proven by probe, four
+  of five bad bodies returned 500 before and 422 after. Every prior rule is
+  preserved, including the "2222" -> 2222 string coercion, which now has its
+  own test.
+
+Open:
+- Item 3: rate limiting covers login only (rate_limiter appears four times,
+  all inside login). Packet listing spawns tshark and capture start opens SSH,
+  both unthrottled per user. Needs the user's decision on what the limits are
+  and whether they join the admin-configurable settings table.
+- ServerAuth.hostname rejects a smaller set than KnownHostEndpoint.hostname:
+  it allows $, backtick, backslash, newline and CR. Not touched here --
+  tightening it is a change to a different endpoint. Worth its own look.
+- No CHANGELOG entry yet: these are work commits, so they belong to dev.15's
+  release notes rather than to an Unreleased heading this repo does not use.
+
+## 0.1.0-dev.14 -- shipped and verified
 
 🔢 VERSION    ✅ backend/main.py:61, docker-compose.yml image tag and the
                 CHANGELOG heading all read 0.1.0-dev.14. v0.1.0-dev.13 is
@@ -31,11 +62,17 @@ Branch: claude/admiring-wright-k20ptf (the user's choice this session)
                 described a **Filters** tab this release removes, and the
                 settings table now states the per-interface capture rule.
                 docs/ carries no stale tab or version claims.
-📦 RELEASE    ⏳ version-bump commit approved by the user ("commit push and tag
-                for next version"). PR ➖ N/A -- the default branch is out of
-                scope by the user's standing decision, so there is nothing to
-                merge into.
-🚀 SHIP       ⬜ the tag is the user's to push. Always, in every environment.
+📦 RELEASE    ✅ 5bfa961 pushed to claude/admiring-wright-k20ptf. PR ➖ N/A --
+                the default branch is out of scope by the user's standing
+                decision, so there is nothing to merge into.
+🚀 SHIP       ✅ the user pushed the tag. Verified against four independent
+                checks: v0.1.0-dev.14 -> 5bfa961 on the remote, release run
+                34722294928 success, the "Build and push image" step success
+                (image.name shows :0.1.0-dev.14 and :dev, so the floating tag
+                moved forward as bb61fa6's guard intends), and the published
+                Release (id 387719963).
+                Cosmetic: the auto-generated body compares against dev.8, not
+                dev.13, because dev.8 was tagged later in wall-clock time.
 
 ## 0.1.0-dev.13 -- shipped and verified
 

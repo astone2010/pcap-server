@@ -46,6 +46,35 @@ class UsernameRequest(BaseModel):
         return validate_ssh_username(v)
 
 
+class KnownHostEndpoint(BaseModel):
+    """The (hostname, port) pair both host-key endpoints take.
+
+    These two routes used to read their body as a raw dict and check it by
+    hand. The checks themselves were sound, but everything before them was
+    unguarded: a JSON array, a bare string, an empty body, or anything that is
+    not JSON at all raised inside the handler and came back as a 500. They were
+    the only two routes in the API not backed by a model, and they were the
+    only two that answered malformed input with a server error.
+
+    The rules are the ones that were already here. Deliberately stricter than
+    ServerAuth.hostname, which rejects a smaller set -- tightening that one is
+    a change to a different endpoint and does not belong in this model.
+    """
+
+    hostname: str
+    port: int = Field(default=22, ge=1, le=65535)
+
+    @field_validator("hostname")
+    @classmethod
+    def validate_hostname(cls, v: str) -> str:
+        v = v.strip()
+        # Everything a shell gives meaning to, plus the line breaks that would
+        # let one entry forge another in a known_hosts file or a log.
+        if not v or any(c in v for c in " ;|&$`\\\n\r"):
+            raise ValueError("invalid hostname")
+        return v
+
+
 class ServerAuth(BaseModel):
     hostname: str
     port: int = 22
