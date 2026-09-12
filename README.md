@@ -116,9 +116,10 @@ operator — `ip.addr == 10.0.0.1`, `frame.len > 1000`,
 `http.request.method == "GET"` — or use a bare protocol name on its own, like
 `dns`. Combine with `and`, `or`, `not`, or with `&&`, `||`, `!`.
 
-Both boxes offer clickable examples. The **Filters** tab is a searchable library
-of capture filters grouped by protocol, and the Viewer has a full display-filter
-cheatsheet behind **Filter help**.
+Both boxes offer clickable examples. **Browse the capture filter library** sits
+under the BPF field on the Capture tab — a searchable list grouped by protocol,
+which fills the field above it when you choose one. The Viewer has a full
+display-filter cheatsheet behind **Filter help**.
 
 A display filter tshark cannot parse is reported back with tshark's own message
 and the position it objected to. An empty packet list therefore always means the
@@ -489,7 +490,7 @@ These are configurable from the Admin tab by the admin user:
 |---|---|---|
 | Max capture seconds | 300 | Maximum duration for a single capture |
 | Max capture packets | 100000 | Maximum packets per capture |
-| Max concurrent captures | 5 | Captures running or finishing up at once, across all users — each holds an SSH connection to a target host plus a local file |
+| Max concurrent captures | 5 | Captures running or finishing up at once, across all users — each holds an SSH connection to a target host plus a local file. Separately, and not configurable: one capture at a time per interface per server, so `eth0` and `eth1` on the same host can run together but a second capture on either is refused |
 | Session duration (hours) | 8 | Login session lifetime |
 | Session idle timeout (minutes) | 60 | Idle window before a session is deleted, independent of the absolute duration above. `0` disables idle expiry |
 | Device trust (days) | 30 | How long a trusted device skips MFA |

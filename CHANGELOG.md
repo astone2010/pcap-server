@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.1.0-dev.14 — 2026-09-12
+
+### Added
+
+- **Rotate the master key without re-encrypting a single capture.**
+  `backend/rekey.py` rewraps each capture's data encryption key under a new
+  master key and leaves the encrypted body untouched: 84 bytes rewritten per
+  file, whatever the capture weighs. It runs as a dry run unless told
+  otherwise, verifies the new header before replacing the old one, and is safe
+  to re-run — a file already rotated is recognised and skipped. Losing a master
+  key previously meant losing every capture under it; now the key can be
+  retired on a schedule.
+- **The UI is tested in a browser.** Three suites under `tests/browser`, 31
+  tests, driving a real chromium against a real server. The API suites cover
+  the API thoroughly, which is not the same as covering the app: a form with no
+  way to submit it, an inline script the CSP silently dropped, and a filter
+  library that filled in a field on a different tab all shipped while those
+  suites were green, because none of them produces a bad HTTP response. A
+  missing browser reports as SKIPPED with the remedy in the reason, never
+  silently omitted.
+- **One capture at a time per interface, not per server.** Capturing on `eth0`
+  no longer blocks a capture on `eth1` of the same host, which is the normal
+  case for anything with more than one leg in the network. Captures now record
+  which interface they were taken on, and a second capture on an interface
+  already busy is refused with a 409 that names it — distinct from the 429 that
+  means the overall capture limit is reached.
+
+### Changed
+
+- **The filter library moved into the Capture tab.** It was a tab of its own,
+  which meant choosing a filter filled in a field you could not see, on a tab
+  you had just left, and the app had to switch tabs to show you what your click
+  had done. It now sits directly under the BPF field it fills, collapsed by
+  default — eighty-odd expressions are not the answer for anyone who already
+  knows what they want to type, and the field above is.
+- **The deployment instructions describe a deployment that works.** The README
+  quick start did not: `docker compose up -d` exits 1 on a fresh clone, and
+  nothing said where the bind mounts land or what has to exist before the first
+  start.
+
+### Security
+
+- **A floating image tag can no longer move backward.** Releasing an older
+  version re-pointed `:dev` and `:latest` at the older image, so a deployment
+  tracking a floating tag could be silently downgraded — past a fix it already
+  had. The release workflow now refuses to move a floating tag to a version
+  below the one it currently points at.
+- **The CSP hash is pinned by a test.** The pre-paint theme script is allowed
+  by content hash rather than `'unsafe-inline'`, so editing it without
+  recomputing the hash makes the browser drop it — no error, no failed request,
+  nothing to notice. A test now hashes whatever is actually in `index.html` and
+  prints the value to paste in when it does not match. The comment that used to
+  carry that recipe was itself wrong: it split on the first script tag in the
+  file, which was the one inside the comment, so it hashed the comment.
+
+### Fixed
+
+- **Enter submits every form, instead of five named fields.** There is no
+  `<form>` element anywhere in this UI, so Enter is never the browser's own
+  behaviour — it worked only where the code named a field by id, and that list
+  left out every field of the server form, the stored-username box beside it,
+  and Add user under Admin. Typing a name and pressing Enter did nothing at
+  all: no request, no error, no feedback, which reads as a form with no way to
+  submit it rather than a missing shortcut. A container now names its own
+  submit button in the markup, so a form added later is wired up where it is
+  written rather than in a list somewhere else.
+- **The page declares an icon.** Without one the browser asks for
+  `/favicon.ico` on every page load and gets a 404 — a failed request in
+  everyone's console for the lifetime of the app, of exactly the kind a real
+  failure looks like.
+
 ## 0.1.0-dev.13 — 2026-09-12
 
 ### Added

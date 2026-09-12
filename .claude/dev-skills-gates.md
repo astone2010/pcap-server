@@ -1,8 +1,41 @@
 # Dev Skills gate state
-Track: WORK COMMIT in progress (browser test suites), then the 0.1.0-dev.14
-       RELEASE SEQUENCE
-Version: 0.1.0-dev.13 (shipped) -- dev.14 not yet bumped
+Track: RELEASE SEQUENCE for 0.1.0-dev.14
+Version: 0.1.0-dev.14
 Updated: 2026-09-12
+Branch: claude/admiring-wright-k20ptf (the user's choice this session)
+
+## 0.1.0-dev.14
+
+🔢 VERSION    ✅ backend/main.py:61, docker-compose.yml image tag and the
+                CHANGELOG heading all read 0.1.0-dev.14. v0.1.0-dev.13 is
+                confirmed tagged on the remote (1573e0b); v0.1.0-dev.14 is not
+                yet, which is Gate 6.
+🔨 BUILD      ✅ ./scripts/check.sh: 486 passed, no skips, at the bumped
+                version. The browser suites boot the real app and drive it, so
+                the app is verified working rather than only imported. The
+                container image is NOT built here -- the docker client exists
+                in this container but there is no daemon; the release workflow
+                builds and pushes it on the tag.
+🔒 SECURITY   ✅ pip-audit: backend/requirements.txt clean. No dangerous
+                patterns introduced across the release diff (1573e0b..HEAD) in
+                backend/ or frontend/. Each work commit in this release was
+                security reviewed when it was made.
+                Open, documented, NOT blocking: pytest 8.3.4 carries
+                PYSEC-2026-1845 (predictable /tmp/pytest-of-{user}; local DoS
+                or possible privilege gain), fixed in 9.0.3. Dev-only -- pytest
+                is not in requirements.txt and never enters the shipped image,
+                and the fix needs pytest-asyncio moved too, which is a test
+                infrastructure change deserving its own commit and its own
+                verification rather than a rider on a release.
+📄 DOCS       ✅ CHANGELOG entry for 0.1.0-dev.14. README corrected: it still
+                described a **Filters** tab this release removes, and the
+                settings table now states the per-interface capture rule.
+                docs/ carries no stale tab or version claims.
+📦 RELEASE    ⏳ version-bump commit approved by the user ("commit push and tag
+                for next version"). PR ➖ N/A -- the default branch is out of
+                scope by the user's standing decision, so there is nothing to
+                merge into.
+🚀 SHIP       ⬜ the tag is the user's to push. Always, in every environment.
 
 ## 0.1.0-dev.13 -- shipped and verified
 
