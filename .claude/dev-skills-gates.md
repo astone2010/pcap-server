@@ -249,6 +249,26 @@ leaves the original untouched, multi-file). Used a minimal FakeDB stub
 (get_setting/set_setting only) rather than backend.database.Database, to
 keep vault tests isolated from the heavier main.py import chain.
 
-Next: tests/test_auth.py (hash_password/verify_password round-trip + legacy
-salt$hash format, needs_rehash, hash_token, idle timeout session deletion,
-_LAST_SEEN_WRITE_INTERVAL throttle, RateLimiter lockout + window expiry).
+Landed: tests/test_auth.py -- 31 tests, all passing (89 total). Covers
+hash_password/verify_password round-trip, unique salt per hash, current
+scrypt params recorded in the hash, the legacy salt$hash format (built by
+hand with _LEGACY_SCRYPT params to prove old hashes still verify),
+needs_rehash true for legacy/weaker-params/malformed and false for current,
+hash_token as a plain sha256 digest distinct from the token itself,
+validate_session's idle-timeout deletion (incl. a naive/no-tzinfo
+last_seen, since sqlite round-trips those), idle-timeout disabled at 0,
+the _LAST_SEEN_WRITE_INTERVAL throttle (touch_session skipped when fresh,
+called when stale enough or missing), and RateLimiter lockout/independent
+keying/reset/update_config plus window expiry via a monkeypatched
+time.monotonic (no real sleeping). Used a minimal FakeSessionDB stub
+(same pattern as vault's FakeDB) rather than backend.database.Database.
+
+Next: tests/test_main.py -- the _client_ip regression test (ignores
+X-Forwarded-For unless _TRUST_PROXY_HEADERS, takes the RIGHTMOST entry --
+this is the actual vulnerability fixed in dev.8, so it's the highest-value
+single test left), read-only-over-HTTP middleware incl. the 4
+_INSECURE_ALLOWED_PATHS, CSP + security headers, HSTS only on real https.
+Import note from the plan still applies: backend.main runs Database/vault/
+delete_all_sessions at module scope and SystemExit(1)s on a refused vault,
+so conftest.py must set DATA_DIR/CAPTURES_DIR/SSH_KEYS_DIR to tmp dirs and
+a master key BEFORE import, session-scoped.
