@@ -1219,3 +1219,42 @@ body {
     color: var(--warning);
     font-size: 0.6875rem;
 }
+
+
+/* Repo / release-notes links. Present on every screen, including sign-in. */
+.repo-link {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-decoration: none;
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.repo-link:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.auth-footer {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.auth-footer a {
+    color: var(--text-secondary);
+    text-decoration: none;
+}
+
+.auth-footer a:hover { color: var(--accent); text-decoration: underline; }
+.auth-footer-sep { margin: 0 6px; opacity: 0.6; }
+
+@media (max-width: 720px) {
+    /* Keep the version badge; the word "GitHub" is the first thing to go. */
+    #repo-link { display: none; }
+}

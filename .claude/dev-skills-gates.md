@@ -4,8 +4,8 @@ Version: 0.1.0-dev.8  (NOT yet tagged — user deferred tagging; prereq work fol
 Updated: 2026-09-12
 
 🔢 VERSION    ✅ 0.1.0-dev.8 in main.py, docker-compose.yml, CHANGELOG; v0.1.0-dev.7 tagged on remote at 9085701
-🔨 BUILD      ✅ 179 checks green across 7 suites. This container now HAS tcpdump 4.99.4 + tshark, so for the first time the viewer was tested against a real 40-packet capture and the probe against a real SSH server running a real /bin/sh. Caveat: no docker daemon, image not rebuilt (Dockerfile unchanged)
-🔒 SECURITY   ✅ 0 Critical, 0 High. Probe output treated as untrusted: hostile-host suite proves command-injection, traversal, substitution and non-tcpdump paths are all rejected, and the discovered path is re-validated before storage. Probe asserted read-only by test (no package manager, no writes, only `sudo -n true`)
+🔨 BUILD      ✅ 249 checks green across 9 suites (adds SSH connection-leak measurement against a live server, CaptureManager lifecycle, and always-visible repo/release links). This container now HAS tcpdump 4.99.4 + tshark, so for the first time the viewer was tested against a real 40-packet capture and the probe against a real SSH server running a real /bin/sh. Caveat: no docker daemon, image not rebuilt (Dockerfile unchanged)
+🔒 SECURITY   ✅ 0 Critical, 0 High. FIXED a leaked SSH connection per capture (authenticated connection to a production host outliving its work, measured server-side); added login timeout, keepalives, monitor ceiling, bounded download; stopped disclosing the exact version to unauthenticated callers. Probe output treated as untrusted: hostile-host suite proves command-injection, traversal, substitution and non-tcpdump paths are all rejected, and the discovered path is re-validated before storage. Probe asserted read-only by test (no package manager, no writes, only `sudo -n true`)
 📄 DOCS       ✅ CHANGELOG dev.8 gains Features + Changed sections; README gains "Checking a server before you capture" incl. the PATH and setcap findings and why there are no distro templates
 📦 RELEASE    ➖ N/A — dev pre-release, no PR to main
 🚀 SHIP       ⬜ — user has deferred tagging until more work lands

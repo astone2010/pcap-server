@@ -61,6 +61,13 @@
             <button class="btn btn-primary" onclick="doLogin()">Sign in</button>
             <div id="login-error" class="error-msg"></div>
         </div>
+        <div class="auth-footer">
+            <a id="auth-repo-link" href="#" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <span class="auth-footer-sep">&middot;</span>
+            <a id="auth-release-link" href="#" target="_blank" rel="noopener noreferrer">Release notes</a>
+            <span class="auth-footer-sep">&middot;</span>
+            <span id="auth-version"></span>
+        </div>
     </div>
 </div>
 
@@ -90,6 +97,10 @@
         <span class="logo">pcap-server</span>
         <span class="spacer"></span>
         <span id="user-display" style="font-size:0.8125rem;color:var(--text-secondary)"></span>
+        <a id="version-link" class="repo-link" href="#" target="_blank" rel="noopener noreferrer"
+           title="Release notes for the running version"></a>
+        <a id="repo-link" class="repo-link" href="#" target="_blank" rel="noopener noreferrer"
+           title="Source on GitHub">GitHub</a>
         <button id="theme-toggle" class="btn btn-sm btn-secondary" onclick="toggleTheme()"></button>
         <button class="btn btn-sm btn-secondary" onclick="doLogout()">Logout</button>
     </div>

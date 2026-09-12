@@ -4,6 +4,10 @@
 
 ### Features
 
+- Link the GitHub repository and release notes from every screen. Signed in, the
+  toolbar carries a version badge pointing at the running version's release
+  notes, served by the backend so it cannot drift from the code. Signed out, the
+  sign-in screen footer links the repo and the releases index.
 - Add a read-only prerequisite check per server (Servers → Check prerequisites).
   It probes the host for what a capture needs and reports a checklist: OS,
   whether tcpdump is installed and at what absolute path, whether it is on the
@@ -42,6 +46,32 @@
 
 ### Security
 
+- Close the SSH connection carrying a capture. `run_tcpdump` returned only the
+  tcpdump process, leaving its connection with no owner and no close path: it
+  stayed open after tcpdump had exited and was reclaimed only whenever the
+  garbage collector reached it. Measured against a live SSH server, every
+  capture stranded one authenticated connection to the target host, outliving
+  the work it was opened for. The process and its connection are now bound
+  together and closed as one unit from the monitor's `finally`, from delete and
+  at shutdown — verified released after success, after failure, on delete, on
+  shutdown, on early abandon, and across ten sequential captures with no
+  accumulation. The five short-lived operations (connection test, interface
+  list, prerequisite check, pcap download, remote cleanup) were already closed
+  by their context managers and were confirmed clean by the same measurement.
+- Bound the SSH login. Without `login_timeout` a host that accepted TCP but
+  never completed the handshake held the request open indefinitely.
+- Add keepalives and a monitor ceiling. A capture may run for minutes, so a peer
+  that disappeared mid-capture left the server waiting on a dead socket.
+  Keepalives now detect it, and the monitor gives up at the capture's duration
+  plus a minute — the remote `timeout(1)` wrapper only helps when `timeout(1)`
+  is present and behaves.
+- Bound the pcap download at 300 seconds, and discard a partially transferred
+  capture rather than leaving a truncated file on the volume.
+- Do not disclose the exact running version to unauthenticated callers.
+  `/api/auth/status` is reachable without a session, so publishing the build
+  there tells anyone who can see the login page which advisories to match. The
+  repo and releases links are public and remain; the precise version and its
+  release-notes link appear only once signed in.
 - Session tokens are no longer stored in the clear. The `sessions` table held
   the bearer token verbatim, so anyone able to read the database file could
   replay every live session; trusted-device tokens were already hashed, so the

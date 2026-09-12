@@ -44,7 +44,10 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-app = FastAPI(title="pcap-server", version="0.1.0-dev.8")
+APP_VERSION = "0.1.0-dev.8"
+REPO_URL = "https://github.com/darthrater78/pcap-server"
+
+app = FastAPI(title="pcap-server", version=APP_VERSION)
 
 db = Database(DATA_DIR / "pcap-server.db")
 ssh_manager = SSHManager(SSH_KEYS_DIR, db, DATA_DIR)
@@ -157,6 +160,13 @@ async def auth_status(request: Request):
     return {
         "has_users": has_users,
         "cookie_secure": _COOKIE_SECURE,
+        # The repo and its releases page are public; the exact running version
+        # is not published to unauthenticated callers, since it tells anyone who
+        # can reach the login page which build to match advisories against.
+        "repo_url": REPO_URL,
+        "releases_url": f"{REPO_URL}/releases",
+        "version": APP_VERSION if user else "",
+        "release_notes_url": f"{REPO_URL}/releases/tag/v{APP_VERSION}" if user else "",
         "authenticated": user is not None,
         "user": {
             "username": user["username"],

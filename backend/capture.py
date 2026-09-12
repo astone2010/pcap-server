@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 # tcpdump always announces itself on stderr; only the rest is a diagnosis.
 _STDERR_NOISE = ("listening on", "packets captured", "packets received", "packets dropped")
 
+# Allowance on top of a capture's own duration before the monitor gives up and
+# releases the connection.
+_MONITOR_GRACE_SECONDS = 60
+
 
 def server_label(server: ServerInfo) -> str:
     """A human-readable stamp of where a capture ran, frozen at start time."""
@@ -46,6 +50,14 @@ async def _read_stderr(process: object) -> str:
         return ""
 
 
+def _discard_partial(local_path: Path) -> None:
+    try:
+        if local_path.exists():
+            local_path.unlink()
+    except OSError:
+        logger.warning("could not remove partial capture %s", local_path)
+
+
 def _describe_failure(exc: Exception, stderr_text: str) -> str:
     lines = [
         line.strip()
@@ -64,7 +76,10 @@ class CaptureManager:
         self._captures_dir.mkdir(parents=True, exist_ok=True)
         self._get_setting = get_setting
         self._db = db
+        self._monitor_timeout: float = 600 + _MONITOR_GRACE_SECONDS
         self._captures: dict[str, CaptureInfo] = {}
+        # RemoteCapture objects: the tcpdump process bound to its SSH connection,
+        # so closing one closes both.
         self._processes: dict[str, object] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._restore()
@@ -127,6 +142,8 @@ class CaptureManager:
             duration = min(duration, max_seconds)
         else:
             duration = max_seconds
+        # Grace for tcpdump to flush and exit after timeout(1) fires.
+        self._monitor_timeout = duration + _MONITOR_GRACE_SECONDS
 
         binary = server.tcpdump_path or "tcpdump"
         full_cmd = [binary, "-w", remote_path] + args
@@ -182,6 +199,7 @@ class CaptureManager:
         process = self._processes.pop(capture_id, None)
         if process:
             await self._ssh.stop_tcpdump(process)
+            await process.close()
 
         if capture_id in self._tasks:
             self._tasks[capture_id].cancel()
@@ -202,6 +220,13 @@ class CaptureManager:
                     await self._ssh.stop_tcpdump(process)
                 except Exception:
                     logger.warning("failed to stop capture %s during shutdown", capture_id)
+                finally:
+                    # Stopping tcpdump is not the same as releasing its
+                    # connection; shutdown must do both.
+                    try:
+                        await process.close()
+                    except Exception:
+                        logger.warning("failed to close connection for %s", capture_id)
         for task in self._tasks.values():
             task.cancel()
         self._tasks.clear()
@@ -217,7 +242,10 @@ class CaptureManager:
         info = self._captures[capture_id]
         stderr_text = ""
         try:
-            await process.wait()
+            # The remote command is wrapped in timeout(1), but that only helps if
+            # timeout(1) is present and behaves. This is the backstop: without it
+            # a process that never exits holds its SSH connection open forever.
+            await asyncio.wait_for(process.wait(), timeout=self._monitor_timeout)
             stderr_text = await _read_stderr(process)
             # timeout(1) exits 124 and SIGINT exits 130 — both are how a capture ends normally.
             if process.exit_status not in (0, 124, 130, None):
@@ -242,11 +270,23 @@ class CaptureManager:
         except asyncio.CancelledError:
             info.status = CaptureStatus.FAILED
             info.error = "cancelled"
+            raise
+        except asyncio.TimeoutError:
+            info.status = CaptureStatus.FAILED
+            info.error = "capture did not finish in time and was abandoned"
         except Exception as exc:
             logger.exception("capture %s failed", capture_id)
             info.status = CaptureStatus.FAILED
             info.error = _describe_failure(exc, stderr_text)
+            # A transfer interrupted partway leaves a truncated pcap. It is
+            # unreachable -- downloads require COMPLETED -- but leaving half a
+            # capture on the volume is misleading.
+            _discard_partial(local_path)
         finally:
+            # The SSH connection is released here, on every path -- success,
+            # failure, timeout and cancellation alike.
+            capture = self._processes.pop(capture_id, None)
+            if capture is not None:
+                await capture.close()
             self._persist(info)
-            self._processes.pop(capture_id, None)
             self._tasks.pop(capture_id, None)

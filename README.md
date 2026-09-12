@@ -119,6 +119,24 @@ RHEL-family, `sudo` on Debian-family), and SELinux — all of which the probe re
 off the host rather than guessing from a distribution label. The detected distro
 is used for exactly one thing: printing the right install command.
 
+## SSH connection lifetime
+
+A capture uses two SSH connections, and both are released deterministically:
+
+| Connection | Lifetime |
+| --- | --- |
+| The capture | Bound to the tcpdump process and closed with it — on success, failure, timeout, delete and shutdown alike |
+| The pcap download | Its own short-lived connection, closed by its context manager, bounded at 300s |
+
+Connection test, interface discovery, the prerequisite check and remote cleanup
+each open and close their own connection for the single command they run.
+
+Connections use a 15 second login timeout, so a host that accepts TCP without
+completing the SSH handshake cannot hang a request, and keepalives every 30
+seconds (three missed before the connection is dropped) so a peer that
+disappears mid-capture is noticed rather than waited on. The capture monitor
+gives up at the capture's duration plus 60 seconds regardless.
+
 ## Sessions
 
 Sessions are bearer tokens in an `HttpOnly` cookie, stored only as a SHA-256

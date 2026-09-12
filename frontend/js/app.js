@@ -121,9 +121,38 @@ function checkCookieConfig(cookieSecure) {
     }
 }
 
+// Repo and release-notes links are shown on every screen, signed in or not, so
+// the running version is always one click from its release notes.
+function applyBuildLinks(status) {
+    const version = status.version ? `v${status.version}` : "";
+    // Signed out, the server withholds the exact version, so point at the
+    // releases index rather than a tag that would give the build away.
+    const releaseHref = status.release_notes_url || status.releases_url;
+    const pairs = [
+        ["version-link", status.release_notes_url, version],
+        ["repo-link", status.repo_url, "GitHub"],
+        ["auth-repo-link", status.repo_url, "GitHub"],
+        ["auth-release-link", releaseHref, "Release notes"],
+    ];
+    for (const [id, href, label] of pairs) {
+        const el = $(id);
+        if (!el) continue;
+        if (!href) {
+            el.hidden = true;
+            continue;
+        }
+        el.hidden = false;
+        el.href = href;
+        el.textContent = label;
+    }
+    const v = $("auth-version");
+    if (v) v.textContent = version;
+}
+
 async function checkAuth() {
     const status = await api("/api/auth/status");
     checkCookieConfig(status.cookie_secure);
+    applyBuildLinks(status);
     if (!status.has_users) {
         show("auth-screen");
         show("register-form");

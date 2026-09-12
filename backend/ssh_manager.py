@@ -13,6 +13,61 @@ from backend.models import ServerAuth
 
 logger = logging.getLogger(__name__)
 
+LOGIN_TIMEOUT = 15          # seconds to complete TCP connect + SSH auth
+KEEPALIVE_INTERVAL = 30     # seconds between keepalives on a long capture
+KEEPALIVE_COUNT_MAX = 3     # missed keepalives before the connection is dropped
+FETCH_TIMEOUT = 300        # seconds for the pcap download before it is abandoned
+
+
+class RemoteCapture:
+    """A running tcpdump and the connection carrying it, closed as one unit.
+
+    run_tcpdump used to return only the process, leaving its connection with no
+    owner and no close path: it stayed open after tcpdump exited and was
+    reclaimed only whenever the garbage collector got to it. Binding the two
+    together means the connection closes when the capture does, on every exit
+    path including cancellation.
+    """
+
+    __slots__ = ("process", "_conn", "_closed")
+
+    def __init__(self, process: asyncssh.SSHClientProcess, conn: asyncssh.SSHClientConnection) -> None:
+        self.process = process
+        self._conn = conn
+        self._closed = False
+
+    @property
+    def exit_status(self):
+        return self.process.exit_status
+
+    @property
+    def stderr(self):
+        return self.process.stderr
+
+    async def wait(self):
+        return await self.process.wait()
+
+    def send_signal(self, sig: str) -> None:
+        self.process.send_signal(sig)
+
+    def kill(self) -> None:
+        self.process.kill()
+
+    async def close(self) -> None:
+        """Idempotent: safe to call from the monitor, from delete, and at shutdown."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.process.close()
+        except Exception:
+            pass
+        try:
+            self._conn.close()
+            await self._conn.wait_closed()
+        except Exception:
+            logger.debug("connection already gone while closing capture", exc_info=True)
+
 
 class SSHManager:
     def __init__(self, keys_dir: Path, db: Database, data_dir: Path) -> None:
@@ -80,6 +135,13 @@ class SSHManager:
                 known_hosts=kh_file if kh_file else None,
                 password=None,
                 passphrase=None,
+                # A host that accepts TCP but never finishes the handshake would
+                # otherwise hang the request indefinitely.
+                login_timeout=LOGIN_TIMEOUT,
+                # A capture can run for minutes. Without keepalives a peer that
+                # disappears mid-capture leaves us waiting on a dead socket.
+                keepalive_interval=KEEPALIVE_INTERVAL,
+                keepalive_count_max=KEEPALIVE_COUNT_MAX,
             )
         except asyncssh.HostKeyNotVerifiable:
             raise ConnectionError("Host key verification failed. Scan the host key first via Admin > Known Hosts.")
@@ -153,17 +215,28 @@ class SSHManager:
 
         conn = await self._connect(server)
         logger.info("running on %s: %s", server.hostname, cmd_str)
-        process = await conn.create_process(cmd_str)
-        return process
-
-    async def stop_tcpdump(self, process: asyncssh.SSHClientProcess) -> None:
         try:
-            process.send_signal("INT")
-            await asyncio.wait_for(process.wait(), timeout=10)
+            process = await conn.create_process(cmd_str)
+        except Exception:
+            # Never leave the connection behind if the exec itself fails.
+            conn.close()
+            await conn.wait_closed()
+            raise
+        return RemoteCapture(process, conn)
+
+    async def stop_tcpdump(self, capture: RemoteCapture) -> None:
+        """Interrupt tcpdump so it flushes its pcap, then escalate if it ignores us.
+
+        Does not close the connection: the caller still needs it to fetch the
+        file. Closing is the monitor's job, in its finally.
+        """
+        try:
+            capture.send_signal("INT")
+            await asyncio.wait_for(capture.wait(), timeout=10)
         except (asyncio.TimeoutError, OSError):
-            process.kill()
+            capture.kill()
             try:
-                await asyncio.wait_for(process.wait(), timeout=5)
+                await asyncio.wait_for(capture.wait(), timeout=5)
             except asyncio.TimeoutError:
                 pass
 
@@ -172,10 +245,15 @@ class SSHManager:
         server: ServerAuth,
         remote_path: str,
         local_path: Path,
+        *,
+        timeout: float = FETCH_TIMEOUT,
     ) -> None:
+        """Download over its own short-lived connection, bounded and always closed."""
         conn = await self._connect(server)
         async with conn:
-            await asyncssh.scp((conn, remote_path), str(local_path))
+            await asyncio.wait_for(
+                asyncssh.scp((conn, remote_path), str(local_path)), timeout=timeout
+            )
 
     async def delete_remote_file(
         self,
