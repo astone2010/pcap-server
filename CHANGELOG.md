@@ -1,5 +1,78 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The packet viewer was blank and every capture counted zero packets**, while
+  the same capture downloaded and opened correctly in Wireshark. Wiretap, the
+  library beneath both `tshark` and `capinfos`, accepts a regular file or a FIFO
+  on stdin and rejects anything else with *The standard input is a "special
+  file" or socket or other non-regular file*. asyncio's `stdin=PIPE` is a real
+  pipe and passes that check; uvloop's is a Unix socketpair and does not, and
+  `uvicorn[standard]` selects uvloop in the container. So every `tshark` and
+  `capinfos` call failed in a real deployment and none of them failed in the
+  test suite, which runs on stock asyncio. The pipe is created explicitly with
+  `os.pipe()` now, so the tool is handed a FIFO under either event loop. The
+  regression test asserts the kind of descriptor rather than the loop.
+- **A failed packet count was indistinguishable from an empty capture.**
+  `get_packet_count` returned 0 both when a capture held no packets and when
+  `capinfos` never ran, which is what let the failure above look like a
+  legitimately empty result for a whole release. It raises now. A capture whose
+  count fails is kept rather than discarded: the pcap is intact, and tcpdump's
+  own running total already stands in for the number.
+- **Monitor tasks were cancelled at shutdown but never awaited**, so the
+  `finally` block that releases the SSH connection and writes the closing row
+  ran whenever the garbage collector reached the coroutine — after the event
+  loop had already closed.
+- **A rejected request reached the user as raw pydantic JSON.** A 422 arrives as
+  an array of `{loc, msg, type}`; only the `msg` fields are written for a person
+  to read.
+
+### Added
+
+- **Running captures report how many packets they have taken.** `tcpdump -v`
+  under `-w` prints its running total to stderr once a second, and the monitor
+  reads it as it arrives, so a capture in progress shows a count instead of
+  nothing until the transfer completes. Both the digit run and the retained
+  stderr are bounded: that output comes from the host being captured on.
+- **Captures can be renamed.** The name replaces the UUID as the title in the
+  list and in the viewer heading, with the server and command kept beneath it.
+- **The capture page's server picker shows the host name with its address**, the
+  way the Servers tab already labels the same host.
+
+### Changed
+
+- **SSH usernames are stored instead of derived.** They were a `GROUP BY` over
+  the server list, so deleting the last server that used a login name discarded
+  the name with it, there was no way to add one ahead of time or remove one, and
+  the only affordance was a `datalist` on a text box, which Chromium draws no
+  arrow for — the feature existed and could not be found. Usernames are their
+  own table now, back-filled once from existing servers and recorded by the
+  database layer so a server can never use a name the list has not seen. The
+  form field is a real dropdown, and Admin gains add, rename and remove.
+  Removing a stored username removes the suggestion only; servers already
+  configured with it are untouched.
+
+### Documentation
+
+- **`docs/architecture.md`** — the first full account of how the app is built
+  and what each security measure defends against: the module layout and why
+  there is no ORM or service layer, the life of a capture, how an encrypted
+  capture reaches `tshark` without ever becoming a plaintext file, the envelope
+  format, the reasoning behind every input validator, host-key handling,
+  self-capture detection, the browser-side headers, and the known limits.
+- **Roadmap** — an MCP server and a packet sanitizer, in the README and in the
+  architecture document.
+- Recorded a gap found while writing the above: **TOTP enrolment is enforced by
+  the frontend, not the API.** A first login returns `needs_totp_setup` and the
+  UI acts on it, but no route checks `totp_confirmed`, so a client that ignores
+  the flag holds a valid session without enrolling. Documented rather than
+  silently changed, because closing it changes authentication behaviour for
+  anyone already signed in.
+- The README no longer says `-v` is refused. pcap-server now passes it on every
+  capture, which is what the live packet count reads.
+
 ## 0.1.0-dev.10 — 2026-09-12
 
 ### Fixed

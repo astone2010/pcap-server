@@ -1,0 +1,414 @@
+# Architecture and security
+
+How pcap-server is put together, and what each security measure is actually
+defending against. `README.md` covers installing and using it; this covers how
+it works and why it is built the way it is.
+
+---
+
+## What the app does
+
+An operator adds a remote host, runs `tcpdump` on it over SSH, and gets the
+resulting pcap back to browse in a Wireshark-style viewer in the browser. Every
+interesting design decision follows from one property of that job: **a packet
+capture is one of the most sensitive files a machine can produce.** It contains
+whatever crossed the wire, credentials included. So the capture is encrypted the
+moment it lands, it is never written to disk in the clear, and it is not handed
+over an unencrypted connection.
+
+---
+
+## The pieces
+
+| Layer | What it is |
+| --- | --- |
+| HTTP API and static files | FastAPI on uvicorn, mounted at `/api/*`; the frontend is served from `/` |
+| Frontend | Vanilla HTML, CSS and JavaScript. No build step, no framework, no bundler |
+| Remote execution | `asyncssh`, one connection per running capture |
+| Packet analysis | `tshark` and `capinfos` invoked as subprocesses |
+| Storage | SQLite in WAL mode for metadata; capture files on a separate volume |
+| Encryption | AES-256-GCM envelope encryption, master key from outside the data volume |
+| Container | `python:3.12-slim`, runs as a non-root user (`appuser`, uid 1000) |
+
+### Backend modules
+
+| Module | Responsibility |
+| --- | --- |
+| `main.py` | Routes, middleware, transport policy, app wiring |
+| `auth.py` | Password hashing, sessions, TOTP, trusted devices, login rate limiting |
+| `database.py` | Every SQL statement, schema creation, and in-place migrations |
+| `models.py` | Pydantic models and every input validator |
+| `ssh_manager.py` | Connections, host-key verification, remote command execution, file transfer |
+| `capture.py` | Capture lifecycle: start, monitor, progress, transfer, cleanup |
+| `packet_parser.py` | Feeding captures to `tshark`/`capinfos` and parsing what comes back |
+| `pcapsource.py` | How a capture's bytes reach a tool, plaintext or decrypting in flight |
+| `crypto.py` | The envelope format, sealing and opening |
+| `vault.py` | Key resolution, startup policy, plaintext migration |
+| `localnet.py` | Detecting that a capture target is the machine pcap-server runs on |
+
+There is no ORM, no service layer and no dependency-injection container. Routes
+call the managers directly, and `database.py` is the only module that writes
+SQL. That is deliberate: the codebase is small enough that indirection would
+cost more than it buys, and keeping SQL in one file means the parameterisation
+rule can be checked by reading one file.
+
+---
+
+## The life of a capture
+
+```
+browser  ──POST /api/captures──▶  CaptureManager.start()
+                                        │
+                                        │  concurrency limit checked FIRST,
+                                        │  before any connection is opened
+                                        ▼
+                                  SSHManager.run_tcpdump()
+                                        │  tcpdump -w /tmp/<uuid>.pcap -v ...
+                                        │  wrapped in timeout(1)
+                                        ▼
+                                  _monitor() task
+                                    ├── reads stderr as it arrives  ──▶ live packet count
+                                    ├── waits for exit (with its own backstop timeout)
+                                    ├── SFTP fetch, sealed chunk by chunk on arrival
+                                    ├── deletes the remote /tmp file
+                                    └── counts packets with capinfos
+                                        ▼
+                                  status COMPLETED
+```
+
+Four things are worth pointing at.
+
+**The concurrency limit is checked before anything is opened.** Each running
+capture holds an SSH connection and a local file handle. Checking afterwards
+would mean opening the connection and then tearing it down, which is both
+wasteful and a way for a caller to exhaust descriptors regardless of the limit.
+
+**A failed launch closes its own record.** Only `_monitor` ever ends a running
+capture, and `_monitor` does not exist until the launch succeeds. Without an
+explicit cleanup on the failure path, every unreachable host permanently
+consumed a concurrency slot.
+
+**The remote file is written to `/tmp` on the target and deleted after
+transfer.** It exists in the clear there for the duration of the capture. That
+is inherent to running `tcpdump -w` on someone else's machine, and worth knowing.
+
+**The pcap is sealed as it arrives**, not written and then encrypted. There is no
+window in which a plaintext capture exists on the data volume.
+
+---
+
+## How a capture reaches tshark
+
+This is the part most likely to surprise a reader, so it gets its own section.
+
+An encrypted capture is never decrypted to a file. It is decrypted in flight and
+streamed to `tshark` on stdin, so the only plaintext that exists is the few
+kilobytes in transit between the two processes:
+
+```
+capture.pcap.enc ──▶ EncryptedSource.chunks() ──▶ os.pipe() ──▶ tshark -r -
+                     (decrypts 64 KiB at a time,
+                      off the event loop)
+```
+
+The pipe is created explicitly with `os.pipe()` rather than by passing
+`stdin=PIPE`. That is not a stylistic choice. Wiretap, the library beneath both
+`tshark` and `capinfos`, accepts a regular file or a FIFO on stdin and rejects
+anything else:
+
+```
+tshark: The standard input is a "special file" or socket or other non-regular file.
+```
+
+asyncio's `stdin=PIPE` is a real pipe and passes that check. **uvloop's is a Unix
+socketpair and does not** — and `uvicorn[standard]` selects uvloop, so the
+container runs uvloop and a development machine running the test suite on stock
+asyncio does not. Creating the pipe directly makes the descriptor a FIFO under
+either event loop. The regression test asserts the kind of descriptor rather
+than the loop, so it holds for both.
+
+Feeding runs as its own task while stdout is drained, because a capture larger
+than the pipe buffer would otherwise deadlock: the writer blocks on a full pipe
+while the reader waits for output that cannot come.
+
+---
+
+## Data at rest
+
+Envelope encryption, `crypto.py`:
+
+```
+master key (KEK)          from outside the data volume, never stored beside it
+    │
+    └─ wraps ─▶ data key (DEK)     random 256-bit, one per capture file
+                    │
+                    └─ seals ─▶ 64 KiB chunks, AES-256-GCM
+```
+
+The file format is versioned and self-describing:
+
+| Field | Size | Purpose |
+| --- | --- | --- |
+| magic | 8 bytes | `PCAPENC\x01` — format identification and version |
+| kek_id | 16 bytes | `SHA-256(KEK)[:16]`, so a wrong key is named rather than guessed at |
+| dek_nonce | 12 bytes | nonce for the wrapped data key |
+| wrapped_dek | 48 bytes | `AES-256-GCM(KEK, DEK)`, AAD = magic ‖ kek_id |
+| chunks | repeated | 4-byte length ‖ 12-byte nonce ‖ ciphertext+tag |
+| terminator | — | a zero-length chunk marks a clean end |
+
+Each chunk is sealed with AAD = magic ‖ chunk index, so chunks cannot be
+reordered within a file or spliced between files. The explicit terminator makes
+truncation detectable rather than indistinguishable from a short capture.
+
+**Where the key comes from** is the whole point. Encrypting with a key stored
+beside the data protects nothing. The master key arrives as a Docker secret file,
+an environment variable, or is derived from an admin passphrase with scrypt
+(N = 2^17, roughly 128 MB and 100 ms per attempt) and exists only in RAM.
+
+**The startup policy fails closed.** A missing key with encrypted captures
+present, or a key that does not open the captures already stored, refuses to
+start rather than silently writing new captures under a different key or in the
+clear. Running unencrypted is possible but requires
+`ALLOW_UNENCRYPTED_CAPTURES=true` — it never happens by accident.
+
+**What this protects against:** someone who reads the data volume, a stolen
+backup, a discarded disk, a copied captures directory. **What it does not:**
+someone who can execute inside the running container or read its memory. That is
+the honest limit of any at-rest scheme whose key must be present for the app to
+run unattended.
+
+---
+
+## Data in transit
+
+Two different links, protected differently.
+
+**Browser to pcap-server** is the operator's problem to terminate, because a LAN
+appliance cannot obtain its own certificates. So instead of pretending, the app
+degrades explicitly: **over plain HTTP it runs read-only.** Anything that changes
+state, and anything that exports capture contents in bulk, is refused with a
+structured error the UI renders in full rather than as a bare 403. Viewing is
+allowed. The exceptions are the endpoints without which there is no way in at
+all — login, logout, register, TOTP confirm — because refusing those would leave
+no degraded mode, just a locked door.
+
+Loopback counts as secure transport: a connection that never leaves the machine
+has no wire to be read from. `X-Forwarded-Proto` is honoured only when
+`TRUST_PROXY_HEADERS=true`, because an untrusted client can set it.
+
+**pcap-server to the target host** is SSH, key-based only — `asyncssh.connect`
+is called with `password=None` and `passphrase=None` explicitly, so there is no
+path by which a password could be used. That is why passwordless sudo is
+required on the target: there is no password to give it.
+
+---
+
+## Authentication
+
+| Mechanism | Detail |
+| --- | --- |
+| Passwords | scrypt, N = 2^17, r = 8, p = 1, dklen 64. Parameters are stored in the hash so cost can be raised later without invalidating existing passwords; `needs_rehash` detects the old implicit format |
+| Comparison | `hmac.compare_digest`, not `==` |
+| Sessions | 48 bytes from `secrets.token_urlsafe`. **The database stores only the SHA-256 digest**, so a leaked database does not hand over live sessions |
+| Cookie | `HttpOnly`, `SameSite=Strict`, `Secure` by default (`COOKIE_SECURE=false` for plain-HTTP deployments) |
+| Expiry | Absolute expiry enforced in SQL, idle expiry enforced on read. An idle session is *deleted*, not merely rejected, so a later request inside the window cannot revive it |
+| Second factor | TOTP with `pyotp`, one-step validation window either side of the current code |
+| Trusted devices | Separate 48-byte token, also stored as a digest, with its own expiry |
+| Login throttling | Per-client-IP, five attempts then a fifteen-minute lockout, both adjustable at runtime |
+
+**TOTP enrolment is currently enforced by the frontend, not the API.** A first
+login returns `needs_totp_setup: true` and the UI acts on it, but no route
+checks `totp_confirmed`, so a client that ignores the flag holds a valid session
+without ever enrolling. Closing that is part of the API hardening pass on the
+roadmap; until then, treat the second factor as protecting the browser flow
+rather than the API surface.
+
+Session `last_seen` is written at most once a minute rather than on every
+request. On a single-writer database, touching a row per API call is both
+wasteful and a lock-contention risk; the write interval is far shorter than the
+idle window, so throttling cannot meaningfully extend a session's life.
+
+---
+
+## Input validation
+
+Every input has a validator in `models.py`, and each one exists for a specific
+reason rather than as a general precaution.
+
+**SSH usernames** are constrained to `[A-Za-z0-9_][A-Za-z0-9._@-]{0,63}`. The
+prerequisite check prints a sudoers rule naming this user for an operator to
+paste in as root. Everything sudoers gives meaning to — whitespace, `#`, `,`,
+`=`, `(`, `)`, `:`, `!` — is excluded, so a username cannot extend that rule
+into a broader grant than the one binary it names. The stored-username list uses
+the same validator, because a name saved there is offered straight back into a
+server.
+
+**tcpdump flags** are checked against a refusal list — `-z`, `-Z`, `-W`, `-G`,
+`-C`, `-r`, `-F`, `-V` — on the fully built argument list, immediately before
+execution. `tcpdump` may be running under sudo, and those flags turn a capture
+into command execution or arbitrary file reads as root. Nothing user-supplied
+reaches tcpdump as a flag any more, which is exactly why this is checked rather
+than assumed: a future change that routes input back into the argument list
+fails here instead of quietly handing root a `-z`.
+
+**BPF filters** reject shell metacharacters and are passed as a single argument
+after `--`, so a filter beginning with a dash is read as an expression rather
+than an option, and a filter can never become part of the command.
+
+**Display filters** reject `; | & $ \` \` before reaching `tshark`.
+
+**tcpdump paths** must be absolute and end in `/tcpdump`.
+
+**SSH key names** must be plain filenames with no path separators and no `..`.
+
+**Remote stderr is treated as hostile input**, because it comes from the machine
+under investigation. The progress-count pattern is bounded to twelve digits, so
+a flood of digits cannot hand `int()` a quadratic parse, and the retained buffer
+is capped, so a chatty or malicious host cannot grow it without limit.
+
+---
+
+## SSH host key verification
+
+Host keys are managed per endpoint, not per row. A host answers with one key per
+algorithm — `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ssh-rsa` — and whichever the
+two ends negotiate is the one checked. So all of a host's keys are stored,
+trusted and forgotten as a set; deleting one row would have left the rest still
+verifying the host, with the next scan restoring the deleted one.
+
+An unverified host still connects, it just is not checked, and the UI says so.
+The negotiated algorithm is reported after connecting, and a negotiation weaker
+than what the host had available is flagged.
+
+---
+
+## Not capturing yourself
+
+Capturing an interface that carries pcap-server's own traffic records its own
+web session: over plain HTTP that is the admin password verbatim, and on any
+connection the session cookie and TOTP code — written into a capture that is
+then stored and browsable in this UI. On a Docker host, capturing `any` also
+sweeps the bridge interfaces and records every other container's traffic.
+
+`localnet.py` checks a target before a server can be added, in decreasing order
+of certainty: loopback and any address the container holds (unambiguous), the
+default gateway (on a Docker bridge network, that is the host), and the names
+Docker publishes for the host. What it cannot detect is the host's LAN address
+when the container has never been told what the host is called. So it reports
+what it found rather than claiming proof of non-locality.
+
+---
+
+## Browser-side defences
+
+Content-Security-Policy is defence in depth behind output escaping, not instead
+of it. `connect-src`, `img-src` and `form-action` mean script running on this
+origin cannot send anything to another host, by fetch, by image URL, or by form
+submission. `frame-ancestors` blocks clickjacking and `base-uri` stops an
+injected `<base>` silently re-pointing every relative URL.
+
+`script-src` does not need `unsafe-inline`: every inline handler was moved to
+`addEventListener`, and the one remaining inline script — the theme-flash
+snippet that must run before `app.js` loads — is pinned by content hash.
+
+Also set on every response: `X-Content-Type-Options: nosniff`, `X-Frame-Options:
+DENY`, `Referrer-Policy: no-referrer`, a `Permissions-Policy` denying camera,
+microphone, geolocation and interest-cohort tracking, and same-origin COOP and
+CORP. HSTS is sent
+only where TLS is genuinely in use — sending it from a LAN deployment that later
+cannot do TLS would lock operators out of their own tool.
+
+---
+
+## Storage layout
+
+| Path | Contents | Notes |
+| --- | --- | --- |
+| `/app/data` | SQLite database | WAL mode, foreign keys on |
+| `/app/captures` | Capture files | `<uuid>.pcap.enc` when encryption is on |
+| `/app/ssh-keys` | SSH private keys | Uploaded through the Admin panel |
+| `/run/secrets/…` | Master key | Deliberately **not** on a data volume |
+
+Tables: `users`, `sessions`, `trusted_devices`, `active_servers`, `known_hosts`,
+`known_usernames`, `captures`, `settings`.
+
+Schema changes are applied in place at startup by `_migrate()`, guarded by
+`PRAGMA table_info` checks so they are idempotent. One-shot data migrations are
+flagged in `settings` rather than re-run, so a backfill cannot resurrect a row
+the operator has since deleted.
+
+Every SQL statement is parameterised. The two places that interpolate into SQL
+at all interpolate hardcoded literals chosen by a local `PRAGMA`, never input.
+
+Keeping metadata and captures on separate volumes matters: the database holds
+the encryption salt, and a backup that contains both the salt and the captures
+is a smaller step from plaintext than one that does not.
+
+---
+
+## Runtime settings
+
+Adjustable from the Admin panel, applied without a restart:
+
+| Setting | Default |
+| --- | --- |
+| `max_capture_seconds` | 300 |
+| `max_capture_packets` | 100000 |
+| `max_concurrent_captures` | 5 |
+| `session_duration_hours` | 8 |
+| `session_idle_timeout_minutes` | 60 |
+| `device_trust_days` | 30 |
+| `rate_limit_max_attempts` | 5 |
+| `rate_limit_lockout_minutes` | 15 |
+
+---
+
+## Testing
+
+`scripts/check.sh` is the single entry point, used by CI and locally so the two
+cannot drift. It reports which of `tshark`, `tcpdump`, `capinfos` and `docker`
+are present, then runs pytest with `-r s` so skipped tests appear in the report.
+A suite that prints "all passed" while quietly dropping the tshark-dependent
+tests is how a real regression ships unnoticed.
+
+Tests alone are not sufficient here, and the history says so plainly. A missing
+comma once left `app.js` unparseable and blanked the entire UI while every test
+passed, and the uvloop socketpair failure passed every test on stock asyncio
+while failing every capture in the container. Changes to the frontend or to
+subprocess handling get driven in a real browser against a real server.
+
+---
+
+## Known limits
+
+- The pcap exists in the clear in `/tmp` on the **target** host for the duration
+  of the capture. Inherent to `tcpdump -w` on a remote machine.
+- At-rest encryption cannot protect against code execution inside the running
+  container.
+- Self-capture detection cannot see the host's LAN address from inside a bridged
+  container.
+- Passwordless sudo for `tcpdump` on the target is a privilege boundary the
+  operator chooses to open. Use a dedicated account for it. The `setcap` route
+  avoids sudo entirely and is preferred.
+- The single-writer SQLite database is fine for the concurrency this tool sees
+  and would not be for much more.
+- TOTP enrolment is enforced by the UI, not by the API (see Authentication).
+
+---
+
+## Roadmap
+
+**MCP server.** Expose pcap-server's capabilities over the Model Context
+Protocol, so an agent can list servers, start a capture, and query the resulting
+packets as tools rather than by driving the HTTP API. The interesting questions
+are authorisation — an MCP client is not a browser session and should not
+inherit one — and how much of a capture should be allowed to cross that boundary
+at all.
+
+**Packet sanitizer.** Produce a redacted copy of a capture that can be shared
+outside the team: strip or mask payloads, credentials in cleartext protocols,
+authentication headers, and optionally rewrite addresses consistently so traffic
+patterns survive while identities do not. This is what makes a capture shareable
+with a vendor or attached to a ticket, and it pairs directly with the at-rest
+encryption already here — the encryption protects what must not leave, and the
+sanitizer defines what may.

@@ -19,6 +19,9 @@ in your browser.
 - **Prerequisite check** — read-only probe for tcpdump, privilege, PATH and SELinux; never installs anything
 - **View flags** — MAC columns and timestamp format, each documenting what it does
 - **Optional name resolution** — off by default, because resolving addresses from a capture queries DNS
+- **Live packet count** — a running capture reports how many packets it has taken so far, read from tcpdump's own running total
+- **Named captures** — rename a capture at any time; the name replaces the UUID in the list and the viewer
+- **Stored SSH usernames** — login names are saved as you use them, offered in a dropdown on the server form, and managed from the Admin panel
 - **Capture provenance** — every capture records the server it ran against, and keeps it even if that server is later deleted
 - **Colour-coded packets** — Wireshark-style colouring by protocol, with problems and resets called out
 - **Light and dark themes** — dark by default, toggled from the toolbar and remembered
@@ -66,11 +69,18 @@ These are configurable from the Admin tab by the admin user:
 
 A capture always runs as `tcpdump -w <file>`, so that a pcap comes back for
 analysis. `-w` turns tcpdump from a printer into a writer: it stops formatting
-text and writes raw packet records. tcpdump's display flags — `-v`, `-vv`,
-`-vvv`, `-q`, `-A`, `-X`, `-XX`, `-e`, `-n`, `-nn`, `-t`/`-tt`/`-ttt`/`-tttt` —
-format text that is never emitted under `-w`, so they cannot affect the capture
-and are not accepted. The ones that describe how to *read* a capture live in the
-Viewer instead, where they change the packet list.
+text and writes raw packet records. tcpdump's display flags — `-vv`, `-vvv`,
+`-q`, `-A`, `-X`, `-XX`, `-e`, `-n`, `-nn`, `-t`/`-tt`/`-ttt`/`-tttt` — format
+text that is never emitted under `-w`, so they cannot affect the capture and are
+not accepted. The ones that describe how to *read* a capture live in the Viewer
+instead, where they change the packet list.
+
+`-v` is the exception, and pcap-server adds it to every capture itself, which is
+why it appears in the command shown against each one. It still changes nothing
+in the file. Under `-w` it makes tcpdump report its running packet total on
+stderr once a second, which is what the live count on a running capture reads —
+the pcap is on the remote host until the capture ends, so there is nothing else
+to count.
 
 Four things decide what a capture contains, and each is a field on the capture
 form:
@@ -350,6 +360,24 @@ a login you use for other purposes on that host.
 - **Frontend** — vanilla HTML/CSS/JS, no build step
 - **Database** — SQLite with WAL mode
 - **Container** — Docker with python:3.12-slim base, runs as non-root user
+
+**[docs/architecture.md](docs/architecture.md)** is the full account: how a
+capture flows from the form to the viewer, how it is encrypted at rest and
+decrypted in flight without ever becoming a plaintext file, what every input
+validator is defending against, and where the honest limits are.
+
+## Roadmap
+
+- **MCP server** — expose servers, captures and packet queries over the Model
+  Context Protocol, so an agent can drive pcap-server as tools rather than by
+  imitating a browser session. The open questions are authorisation, since an
+  MCP client is not a browser session and should not inherit one, and how much
+  of a capture should be allowed to cross that boundary.
+- **Packet sanitizer** — produce a redacted copy of a capture that is safe to
+  share outside the team: strip or mask payloads and cleartext credentials, and
+  optionally rewrite addresses consistently so traffic patterns survive while
+  identities do not. It pairs with the encryption already here — that protects
+  what must not leave, this defines what may.
 
 ## Development
 
