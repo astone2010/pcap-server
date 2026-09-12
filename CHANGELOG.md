@@ -29,6 +29,20 @@
   an array of `{loc, msg, type}`; only the `msg` fields are written for a person
   to read.
 
+### Security
+
+- **Two-factor authentication is now enforced by the API, not only by the UI.**
+  A first login returns `needs_totp_setup` and the frontend acts on it, but no
+  route ever checked `totp_confirmed` — so any client that ignored the flag held
+  a session backed by a password alone, with the whole API behind it. The check
+  now lives on `get_current_user`, the dependency every protected route already
+  uses, so a new route cannot forget it. The two enrolment endpoints opt out
+  visibly by depending on `get_session_user` instead, and `/api/auth/status`
+  keeps answering so the UI can still route a half-enrolled account to the
+  screen that finishes enrolment. A refused call returns a structured
+  `totp_setup_required` that the frontend turns into the enrolment screen rather
+  than an opaque 403.
+
 ### Added
 
 - **Running captures report how many packets they have taken.** `tcpdump -v`
@@ -64,12 +78,9 @@
   self-capture detection, the browser-side headers, and the known limits.
 - **Roadmap** — an MCP server and a packet sanitizer, in the README and in the
   architecture document.
-- Recorded a gap found while writing the above: **TOTP enrolment is enforced by
-  the frontend, not the API.** A first login returns `needs_totp_setup` and the
-  UI acts on it, but no route checks `totp_confirmed`, so a client that ignores
-  the flag holds a valid session without enrolling. Documented rather than
-  silently changed, because closing it changes authentication behaviour for
-  anyone already signed in.
+- The architecture document's authentication section records the TOTP
+  enforcement gap that writing it uncovered, and the Security entry above is the
+  fix.
 - The README no longer says `-v` is refused. pcap-server now passes it on every
   capture, which is what the live packet count reads.
 

@@ -1,7 +1,7 @@
 # Dev Skills gate state
 Track: work commit
 Version: 0.1.0-dev.10 (unchanged -- this commit does not bump anything)
-Updated: 2026-09-12 (docs commit)
+Updated: 2026-09-12 (TOTP enforcement)
 
 🔢 VERSION    ⬜ not owed on a work commit. No refs touched; main.py, the
                 compose file and the CHANGELOG heading all still read
@@ -41,12 +41,16 @@ Updated: 2026-09-12 (docs commit)
                 `git ls-remote --tags origin v0.1.0-dev.10` shows it, dev.10 is
                 an unfinished Gate 6.
 
-Open security finding, documented not yet fixed:
-  * TOTP enrolment is enforced by the frontend only. Login succeeds and returns
-    needs_totp_setup; no route checks totp_confirmed, so an API client that
-    ignores the flag holds a valid session without a second factor. Belongs to
-    follow-up #1. Not changed unilaterally: enforcing it server-side changes
-    authentication behaviour for anyone already signed in.
+Closed this session:
+  * TOTP enrolment is now enforced on get_current_user, so all 24 protected
+    routes and require_admin inherit it. Verified the new tests fail without
+    the check and pass with it, rather than assuming.
+
+Outstanding, needs the repository owner:
+  * The repo's DEFAULT BRANCH is claude/hopeful-allen-qmo0ch, the initial
+    commit, 37 behind this branch and a strict ancestor of it. GitHub renders
+    the landing page and README from the default branch, so none of this work
+    is visible at the repository root. Changing it is a repository setting.
 
 Quality, surfaced and accepted:
   * CaptureManager._monitor is ~90 lines and now carries a nested live-count

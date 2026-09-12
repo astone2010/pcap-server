@@ -159,7 +159,13 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def get_current_user(request: Request) -> dict:
+def get_session_user(request: Request) -> dict:
+    """A live session, with the second factor not yet considered.
+
+    Only TOTP enrolment depends on this: it is the one thing a half-enrolled
+    account has to be able to reach. Everything else depends on
+    get_current_user below.
+    """
     token = request.cookies.get("session")
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -170,6 +176,32 @@ def get_current_user(request: Request) -> dict:
     user = validate_session(db, token)
     if not user:
         raise HTTPException(401, "session expired or invalid")
+    return user
+
+
+def get_current_user(user: dict = Depends(get_session_user)) -> dict:
+    """Both factors, not just the first.
+
+    TOTP used to be enforced by the frontend alone. A first login returns
+    needs_totp_setup and the UI acts on it, but nothing on this side looked at
+    totp_confirmed -- so a client that simply ignored the flag held a session
+    backed by a password and nothing else, with the full API behind it. Putting
+    the check on the dependency every route already uses means a new route
+    cannot forget it, and the enrolment endpoints opt out visibly by depending
+    on get_session_user instead.
+    """
+    if not user["totp_confirmed"]:
+        raise HTTPException(403, {
+            "code": "totp_setup_required",
+            "reason": (
+                "Two-factor authentication has not been set up on this account, so "
+                "it is protected by a password alone."
+            ),
+            "remedy": (
+                "Scan the enrolment code with an authenticator app and enter a current "
+                "code to finish signing in."
+            ),
+        })
     return user
 
 
@@ -457,7 +489,7 @@ async def logout(request: Request, response: Response):
 
 
 @app.get("/api/auth/totp/setup")
-async def totp_setup(user: dict = Depends(get_current_user)):
+async def totp_setup(user: dict = Depends(get_session_user)):
     if user["totp_confirmed"]:
         raise HTTPException(400, "TOTP already configured")
     secret = user.get("totp_secret")
@@ -470,7 +502,7 @@ async def totp_setup(user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/auth/totp/confirm")
-async def totp_confirm(req: TOTPSetupRequest, user: dict = Depends(get_current_user)):
+async def totp_confirm(req: TOTPSetupRequest, user: dict = Depends(get_session_user)):
     if user["totp_confirmed"]:
         raise HTTPException(400, "TOTP already confirmed")
     secret = user.get("totp_secret")

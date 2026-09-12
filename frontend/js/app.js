@@ -33,6 +33,14 @@ async function api(path, options = {}) {
             err.httpsRequired = true;
             throw err;
         }
+        // The API refuses a session that never finished enrolling. The normal
+        // bootstrap already routes there off /api/auth/status, so reaching this
+        // means a stale tab or a call that ran before the gate -- send them to
+        // the enrolment screen rather than showing an opaque 403.
+        if (detail && typeof detail === "object" && detail.code === "totp_setup_required") {
+            showTotpSetup().catch(() => {});
+            throw new Error(detail.reason);
+        }
         if (detail && typeof detail === "object" && detail.code === "self_capture") {
             showBlockingAlert("Cannot capture from this machine", detail.reason,
                               detail.explanation);

@@ -11,10 +11,14 @@ SystemExit(1) on a refused vault.
 
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 
 import pytest
+import pyotp
 from fastapi.testclient import TestClient
+
+from backend.auth import create_session_token
 
 from backend import main
 
@@ -194,3 +198,80 @@ def test_insecure_allowed_paths_are_not_blocked_over_http(client, path):
 def test_get_requests_are_never_blocked_by_read_only_middleware(client):
     resp = client.get("/api/auth/status")
     assert resp.status_code == 200
+
+
+# --- TOTP is enforced by the API, not just by the UI ---------------------------
+#
+# A first login returns needs_totp_setup and the frontend acts on it, but for a
+# long time nothing on this side looked at totp_confirmed. Any client that
+# ignored the flag -- curl, a script, a stale tab -- held a session backed by a
+# password and nothing else, with the whole API behind it. The check lives on
+# get_current_user now, so a new route cannot forget it, and the two enrolment
+# endpoints opt out visibly by depending on get_session_user instead.
+
+
+@pytest.fixture()
+def half_enrolled(client):
+    """Signed in, second factor not yet set up."""
+    user_id = str(uuid.uuid4())
+    main.db.create_user(user_id, f"pending-{user_id[:8]}", "scrypt$1$1$1$00$00", is_admin=True)
+    token, _ = create_session_token(main.db, user_id)
+    client.cookies.set("session", token)
+    try:
+        yield user_id
+    finally:
+        main.db.delete_user(user_id)
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("get", "/api/servers"),
+        ("get", "/api/captures"),
+        ("get", "/api/usernames"),
+        ("get", "/api/ssh-keys"),
+    ],
+)
+def test_a_session_without_totp_is_refused(client, half_enrolled, method, path):
+    resp = getattr(client, method)(path)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "totp_setup_required"
+
+
+def test_admin_routes_are_refused_before_totp_as_well(client, half_enrolled):
+    """require_admin depends on get_current_user, so it inherits the gate. An
+    admin account with one factor must be less reachable than a user's, not more."""
+    resp = client.get("/api/admin/users")
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "totp_setup_required"
+
+
+def test_enrolment_itself_stays_reachable(client, half_enrolled):
+    """The one thing a half-enrolled account must be able to do."""
+    resp = client.get("/api/auth/totp/setup")
+    assert resp.status_code == 200
+    assert resp.json()["secret"]
+
+
+def test_auth_status_still_answers_for_a_half_enrolled_session(client, half_enrolled):
+    """The UI bootstraps off this and routes to enrolment when it sees
+    totp_confirmed false. Gating it would lock the user out of the screen that
+    finishes enrolment."""
+    body = client.get("/api/auth/status").json()
+    assert body["authenticated"] is True
+    assert body["user"]["totp_confirmed"] is False
+
+
+def test_confirming_totp_opens_the_rest_of_the_api(client, half_enrolled):
+    secret = client.get("/api/auth/totp/setup").json()["secret"]
+
+    confirmed = client.post("/api/auth/totp/confirm", json={"code": pyotp.TOTP(secret).now()})
+    assert confirmed.status_code == 200
+    assert client.get("/api/servers").status_code == 200
+
+
+def test_no_session_is_still_a_401_not_a_403(client):
+    """The two refusals mean different things: 401 is "sign in", 403 here is
+    "you are signed in but only halfway"."""
+    client.cookies.clear()
+    assert client.get("/api/servers").status_code == 401
