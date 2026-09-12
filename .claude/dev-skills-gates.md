@@ -212,3 +212,28 @@ Scaffolding
 Still impossible here regardless of the harness: `docker compose build` is
 untestable with no daemon, and the 10.0.0.230 prereq check needs LAN reach.
 Both stay on real hardware.
+
+---
+
+## Harness progress (session 4, 2026-09-12)
+Track: work commit (test scaffolding, no version bump)
+🔒 SECURITY   ✅ 0 Critical, 0 High (test-only diff -- fixtures use synthetic
+  key bytes, tmp_path-scoped I/O, no dangerous patterns)
+
+Landed: pyproject.toml (pytest config, pythonpath + asyncio_mode=auto),
+backend/requirements-dev.txt (pytest/pytest-asyncio/httpx, kept out of
+Dockerfile per the plan), tests/test_crypto.py -- 28 tests, all passing,
+covering: envelope round-trip (bytes + file), Sealer header/seal/finish
+lifecycle incl. double-finish and seal-after-finish, WrongKey on both a
+foreign kek_id and a corrupted wrap tag under the same kek_id, CryptoError
+on missing terminator / mid-chunk truncation / spliced chunks (proves the
+per-chunk AAD index binding), NotEncrypted / looks_encrypted on plaintext,
+_coerce_key across raw/hex/base64 plus 6 rejection cases, and KDF_N == 1<<17
+pinned so the scrypt cost can't be silently lowered.
+
+Environment this session: docker present, no tcpdump/tshark/gh. Fresh venv,
+clean `pip install -r backend/requirements.txt` (no cryptography/RECORD
+conflict this time -- different container than the one that hit that).
+
+Next: tests/test_vault.py (StartupRefused / WrongKey-vs-damage / migrate_plaintext
+/ stored_path / source_for), per the file-by-file plan above.
