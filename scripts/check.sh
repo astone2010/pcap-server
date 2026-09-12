@@ -28,6 +28,13 @@ PYTHON=.venv/bin/python
 "$PYTHON" -m pip install -q --upgrade pip
 "$PYTHON" -m pip install -q -r backend/requirements-dev.txt
 
+# After the install, because it needs the playwright package to answer at all.
+# Same reason the tool list above exists: a browser suite that quietly skips is
+# a UI regression that ships.
+echo "== Browser for the UI suites =="
+"$PYTHON" tests/browser/browser_binary.py
+echo
+
 # -r s: always show which tests were skipped and why. A suite that prints
 # "all passed" while quietly dropping the tshark-dependent tests is how a
 # real regression (see the dev.7 -n/-nn mixup) ships unnoticed.

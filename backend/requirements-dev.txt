@@ -2,3 +2,11 @@
 pytest==8.3.4
 pytest-asyncio==0.25.2
 httpx==0.28.1
+
+# The browser suites (tests/browser) drive the real UI in a real chromium: the
+# API suites cannot see a form with no way to submit it, or an inline script
+# the CSP silently dropped. pip installs the driver, not the browser -- get the
+# browser with `python -m playwright install chromium`, or point
+# PCAP_TEST_CHROMIUM at one the environment already ships. Without it those
+# tests report as SKIPPED, and scripts/check.sh says so before pytest runs.
+playwright==1.62.0

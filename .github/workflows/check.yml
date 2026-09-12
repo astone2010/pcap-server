@@ -23,5 +23,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends tshark tcpdump
 
+      # The browser itself is not a pip package. Installed here rather than in
+      # scripts/check.sh so that running the checks locally never downloads a
+      # browser behind a developer's back -- the script reports what it found
+      # and the suites skip with the remedy in the reason.
+      #
+      # From the same pinned file the suites use, so the browser revision this
+      # downloads is the one that playwright expects. It means installing the
+      # dependencies twice on a CI run -- once here, once into the venv
+      # scripts/check.sh builds -- which is a cheaper price than a second place
+      # holding a playwright version that can drift from the first.
+      - name: Install chromium for the browser suites
+        run: |
+          python -m pip install -q -r backend/requirements-dev.txt
+          python -m playwright install --with-deps chromium
+
       - name: Run tests
         run: ./scripts/check.sh
