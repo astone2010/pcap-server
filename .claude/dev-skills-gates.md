@@ -1,73 +1,60 @@
 # Dev Skills gate state
-Track: work commit
-Version: 0.1.0-dev.10 (unchanged -- this commit does not bump anything)
-Updated: 2026-09-12 (filter UX)
+Track: release sequence
+Version: 0.1.0-dev.11
+Updated: 2026-09-12
 
-🔢 VERSION    ⬜ not owed on a work commit. No refs touched; main.py, the
-                compose file and the CHANGELOG heading all still read
-                0.1.0-dev.10.
-🔨 BUILD      ✅ 384 tests green via the venv with real tshark, capinfos and
-                tcpdump installed, so nothing skipped. The app was booted under
-                uvicorn (uvloop) with a seeded encrypted capture and driven end
-                to end in Chromium: viewer, packet detail, hex dump, display
-                filter, capture rename, the capture-page host label, the server
-                username picker and the Admin username list all verified in the
-                browser, not just in tests.
-🔒 SECURITY   ✅ 0 Critical, 0 High. pip-audit clean (no dependency changes).
-                Found and fixed in this diff: the tcpdump progress parser
-                matched an unbounded digit run from the captured host's stderr,
-                handing int() a quadratic parse; and that stderr accumulated for
-                the whole capture with no cap. Both are remote-influenced input
-                from a host under investigation, so both are bounded now.
-                Reviewed and cleared: every new SQL statement is parameterised;
-                the one-off backfill uses literals only; the username endpoints
-                validate through the same rule the sudoers line depends on and
-                scope every read and write by user_id; the new mutating routes
-                inherit the plain-HTTP read-only refusal from the existing
-                middleware; all new frontend interpolation is escaped or set
-                through textContent.
-📄 DOCS       ✅ run anyway, ahead of any release. docs/architecture.md written
-                and linked from the README; roadmap (MCP server, packet
-                sanitizer) added to both; the README's "-v is not accepted"
-                claim corrected, since pcap-server now sends it; CHANGELOG has
-                an Unreleased entry covering all of this session's work.
-                Every claim in the architecture document was checked against
-                the code rather than written from memory, which is how the TOTP
-                enforcement gap below was found.
-📦 RELEASE    ⬜ not owed on a work commit.
-🚀 SHIP       ⏳ CARRIED OVER, NOT THIS SESSION'S WORK: v0.1.0-dev.10 was
-                released and pushed last session but never tagged. Tag pushes
-                are always the user's to run. Until
-                `git ls-remote --tags origin v0.1.0-dev.10` shows it, dev.10 is
-                an unfinished Gate 6.
-
-Security note on the filter change:
-  * The display filter's character rule was LOOSENED to allow & and |. Justified
-    by the call path, not by convenience: the filter reaches tshark through
-    create_subprocess_exec as one argv element with no shell involved, which is
-    now asserted by a test that runs a probe and checks argv rather than being
-    claimed in a comment. ; $ ` and backslash stay rejected, a length cap was
-    added, and the capture filter keeps the stricter rule because it does travel
-    inside a shell command string over SSH.
-
-Closed this session:
-  * TOTP enrolment is now enforced on get_current_user, so all 24 protected
-    routes and require_admin inherit it. Verified the new tests fail without
-    the check and pass with it, rather than assuming.
+🔢 VERSION    ✅ 0.1.0-dev.11 in backend/main.py, docker-compose.yml and the
+                CHANGELOG heading. Previous version confirmed tagged on the
+                remote: v0.1.0-dev.10 at c3df2cb, read with git ls-remote, not
+                from a local tag list. Repo and release-notes links present in
+                main.py.
+🔨 BUILD      ✅ 399 tests green, no skips -- tshark, capinfos and tcpdump are
+                all installed in this container, so the suites that need them
+                ran rather than reporting SKIPPED. Booted under uvicorn (uvloop)
+                with a seeded encrypted capture and driven end to end in
+                Chromium across three suites: the viewer and capture rename, the
+                filter UX, and the stored-username list. That browser pass is
+                not optional here -- it caught a stale function name this
+                session that every one of the 399 tests was blind to.
+🔒 SECURITY   ✅ 0 Critical, 0 High. pip-audit clean, no dependency changes.
+                Fixed this release: TOTP was enforced by the frontend only, so
+                any client ignoring needs_totp_setup held a session with one
+                factor and the whole API behind it -- the check now sits on
+                get_current_user, which all 24 protected routes and require_admin
+                share. Also bounded the tcpdump progress parser and its stderr
+                buffer, both fed by the host under investigation.
+                Deliberately loosened, with reasoning: the display filter now
+                accepts & and |, because it reaches tshark through
+                create_subprocess_exec as one argv element with no shell on the
+                path. That property is asserted by a test that inspects argv
+                rather than claimed in a comment. ; $ ` and backslash stay
+                refused, a length cap was added, and the capture filter keeps
+                the stricter rule because it does travel in a shell string.
+📄 DOCS       ✅ CHANGELOG entry for 0.1.0-dev.11 with date, covering fixed,
+                added, changed, security and documentation. docs/architecture.md
+                written this release and linked from the README. README gains a
+                two-filters comparison, the new feature lines, a roadmap, and no
+                longer claims -v is refused.
+📦 RELEASE    ✅ commit approved by the user, who also asked for the tag.
+                PR step ➖ N/A -- the repo has no branch to merge into: the
+                default branch is the initial commit and every release from
+                dev.1 to dev.10 was tagged on a claude/* branch.
+🚀 SHIP       ⏳ awaiting the tag. Tag pushes are always the user's to run.
+                Stays ⏳ until `git ls-remote --tags origin v0.1.0-dev.11`
+                confirms it, the release workflow (.github/workflows/release.yml,
+                on: push tags v*) completes, and the ghcr.io image and the
+                GitHub Release are verified.
 
 Outstanding, needs the repository owner:
   * The repo's DEFAULT BRANCH is claude/hopeful-allen-qmo0ch, the initial
-    commit, 37 behind this branch and a strict ancestor of it. GitHub renders
-    the landing page and README from the default branch, so none of this work
-    is visible at the repository root. Changing it is a repository setting.
+    commit, and every commit since sits on claude/admiring-wright-k20ptf.
+    GitHub renders the landing page and README from the default branch, so
+    none of this work is visible at the repository root. A settings change.
+  * v0.1.0-dev.8 has a CHANGELOG entry but no tag on the remote. Every other
+    version from dev.1 to dev.10 is tagged. An unfinished release predating
+    this session.
 
-Quality, surfaced and accepted:
-  * CaptureManager._monitor is ~90 lines and now carries a nested live-count
-    closure. Cohesive but large; left as known debt rather than split under an
-    unrelated change.
-
-Follow-ups requested by the user, not started:
-  #1 full API hardening pass (auth/authz per route, pydantic bodies instead of
-     raw request.json(), rate limiting on the probe endpoints, error shapes).
-  #2 filter UX -- pattern suggestions and real documentation for both the BPF
-     capture filter and the viewer display filter.
+Not started, agreed as next:
+  * Full API hardening pass: per-route auth and authz audit, pydantic bodies in
+    place of raw request.json(), rate limiting on the probe endpoints,
+    consistent error shapes. The TOTP fix in this release is the first piece.

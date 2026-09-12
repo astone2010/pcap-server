@@ -49,10 +49,40 @@ _STDERR_COLLAPSE_PARTS = 32
 # number that is superseded a second later, so the row lags deliberately.
 _LIVE_COUNT_PERSIST_SECONDS = 2.0
 
+# How long to keep reading stderr after tcpdump exits. Its last words -- the
+# summary counts, and any diagnosis of a failure -- all arrive in that moment.
+_STDERR_DRAIN_SECONDS = 5
+
 # Captures that are still consuming a resource -- an SSH connection to the
 # target, a local file being written, a monitor task -- as opposed to ones
 # that have finished one way or another and are just sitting in history.
 _ACTIVE_STATUSES = (CaptureStatus.RUNNING, CaptureStatus.STOPPING, CaptureStatus.TRANSFERRING)
+
+
+class _LiveCount:
+    """Applies tcpdump's running total to a capture record as it is reported.
+
+    Held in memory immediately, which is what the status endpoint serves, and
+    written to the database at most once every _LIVE_COUNT_PERSIST_SECONDS: a
+    row rewrite per second per capture buys nothing to persist a number that is
+    superseded a second later.
+    """
+
+    __slots__ = ("_info", "_persist", "_last_write")
+
+    def __init__(self, info: CaptureInfo, persist: Callable[[CaptureInfo], None]) -> None:
+        self._info = info
+        self._persist = persist
+        self._last_write = 0.0
+
+    def __call__(self, count: int) -> None:
+        if count == self._info.packet_count:
+            return
+        self._info.packet_count = count
+        now = time.monotonic()
+        if now - self._last_write >= _LIVE_COUNT_PERSIST_SECONDS:
+            self._last_write = now
+            self._persist(self._info)
 
 
 class CaptureLimitExceeded(Exception):
@@ -356,62 +386,25 @@ class CaptureManager:
         remote_path: str,
         local_path: Path,
     ) -> None:
+        """Own a running capture from launch to a terminal status.
+
+        Split three ways deliberately: waiting for the process, bringing the
+        pcap back, and deciding what a failure means are separate concerns, and
+        the middle one is the only part that touches the remote host twice.
+        """
         info = self._captures[capture_id]
-        stderr_buf: list[str] = []
-        stderr_text = ""
-        last_persist = 0.0
-
-        def on_live_count(count: int) -> None:
-            nonlocal last_persist
-            if count == info.packet_count:
-                return
-            info.packet_count = count
-            now = time.monotonic()
-            if now - last_persist >= _LIVE_COUNT_PERSIST_SECONDS:
-                last_persist = now
-                self._persist(info)
-
-        pump = asyncio.create_task(_pump_stderr(process, stderr_buf, on_live_count))
+        stderr: list[str] = []
+        pump = asyncio.create_task(
+            _pump_stderr(process, stderr, _LiveCount(info, self._persist))
+        )
         try:
-            # The remote command is wrapped in timeout(1), but that only helps if
-            # timeout(1) is present and behaves. This is the backstop: without it
-            # a process that never exits holds its SSH connection open forever.
-            await asyncio.wait_for(process.wait(), timeout=self._monitor_timeout)
-            try:
-                # Everything tcpdump has left to say arrives in the moment after
-                # it exits: the summary counts, and any diagnosis of a failure.
-                await asyncio.wait_for(pump, timeout=5)
-            except Exception:
-                pass
-            stderr_text = "".join(stderr_buf)
-            # timeout(1) exits 124 and SIGINT exits 130 — both are how a capture ends normally.
-            if process.exit_status not in (0, 124, 130, None):
-                raise RuntimeError(f"tcpdump exited {process.exit_status}")
+            await self._await_exit(process, pump)
+
             info.stopped_at = datetime.now(timezone.utc)
             info.status = CaptureStatus.TRANSFERRING
             self._persist(info)
 
-            cryptor = self._vault.cryptor if self._vault else None
-            await self._ssh.fetch_file(server, remote_path, local_path, cryptor=cryptor)
-
-            try:
-                await self._ssh.delete_remote_file(server, remote_path)
-            except Exception:
-                logger.warning("failed to clean up remote file %s", remote_path)
-
-            if local_path.exists():
-                info.file_size = local_path.stat().st_size
-
-            try:
-                info.packet_count = await get_packet_count(self._pcap_source(local_path))
-            except Exception:
-                # The capture itself is intact and downloadable. Failing it over
-                # a count that tcpdump already reported would throw away a good
-                # pcap to report a number twice.
-                logger.warning(
-                    "could not count packets in %s; keeping tcpdump's own total of %d",
-                    capture_id, info.packet_count,
-                )
+            await self._collect(capture_id, server, remote_path, local_path, info)
             info.status = CaptureStatus.COMPLETED
 
         except asyncio.CancelledError:
@@ -424,7 +417,7 @@ class CaptureManager:
         except Exception as exc:
             logger.exception("capture %s failed", capture_id)
             info.status = CaptureStatus.FAILED
-            info.error = _describe_failure(exc, stderr_text)
+            info.error = _describe_failure(exc, "".join(stderr))
             # A transfer interrupted partway leaves a truncated pcap. It is
             # unreachable -- downloads require COMPLETED -- but leaving half a
             # capture on the volume is misleading.
@@ -438,3 +431,52 @@ class CaptureManager:
                 await capture.close()
             self._persist(info)
             self._tasks.pop(capture_id, None)
+
+    async def _await_exit(self, process: object, pump: asyncio.Task) -> None:
+        """Wait for tcpdump to finish, then let the rest of its stderr land."""
+        # The remote command is wrapped in timeout(1), but that only helps if
+        # timeout(1) is present and behaves. This is the backstop: without it a
+        # process that never exits holds its SSH connection open forever.
+        await asyncio.wait_for(process.wait(), timeout=self._monitor_timeout)
+        try:
+            await asyncio.wait_for(pump, timeout=_STDERR_DRAIN_SECONDS)
+        except Exception:
+            # Failing to read the epilogue is not a failed capture. Whatever the
+            # pump did manage to read is still in the buffer for diagnosis.
+            pass
+        # timeout(1) exits 124 and SIGINT exits 130 -- both are how a capture ends normally.
+        if process.exit_status not in (0, 124, 130, None):
+            raise RuntimeError(f"tcpdump exited {process.exit_status}")
+
+    async def _collect(
+        self,
+        capture_id: str,
+        server: ServerInfo,
+        remote_path: str,
+        local_path: Path,
+        info: CaptureInfo,
+    ) -> None:
+        """Bring the pcap back, tidy the remote host, and record size and count."""
+        cryptor = self._vault.cryptor if self._vault else None
+        await self._ssh.fetch_file(server, remote_path, local_path, cryptor=cryptor)
+
+        try:
+            await self._ssh.delete_remote_file(server, remote_path)
+        except Exception:
+            # The capture is already here. A file left in the target's /tmp is
+            # worth a warning, not a failed capture.
+            logger.warning("failed to clean up remote file %s", remote_path)
+
+        if local_path.exists():
+            info.file_size = local_path.stat().st_size
+
+        try:
+            info.packet_count = await get_packet_count(self._pcap_source(local_path))
+        except Exception:
+            # The capture itself is intact and downloadable. Failing it over a
+            # count tcpdump already reported would throw away a good pcap to
+            # report a number twice.
+            logger.warning(
+                "could not count packets in %s; keeping tcpdump's own total of %d",
+                capture_id, info.packet_count,
+            )

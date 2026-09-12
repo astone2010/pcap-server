@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-dev.11 — 2026-09-12
 
 ### Fixed
 
@@ -42,6 +42,15 @@
 
 ### Changed
 
+- **Stored SSH usernames moved from the Admin panel to the Servers tab**, in a
+  collapsible section under the server list. The list is per-user, so putting it
+  behind the admin-only tab meant a non-admin could accumulate usernames but
+  never prune them. It now sits beside the form that offers them, and adding or
+  editing a server refreshes it without a reload.
+- **`CaptureManager._monitor` split into three.** Waiting for tcpdump to exit,
+  bringing the pcap back, and deciding what a failure means are separate
+  concerns; the live-count throttle became a small class rather than a closure
+  over two mutable locals. No behaviour change.
 - **The display filter no longer refuses valid Wireshark syntax.** `&` and `|`
   were rejected as shell metacharacters, which ruled out `&&`, `||` and bitwise
   matching such as `tcp.flags & 0x02` — the operators most people type. The

@@ -137,6 +137,25 @@
                     <div class="empty-state">Select a server or click + Add</div>
                 </div>
             </div>
+            <details class="usernames-panel">
+                <summary>SSH usernames</summary>
+                <div class="usernames-body">
+                    <p class="field-hint">
+                        The login names offered in the Username dropdown above. Every username
+                        you add a server with is saved here automatically; add one ahead of
+                        time to have it waiting. Removing one removes the suggestion only
+                        &mdash; servers already configured with that name keep working, and
+                        renaming one does not touch them either. This list is yours, not
+                        shared with other users.
+                    </p>
+                    <div id="username-list" class="admin-table-container"></div>
+                    <div class="admin-inline-form" style="margin-top:12px">
+                        <input type="text" id="new-ssh-username" placeholder="e.g. serveradmin" style="width:180px">
+                        <button id="btn-add-username" class="btn btn-sm btn-secondary">Add username</button>
+                    </div>
+                    <div id="username-msg" class="error-msg"></div>
+                </div>
+            </details>
         </div>
 
         <!-- capture panel -->
@@ -431,23 +450,6 @@
                     </p>
                     <div id="admin-known-hosts" class="admin-table-container"></div>
                     <div id="admin-host-msg" class="error-msg"></div>
-                </div>
-                <div class="admin-section">
-                    <h3>SSH usernames</h3>
-                    <p class="field-hint" style="margin-bottom:10px">
-                        The login names offered in the Server form's Username dropdown. Every
-                        username you add a server with is saved here automatically; add one
-                        ahead of time to have it waiting. Removing one only removes the
-                        suggestion &mdash; servers already configured with that name keep
-                        working, and renaming one does not touch them either. This list is
-                        yours, not shared with other users.
-                    </p>
-                    <div id="admin-usernames" class="admin-table-container"></div>
-                    <div class="admin-inline-form" style="margin-top:12px">
-                        <input type="text" id="admin-new-ssh-username" placeholder="e.g. serveradmin" style="width:180px">
-                        <button id="btn-admin-add-username" class="btn btn-sm btn-secondary">Add username</button>
-                    </div>
-                    <div id="admin-username-msg" class="error-msg"></div>
                 </div>
             </div>
         </div>

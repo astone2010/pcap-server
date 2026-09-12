@@ -370,6 +370,7 @@ function enterApp() {
     }
     initTabs();
     initFlagPicker();
+    loadUsernameList();
     renderFilterSuggestions("bpf-suggestions", BPF_SUGGESTIONS);
     renderFilterSuggestions("display-filter-suggestions", DISPLAY_SUGGESTIONS);
     loadServers();
@@ -392,7 +393,6 @@ function initTabs() {
                 loadAdminUsers();
                 loadAdminSSHKeys();
                 loadAdminKnownHosts();
-                loadAdminUsernames();
             }
         });
     });
@@ -598,7 +598,7 @@ function usernamePicker(idPrefix, current) {
         <input type="text" id="${idPrefix}-user" value="${escHtml(useNew ? (current || "") : "")}"
                placeholder="e.g. serveradmin" autocomplete="off"${useNew ? "" : " hidden"}>
         <div class="field-hint">${stored.length
-            ? "Saved usernames are offered here. Manage the list in Admin \u2192 SSH usernames."
+            ? "Saved usernames are offered here. Manage the list under SSH usernames below."
             : "The first username you use is saved and offered next time."}</div>`;
 }
 
@@ -676,6 +676,9 @@ async function addServer() {
             body: JSON.stringify(addFormServer()),
         });
         await loadServers();
+        // The stored-username list sits on this tab now, so a name introduced
+        // by this server has to appear in it without a reload.
+        loadUsernameList();
         // Straight to the server's own page: testing and the prerequisite check
         // are the usual next step, and they live there.
         selectServer(added.id);
@@ -778,6 +781,7 @@ async function saveServerEdit(id) {
             }),
         });
         await loadServers();
+        loadUsernameList();
         selectServer(id);
     } catch (e) {
         $("edit-server-error").textContent = e.message;
@@ -1755,12 +1759,9 @@ async function adminDeleteKey(name) {
     }
 }
 
-// Driven by the servers that exist, not by a typed hostname: the hosts worth
-// trusting are the ones something already connects to. Keys are shown and
-// dropped per host rather than per row, because a host's keys are one set --
-// removing a single row leaves the others still verifying it.
-async function loadAdminUsernames() {
-    const el = $("admin-usernames");
+// The stored login names, on the Servers tab beside the form that offers them.
+async function loadUsernameList() {
+    const el = $("username-list");
     if (!el) return;
     try {
         await loadUsernames();
@@ -1788,56 +1789,60 @@ async function loadAdminUsernames() {
     </table>`;
 }
 
-function usernameMsg(text, ok = false) {
-    const el = $("admin-username-msg");
+function showUsernameMsg(text, ok = false) {
+    const el = $("username-msg");
     if (!el) return;
     el.textContent = text;
     el.className = ok ? "success-msg" : "error-msg";
 }
 
-async function adminAddUsername() {
-    const input = $("admin-new-ssh-username");
+async function addStoredUsername() {
+    const input = $("new-ssh-username");
     const username = input.value.trim();
-    usernameMsg("");
-    if (!username) return usernameMsg("Enter a username first");
+    showUsernameMsg("");
+    if (!username) return showUsernameMsg("Enter a username first");
     try {
         await api("/api/usernames", { method: "POST", body: JSON.stringify({ username }) });
     } catch (e) {
-        return usernameMsg(e.message);
+        return showUsernameMsg(e.message);
     }
     input.value = "";
-    await loadAdminUsernames();
+    await loadUsernameList();
 }
 
-async function adminRenameUsername(id) {
+async function renameStoredUsername(id) {
     const current = knownUsernames.find((u) => u.id === id);
     const username = prompt("Rename stored username", current ? current.username : "");
     if (username === null) return;
-    usernameMsg("");
+    showUsernameMsg("");
     try {
         await api(`/api/usernames/${id}`, { method: "PUT", body: JSON.stringify({ username: username.trim() }) });
     } catch (e) {
-        return usernameMsg(e.message);
+        return showUsernameMsg(e.message);
     }
-    await loadAdminUsernames();
+    await loadUsernameList();
 }
 
-async function adminDeleteUsername(id) {
+async function deleteStoredUsername(id) {
     const current = knownUsernames.find((u) => u.id === id);
     const name = current ? current.username : "this username";
     // Worth spelling out: the servers keep working, so this is not the
     // destructive operation the red button implies.
     if (!confirm(`Remove "${name}" from the suggestion list?\n\n`
         + "Servers already configured with it are unaffected.")) return;
-    usernameMsg("");
+    showUsernameMsg("");
     try {
         await api(`/api/usernames/${id}`, { method: "DELETE" });
     } catch (e) {
-        return usernameMsg(e.message);
+        return showUsernameMsg(e.message);
     }
-    await loadAdminUsernames();
+    await loadUsernameList();
 }
 
+// Driven by the servers that exist, not by a typed hostname: the hosts worth
+// trusting are the ones something already connects to. Keys are shown and
+// dropped per host rather than per row, because a host's keys are one set --
+// removing a single row leaves the others still verifying it.
 async function loadAdminKnownHosts() {
     const el = $("admin-known-hosts");
     try {
@@ -1957,7 +1962,7 @@ function initStaticHandlers() {
     $("resolve-names")?.addEventListener("change", onResolveNamesToggled);
     $("btn-save-settings")?.addEventListener("click", saveSettings);
     $("btn-admin-create-user")?.addEventListener("click", adminCreateUser);
-    $("btn-admin-add-username")?.addEventListener("click", adminAddUsername);
+    $("btn-add-username")?.addEventListener("click", addStoredUsername);
     $("btn-admin-upload-key")?.addEventListener("click", adminUploadKey);
 }
 
@@ -1998,9 +2003,9 @@ function initEventDelegation() {
     delegate("display-filter-suggestions", {
         "use-filter": (expr, el) => useFilterSuggestion(expr, el),
     });
-    delegate("admin-usernames", {
-        "rename-username": (id) => adminRenameUsername(id),
-        "delete-username": (id) => adminDeleteUsername(id),
+    delegate("username-list", {
+        "rename-username": (id) => renameStoredUsername(id),
+        "delete-username": (id) => deleteStoredUsername(id),
     });
     delegate("admin-known-hosts", {
         "trust-host": (id) => adminTrustHost(id),
