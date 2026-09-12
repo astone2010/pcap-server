@@ -363,6 +363,7 @@ def _server_from_row(row: dict) -> ServerInfo:
         username=row["username"],
         ssh_key_name=row["ssh_key_name"],
         use_sudo=bool(row["use_sudo"]),
+        tcpdump_path=row["tcpdump_path"] if "tcpdump_path" in row.keys() else "",
         added_at=datetime.fromisoformat(row["added_at"]),
     )
 
@@ -414,6 +415,43 @@ async def list_server_interfaces(server_id: str, user: dict = Depends(get_curren
         raise HTTPException(502, str(exc))
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/api/servers/{server_id}/prereq-check")
+async def prereq_check(server_id: str, user: dict = Depends(get_current_user)):
+    """Read-only capability probe against the target host.
+
+    Nothing is installed and nothing is elevated beyond `sudo -n true`. The one
+    side effect is local: a validated tcpdump path is recorded against the
+    server so captures can invoke it by absolute path.
+    """
+    srv = _require_server(server_id, user["id"])
+    try:
+        result = await ssh_manager.check_prerequisites(srv)
+    except ConnectionError as exc:
+        raise HTTPException(502, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception:
+        logger.exception("prerequisite check failed for %s", server_id)
+        raise HTTPException(502, "prerequisite check failed")
+
+    discovered = result.get("tcpdump_path", "")
+    if discovered and discovered != srv.tcpdump_path:
+        # Re-validate before persisting: this value came off the remote host.
+        try:
+            ServerAuth(hostname=srv.hostname, username=srv.username,
+                       ssh_key_name=srv.ssh_key_name, tcpdump_path=discovered)
+        except Exception:
+            logger.warning("discarding implausible tcpdump path from %s", srv.hostname)
+            discovered = ""
+        if discovered:
+            db.set_active_server_tcpdump_path(server_id, user["id"], discovered)
+    return {
+        "checks": result["checks"],
+        "tcpdump_path": discovered or srv.tcpdump_path,
+        "os": result["facts"]["os_release"].get("PRETTY_NAME", ""),
+    }
 
 
 @app.post("/api/servers/{server_id}/test")
@@ -595,6 +633,7 @@ async def list_packets(
     limit: int = Query(200, ge=1, le=5000),
     display_filter: str = Query(""),
     flags: str = Query(""),
+    resolve_names: bool = Query(False),
     user: dict = Depends(get_current_user),
 ):
     view_flags = [f for f in flags.split(",") if f]
@@ -611,7 +650,8 @@ async def list_packets(
         raise HTTPException(404, "pcap file missing")
     try:
         packets = await get_packet_list(
-            path, offset=offset, limit=limit, display_filter=display_filter, view_flags=view_flags
+            path, offset=offset, limit=limit, display_filter=display_filter,
+            view_flags=view_flags, resolve_names=resolve_names,
         )
         return {"packets": packets, "total": info.packet_count}
     except Exception:

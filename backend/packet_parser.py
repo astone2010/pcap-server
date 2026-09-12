@@ -32,22 +32,32 @@ VIEW_FLAG_TIME_FIELD = {
     "-ttt": "frame.time_delta",
     "-tttt": "frame.time",
 }
-ALLOWED_VIEW_FLAGS = {"-n", "-nn", "-e", "-t", *VIEW_FLAG_TIME_FIELD}
+ALLOWED_VIEW_FLAGS = {"-e", "-t", *VIEW_FLAG_TIME_FIELD}
 
-# tcpdump and tshark spell name resolution differently:
-#   tcpdump -n   host addresses stay numeric, port numbers still become service names
-#   tcpdump -nn  neither is resolved
-#   (neither)    both are resolved
-# tshark's -N takes the layers to resolve -- m MAC, n network/host, t transport/port
-# -- and its bare -n turns everything off. Network resolution is the only one that
-# can reach DNS, which is why it is off for both -n and -nn and only the explicit
-# "resolve everything" case pays for it.
-def _name_resolution_args(flags: set[str]) -> list[str]:
-    if "-nn" in flags:
-        return ["-n"]
-    if "-n" in flags:
-        return ["-N", "mt"]
-    return ["-N", "mnt"]
+# Name resolution is a single explicit opt-in, not a pair of tcpdump-style
+# flags, because tcpdump's -n/-nn distinction cannot be expressed in this view:
+#
+#   * tshark's Info column prints ports numerically whatever the resolution
+#     settings say -- verified against a capture on port 80, where -N mt and -n
+#     produce byte-identical output. So "ports named" has nowhere to appear.
+#   * Host names need nameres.network_name AND
+#     nameres.use_external_name_resolver. -N mnt alone changes nothing; the
+#     hosts file is only consulted when the external resolver is enabled too.
+#
+# So the only resolution that alters this view is host lookup, and that sends a
+# reverse-DNS query for every address in the capture. On a tool used to examine
+# suspicious traffic, that tells the resolver what is being investigated -- so
+# it is off unless the operator asks for it, and the UI says what it does.
+_RESOLVE_OFF = ["-n"]
+_RESOLVE_ON = [
+    "-N", "mnt",
+    "-o", "nameres.network_name:TRUE",
+    "-o", "nameres.use_external_name_resolver:TRUE",
+]
+
+
+def _name_resolution_args(resolve_names: bool) -> list[str]:
+    return list(_RESOLVE_ON if resolve_names else _RESOLVE_OFF)
 
 
 async def get_packet_list(
@@ -56,6 +66,7 @@ async def get_packet_list(
     limit: int = 200,
     display_filter: str = "",
     view_flags: list[str] | None = None,
+    resolve_names: bool = False,
 ) -> list[PacketSummary]:
     flags = set(view_flags or [])
     time_field = "frame.time_relative"
@@ -67,7 +78,7 @@ async def get_packet_list(
     show_mac = "-e" in flags
 
     cmd = ["tshark", "-r", str(pcap_path)]
-    cmd += _name_resolution_args(flags)
+    cmd += _name_resolution_args(resolve_names)
     cmd += [
         "-T", "fields",
         "-e", "frame.number",

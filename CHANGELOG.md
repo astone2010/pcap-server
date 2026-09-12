@@ -2,6 +2,44 @@
 
 ## 0.1.0-dev.8 — 2026-09-12
 
+### Features
+
+- Add a read-only prerequisite check per server (Servers → Check prerequisites).
+  It probes the host for what a capture needs and reports a checklist: OS,
+  whether tcpdump is installed and at what absolute path, whether it is on the
+  SSH session's PATH, whether capture privilege exists (root, `cap_net_raw` on
+  the binary, or passwordless sudo), whether /tmp is writable, and the SELinux
+  mode. **Nothing is installed and nothing is elevated beyond `sudo -n true`.**
+  On a miss it prints the command for the operator to run themselves, with the
+  install hint matched to the detected distribution. `setcap` is offered ahead
+  of sudo, since it removes the need for sudo altogether.
+- Captures now invoke tcpdump by its discovered absolute path. tcpdump lives in
+  `/usr/sbin`, which a non-login SSH session frequently omits from PATH for
+  non-root users — so a bare `tcpdump` could fail with "command not found" on a
+  host where it was plainly installed. The prerequisite check records the real
+  path and captures use it.
+- Everything the probe returns is treated as untrusted input. A discovered path
+  must be absolute, free of shell metacharacters, and named `tcpdump`, and it is
+  re-validated before it is stored — a hostile or compromised host answering
+  with `/bin/sh -c ...` is discarded rather than executed.
+
+### Changed
+
+- Replace the viewer's `-n`/`-nn` chips with a single explicit
+  **Resolve hostnames** toggle, default off. dev.7 claimed these flags were
+  fixed; testing against real tshark showed that was over-stated, and the
+  reason is structural rather than a bug in the mapping:
+  tshark's Info column prints ports numerically whatever name resolution is set
+  to — verified on a capture to port 80, where `-N mt` and `-n` produce
+  byte-identical output — so tcpdump's "ports named vs numeric" distinction has
+  nowhere to appear in this view. And host names need both
+  `nameres.network_name` and `nameres.use_external_name_resolver`; `-N mnt`
+  alone changes nothing, and the hosts file is only consulted when the external
+  resolver is on. So the only resolution that alters this view is host lookup,
+  and it costs a reverse-DNS query for every address in the capture. On a tool
+  used to examine suspicious traffic that tells the resolver what is being
+  investigated, so it is off by default and the control says what it does.
+
 ### Security
 
 - Session tokens are no longer stored in the clear. The `sessions` table held

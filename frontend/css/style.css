@@ -1110,3 +1110,112 @@ body {
 @media (max-width: 720px) {
     .explainer-table td:first-child { white-space: normal; }
 }
+
+
+/* Prerequisite check results. Failures carry a command for the operator to run
+   themselves -- the app never executes remediation. */
+.prereq { margin-top: 12px; font-size: 0.8125rem; }
+
+.prereq-pending, .prereq-error {
+    margin-top: 12px;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.prereq-error { color: var(--danger); }
+
+.prereq-head {
+    font-weight: 600;
+    padding: 8px 10px;
+    border-radius: 5px 5px 0 0;
+    border: 1px solid var(--border);
+    border-bottom: none;
+}
+
+.prereq-head.ok { color: var(--success, #3fb950); }
+.prereq-head.warn { color: var(--warning, #d29922); }
+.prereq-head.fail { color: var(--danger); }
+
+.prereq-readonly {
+    padding: 5px 10px;
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+}
+
+.prereq-row {
+    display: flex;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-top: none;
+    background: var(--bg-secondary);
+}
+
+.prereq-row:last-of-type { border-radius: 0 0 5px 5px; }
+
+.prereq-icon {
+    flex: 0 0 16px;
+    font-weight: 700;
+    line-height: 1.4;
+    text-align: center;
+}
+
+.prereq-row.ok .prereq-icon { color: var(--success, #3fb950); }
+.prereq-row.warn .prereq-icon { color: var(--warning, #d29922); }
+.prereq-row.fail .prereq-icon { color: var(--danger); }
+
+.prereq-name { font-weight: 600; color: var(--text-primary); }
+.prereq-detail { color: var(--text-secondary); line-height: 1.5; }
+
+.prereq-fix-label {
+    margin-top: 6px;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.prereq-fix {
+    margin: 4px 0 0;
+    padding: 8px 10px;
+    overflow-x: auto;
+    white-space: pre;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border-radius: 4px;
+    border: 1px solid var(--border);
+}
+
+.prereq-path {
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+
+/* Name resolution is opt-in and says why: enabling it makes the server send a
+   reverse-DNS query for every address in the capture. */
+.resolve-names {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 8px 0 0;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.resolve-names input { cursor: pointer; }
+
+.resolve-warn {
+    color: var(--warning);
+    font-size: 0.6875rem;
+}

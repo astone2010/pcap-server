@@ -16,7 +16,9 @@ in your browser.
 - **sudo support** — run tcpdump via `sudo -n` per server, for non-root SSH users
 - **Interface discovery** — pick the capture interface from a list read off the target host
 - **BPF filtering** — full Berkeley Packet Filter syntax selects the traffic, with an in-app cheatsheet
-- **View flags** — name resolution, MAC columns, and timestamp format, each documenting what it does
+- **Prerequisite check** — read-only probe for tcpdump, privilege, PATH and SELinux; never installs anything
+- **View flags** — MAC columns and timestamp format, each documenting what it does
+- **Optional name resolution** — off by default, because resolving addresses from a capture queries DNS
 - **Capture provenance** — every capture records the server it ran against, and keeps it even if that server is later deleted
 - **Colour-coded packets** — Wireshark-style colouring by protocol, with problems and resets called out
 - **Light and dark themes** — dark by default, toggled from the toolbar and remembered
@@ -87,6 +89,35 @@ Shell metacharacters are rejected in the filter, which is passed to tcpdump as a
 single quoted argument after `--`. `-z`, `-W`, `-G`, `-C`, `-r`, `-F`, `-V` and
 `-Z` are permanently refused: tcpdump may be running under `sudo`, and those turn
 a capture into code execution or file reads as root.
+
+## Checking a server before you capture
+
+**Servers → Check prerequisites** probes a host for what a capture needs and
+reports what it found. Every command it runs is a read; the one privileged call
+is `sudo -n true`, which answers "would sudo work" without doing anything. **It
+never installs or changes anything** — where something is missing it prints the
+command for you to run yourself.
+
+It checks the OS, whether tcpdump is installed and where, whether tcpdump is on
+the SSH session's PATH, whether capture privilege exists, whether `/tmp` is
+writable, and the SELinux mode.
+
+Two findings are worth knowing about in advance:
+
+- **tcpdump is usually in `/usr/sbin`, which a non-login SSH session often drops
+  from PATH for non-root users.** A bare `tcpdump` then fails with "command not
+  found" on a host where it is plainly installed. The check records the absolute
+  path and captures use it, so this resolves itself once you have run the check.
+- **`setcap` beats sudo.** `sudo setcap cap_net_raw,cap_net_admin+eip
+  /usr/sbin/tcpdump` lets an unprivileged user capture with no sudo at all, and
+  it works the same on every distribution. The check recommends this first.
+
+There are no per-distribution templates, and deliberately so: tcpdump is libpcap
+everywhere, so its flags and filter syntax are identical across distributions.
+What differs is PATH, whether sudo exists and which group grants it (`wheel` on
+RHEL-family, `sudo` on Debian-family), and SELinux — all of which the probe reads
+off the host rather than guessing from a distribution label. The detected distro
+is used for exactly one thing: printing the right install command.
 
 ## Sessions
 

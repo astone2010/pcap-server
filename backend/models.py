@@ -16,11 +16,24 @@ class ServerAuth(BaseModel):
     ssh_key_name: str
     use_sudo: bool = False
     name: str = ""
+    # Absolute path discovered by the prerequisite check. Validated there before
+    # it is ever stored; empty means "not probed yet, fall back to PATH".
+    tcpdump_path: str = ""
 
     @field_validator("name")
     @classmethod
     def validate_name(cls, v: str) -> str:
         return v.strip()[:100]
+
+    @field_validator("tcpdump_path")
+    @classmethod
+    def validate_tcpdump_path(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            return ""
+        if not re.fullmatch(r"/[A-Za-z0-9._/-]{1,255}", v) or PurePosixPath(v).name != "tcpdump":
+            raise ValueError("tcpdump path must be an absolute path ending in /tcpdump")
+        return v
 
     @field_validator("hostname")
     @classmethod

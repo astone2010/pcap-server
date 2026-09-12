@@ -128,7 +128,8 @@ class CaptureManager:
         else:
             duration = max_seconds
 
-        full_cmd = ["tcpdump", "-w", remote_path] + args
+        binary = server.tcpdump_path or "tcpdump"
+        full_cmd = [binary, "-w", remote_path] + args
         if server.use_sudo:
             full_cmd = ["sudo", "-n"] + full_cmd
         assert_no_forbidden_flags(full_cmd)

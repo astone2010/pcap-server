@@ -302,11 +302,92 @@ function selectServer(id) {
         <div class="form-group"><label>SSH Key</label><input type="text" value="${escHtml(srv.ssh_key_name)}" disabled></div>
         <div class="form-actions">
             <button class="btn btn-sm btn-secondary" onclick="testServer('${escHtml(srv.id)}')">Test connection</button>
+            <button class="btn btn-sm btn-secondary" onclick="prereqCheck('${escHtml(srv.id)}')">Check prerequisites</button>
             <button class="btn btn-sm btn-secondary" onclick="saveServerConfig('${escHtml(srv.id)}')">Save to profile</button>
             <button class="btn btn-sm btn-danger" onclick="removeServer('${escHtml(srv.id)}')">Remove</button>
         </div>
         <div id="server-test-result" style="margin-top:8px;font-size:0.8125rem"></div>
+        <div id="prereq-result"></div>
     `;
+}
+
+// Read-only capability probe. The backend installs nothing; anything that comes
+// back short is reported with a command for the operator to run themselves.
+async function prereqCheck(id) {
+    const box = $("prereq-result");
+    if (!box) return;
+    box.innerHTML = '<div class="prereq-pending"><span class="spinner"></span> Probing host (read-only)...</div>';
+    try {
+        const res = await api(`/api/servers/${id}/prereq-check`, { method: "POST" });
+        renderPrereqs(box, res);
+        await loadServers();
+    } catch (e) {
+        box.innerHTML = `<div class="prereq-error">${escHtml(e.message)}</div>`;
+    }
+}
+
+const PREREQ_ICON = { ok: "\u2713", warn: "!", fail: "\u2717" };
+
+function renderPrereqs(box, res) {
+    box.textContent = "";
+    const wrap = document.createElement("div");
+    wrap.className = "prereq";
+
+    const head = document.createElement("div");
+    head.className = "prereq-head";
+    const failed = res.checks.filter((c) => c.status === "fail").length;
+    const warned = res.checks.filter((c) => c.status === "warn").length;
+    head.textContent = failed
+        ? `${failed} problem${failed > 1 ? "s" : ""} to fix before capturing`
+        : warned
+        ? `Ready to capture, with ${warned} thing${warned > 1 ? "s" : ""} worth knowing`
+        : "Ready to capture";
+    head.classList.add(failed ? "fail" : warned ? "warn" : "ok");
+    wrap.append(head);
+
+    const note = document.createElement("div");
+    note.className = "prereq-readonly";
+    note.textContent = "Nothing was installed or changed on the host. This check only reads.";
+    wrap.append(note);
+
+    for (const c of res.checks) {
+        const row = document.createElement("div");
+        row.className = `prereq-row ${c.status}`;
+
+        const icon = document.createElement("span");
+        icon.className = "prereq-icon";
+        icon.textContent = PREREQ_ICON[c.status] || "?";
+        row.append(icon);
+
+        const body = document.createElement("div");
+        const name = document.createElement("div");
+        name.className = "prereq-name";
+        name.textContent = c.name;
+        const detail = document.createElement("div");
+        detail.className = "prereq-detail";
+        detail.textContent = c.detail;
+        body.append(name, detail);
+
+        if (c.fix) {
+            const fixLabel = document.createElement("div");
+            fixLabel.className = "prereq-fix-label";
+            fixLabel.textContent = "Run this on the host yourself:";
+            const fix = document.createElement("pre");
+            fix.className = "prereq-fix";
+            fix.textContent = c.fix;
+            body.append(fixLabel, fix);
+        }
+        row.append(body);
+        wrap.append(row);
+    }
+
+    if (res.tcpdump_path) {
+        const path = document.createElement("div");
+        path.className = "prereq-path";
+        path.textContent = `Captures will run: ${res.tcpdump_path}`;
+        wrap.append(path);
+    }
+    box.append(wrap);
 }
 
 function showAddServer() {
@@ -508,8 +589,6 @@ async function deleteSavedServer(id) {
 // These change how the packet list is rendered. tcpdump's display flags are
 // meaningless for the capture itself, which is always written with -w.
 const FLAG_HELP = {
-    "-n": "Don't resolve addresses to hostnames",
-    "-nn": "Don't resolve hostnames or port numbers to service names",
     "-e": "Show link-layer MAC addresses as extra columns",
     "-t": "Hide the timestamp column",
     "-tt": "Timestamp as raw seconds since the epoch",
@@ -520,9 +599,9 @@ const FLAG_HELP = {
 const ALLOWED_FLAGS = Object.keys(FLAG_HELP);
 
 // The ones people reach for normally; everything else is situational.
-const STANDARD_FLAGS = ["-n", "-nn"];
+const STANDARD_FLAGS = ["-e"];
 // Of those, the ones switched on before you touch anything.
-const DEFAULT_FLAGS = ["-nn"];
+const DEFAULT_FLAGS = [];
 
 function makeFlagChip(flag) {
     const chip = document.createElement("span");
@@ -552,7 +631,7 @@ function initFlagPicker() {
 }
 
 // One timestamp format and one resolution mode at a time.
-const EXCLUSIVE_FLAG_GROUPS = [["-t", "-tt", "-ttt", "-tttt"], ["-n", "-nn"]];
+const EXCLUSIVE_FLAG_GROUPS = [["-t", "-tt", "-ttt", "-tttt"]];
 
 function toggleFlag(el) {
     const flag = el.dataset.flag;
@@ -590,6 +669,15 @@ function renderFlagHelp() {
         }
         help.append(row);
     }
+}
+
+function resolveNamesEnabled() {
+    const el = $("resolve-names");
+    return !!(el && el.checked);
+}
+
+function onResolveNamesToggled() {
+    if (viewingCaptureId) loadPackets(viewingCaptureId, $("display-filter").value);
 }
 
 function getSelectedFlags() {
@@ -834,7 +922,12 @@ async function loadPackets(captureId, filter = "") {
     tbody.innerHTML = `<tr><td colspan="${span}" style="text-align:center;padding:20px"><span class="spinner"></span> Loading...</td></tr>`;
 
     try {
-        const query = new URLSearchParams({ limit: "1000", display_filter: filter, flags: flags.join(",") });
+        const query = new URLSearchParams({
+            limit: "1000",
+            display_filter: filter,
+            flags: flags.join(","),
+            resolve_names: resolveNamesEnabled() ? "true" : "false",
+        });
         const data = await api(`/api/captures/${captureId}/packets?${query}`);
         if (!data.packets.length) {
             tbody.innerHTML = `<tr><td colspan="${span}" style="text-align:center;padding:20px;color:var(--text-muted)">No packets match</td></tr>`;

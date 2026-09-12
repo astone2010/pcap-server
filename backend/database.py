@@ -77,6 +77,7 @@ class Database:
                 username TEXT NOT NULL,
                 ssh_key_name TEXT NOT NULL,
                 use_sudo INTEGER NOT NULL DEFAULT 0,
+                tcpdump_path TEXT NOT NULL DEFAULT '',
                 added_at TEXT NOT NULL
             );
 
@@ -122,6 +123,9 @@ class Database:
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(saved_servers)")}
         if "use_sudo" not in columns:
             conn.execute("ALTER TABLE saved_servers ADD COLUMN use_sudo INTEGER NOT NULL DEFAULT 0")
+        active_columns = {r["name"] for r in conn.execute("PRAGMA table_info(active_servers)")}
+        if "tcpdump_path" not in active_columns:
+            conn.execute("ALTER TABLE active_servers ADD COLUMN tcpdump_path TEXT NOT NULL DEFAULT ''")
         session_columns = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
         if "last_seen" not in session_columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN last_seen TEXT")
@@ -299,6 +303,14 @@ class Database:
             "SELECT * FROM active_servers WHERE id = ? AND user_id = ?", (server_id, user_id)
         ).fetchone()
         return dict(row) if row else None
+
+    def set_active_server_tcpdump_path(self, server_id: str, user_id: str, path: str) -> bool:
+        cur = self._conn().execute(
+            "UPDATE active_servers SET tcpdump_path = ? WHERE id = ? AND user_id = ?",
+            (path, server_id, user_id),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
 
     def delete_active_server(self, server_id: str, user_id: str) -> bool:
         cur = self._conn().execute(
