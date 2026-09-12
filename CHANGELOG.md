@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0-dev.15 — unreleased
+
+### Security
+
+- **Packet listing and capture start are rate-limited per user.** Login was
+  the only endpoint with a cap on how often it could be called; listing
+  packets (which spawns tshark) and starting a capture (which opens an SSH
+  connection) had none. Both are now capped per user on a sliding one-minute
+  window — 30 requests/minute for packet listing, 10/minute for capture start
+  — configurable from the Admin tab like the existing login rate limits.
+- **`ServerAuth.hostname` rejects the same characters `KnownHostEndpoint`
+  already did.** It previously let `$`, backtick, backslash, and line breaks
+  through to asyncssh and the known_hosts store — a narrower rule than the
+  host-key routes enforced on the same kind of value, for no reason tied to
+  what either route actually needs. Both hostname fields now validate through
+  one shared function, so the two cannot drift apart again.
+
 ## 0.1.0-dev.14 — 2026-09-12
 
 ### Added

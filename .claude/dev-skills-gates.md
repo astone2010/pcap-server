@@ -36,8 +36,12 @@ Done (already committed, on this branch's history):
   in addition to the space/`;`/`|`/`&` `ServerAuth` already rejected. Not yet
   committed — see implementation summary below.
 
+- CHANGELOG.md: added a "0.1.0-dev.15 — unreleased" heading with Security
+  entries for the rate-limiting and hostname-tightening commits. Docs only —
+  no version bump: APP_VERSION, docker-compose's image tag, etc. stay at
+  dev.14 until dev.15's own release sequence runs all six gates.
+
 Open:
-- dev.15's CHANGELOG needs entries for these hardening commits.
 - dev.14's release body compares against dev.8, not dev.13 (cosmetic,
   `gh release edit`, user's to run).
 
