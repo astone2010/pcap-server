@@ -300,8 +300,35 @@ and local_addresses() as the union. resolve()/_own_addresses()/
 _default_gateways() are monkeypatched throughout so none of this touches
 real DNS, sockets, or /proc -- runs identically on any machine.
 
-Next: tests/test_ssh_manager.py's hostile-input suite (_is_safe_tcpdump_path,
-parse_prereq_output, _shell_quote, _key_path traversal, evaluate_prereqs
-privilege matrix), then tests/test_packet_parser.py with pytest.mark.skipif
-for real-tshark cases (reported as skipped, never silently omitted), then
-the scaffolding: scripts/check.sh, .github/workflows/check.yml.
+Landed: tests/test_ssh_manager.py -- 68 tests, all passing (202 total).
+_is_safe_tcpdump_path: rejects shell injection (space/pipe/semicolon/
+backtick/$()), a traversal path with the wrong final basename, relative
+paths, non-tcpdump basenames, empty string, an oversized path, and an
+embedded NUL -- plus one test documenting (not just asserting) that a
+'..'-bearing path whose FINAL component is still literally "tcpdump" is
+accepted, since PurePosixPath never collapses '..' and the value is only
+ever used as a literal string in a remote shell command, never resolved
+against a local filesystem. _shell_quote: safe strings pass through
+unchanged, hostile ones get wrapped with the '"'"' escape verified
+explicitly so an embedded quote can't close early. _key_path: traversal
+(../, bare .., a subdir dance) and an absolute path both rejected --
+covers pathlib's own gotcha where `keys_dir / "/etc/passwd"` silently
+discards keys_dir because the right side is absolute. parse_prereq_output:
+happy path field-by-field, command injection / substitution / traversal
+all excluded from found_paths via _is_safe_tcpdump_path, dedup, control
+characters stripped by _clean, the 400/40/80-char bounds enforced against
+absurdly long input, non-digit UID stays None, SUDO_NOPASSWD requires the
+exact string "yes", on_path preferred over found_paths for tcpdump_path.
+evaluate_prereqs privilege matrix: incomplete probe and missing-tcpdump
+short-circuits, root / cap_net_raw / sudo-nopasswd all "ok", sudo-present-
+but-demands-password and sudo-requested-but-absent and no-privilege-at-all
+all "fail" with the right remediation text, caps-unavailable warns only
+when it's actually relevant (not for root), tmp-writable true/false/
+unknown, and the three SELinux states plus "no check when absent".
+
+Next: tests/test_packet_parser.py with pytest.mark.skipif for real-tshark
+cases (reported as skipped, never silently omitted) -- _validate_display_filter,
+ALLOWED_VIEW_FLAGS, _name_resolution_args run anywhere with no tools. Then
+the scaffolding: requirements-dev.txt is already landed; still need
+scripts/check.sh (tool-availability preamble, pytest -r s) and
+.github/workflows/check.yml calling that script.
