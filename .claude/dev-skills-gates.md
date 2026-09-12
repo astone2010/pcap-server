@@ -1,5 +1,5 @@
 # Dev Skills gate state
-Track: work commit (API hardening item 3 — rate limiting)
+Track: work commit (API hardening — item 3 rate limiting, then ServerAuth.hostname)
 Version: 0.1.0-dev.14 (no bump owed — work commit track)
 Updated: 2026-09-12
 Branch: claude/api-rate-limiting-10cf7m (harness-designated branch for this task)
@@ -27,19 +27,17 @@ Done (already committed, on this branch's history):
   before parsing. (commit 1013f51)
 - Item 2: `KnownHostEndpoint` model replaces hand-written body parsing for
   the two host-key routes. (commit in this branch's history)
+- Item 3: `SlidingWindowLimiter` throttles packet listing (30/min) and
+  capture start (10/min) per user, admin-configurable. (commit 8a64990,
+  pushed)
+- Item 4 (this session's second task): `ServerAuth.hostname` tightened to
+  match `KnownHostEndpoint.hostname` — both now call the shared
+  `validate_ssh_hostname`, which rejects `$`, backtick, backslash, `\n`, `\r`
+  in addition to the space/`;`/`|`/`&` `ServerAuth` already rejected. Not yet
+  committed — see implementation summary below.
 
 Open:
-- **Item 3 (this session's focus):** rate limiting covers login only
-  (`rate_limiter` at `backend/main.py:488,496,506,526`, all inside `login`,
-  plus `:622` for config). `RateLimiter` is `backend/auth.py:19`. Packet
-  listing (spawns tshark) and capture start (opens SSH) are unthrottled per
-  user. Needs a decision on limits and whether they join the admin-configurable
-  settings (defaults at `backend/database.py:504`, README settings table)
-  before coding.
-- `ServerAuth.hostname` (`backend/models.py:69`) allows `$`, backtick,
-  backslash, newline, CR — looser than `KnownHostEndpoint.hostname` (`:106`).
-  Not yet touched.
-- dev.15's CHANGELOG needs entries for the two hardening commits.
+- dev.15's CHANGELOG needs entries for these hardening commits.
 - dev.14's release body compares against dev.8, not dev.13 (cosmetic,
   `gh release edit`, user's to run).
 
@@ -50,21 +48,28 @@ pushes and ref deletions always go to the user as a presented block.
 `gh` is not installed — GitHub MCP tools stand in.
 
 🔢 VERSION    ⬜ not owed — work commit track
-🔨 BUILD      ✅ ./scripts/check.sh: 506 passed, no skips (497 + 9 new tests).
-                The two new 429 checks were verified to fail without the fix
-                (temporarily reverted the throttle checks, reran, got the
-                expected failures, restored) before being trusted as real
-                coverage.
-🔒 SECURITY   ✅ SlidingWindowLimiter (backend/auth.py) is pure in-memory
-                bookkeeping — no new I/O, no new dependency, no secrets, no
-                shell/SQL/serialization surface. Mirrors RateLimiter's
-                existing shape (same file, same class of state).
-                Quality note, not blocking: like RateLimiter._attempts, the
-                new _hits dict is keyed per user id and never purged for
-                users who stop being active — unbounded in principle, same
-                pre-existing shape as the login limiter, not a new risk this
-                change introduces.
-📄 DOCS       ➖ N/A for this commit (work commit; changelog entry deferred to dev.15 release, tracked above) — README settings table and the admin panel's SETTING_LABELS were both updated so the two new settings aren't invisible, per test_every_setting_the_backend_defaults_is_editable_in_the_admin_panel
+🔨 BUILD (item 3, shipped)  ✅ ./scripts/check.sh: 506 passed, no skips.
+                Both new 429 checks verified to fail without the fix before
+                being trusted as real coverage.
+🔨 BUILD (hostname fix)     ✅ ./scripts/check.sh: 517 passed, no skips (506 +
+                11 new). The 5 previously-unvalidated cases ($, backtick,
+                backslash, \n, \r) verified to fail against the old looser
+                validator before being trusted as real coverage.
+🔒 SECURITY   ✅ item 3: SlidingWindowLimiter is pure in-memory bookkeeping,
+                no new I/O/dependency/secrets. Quality note, not blocking:
+                like RateLimiter._attempts, _hits is keyed per user id and
+                never purged for inactive users — same pre-existing shape as
+                the login limiter, not a new risk.
+              ✅ hostname fix: pure validation tightening, strictly narrows
+                accepted input, no new dependency or I/O. Extracted into one
+                shared function (validate_ssh_hostname) rather than
+                duplicating the character set a second time, matching the
+                existing validate_ssh_username pattern in the same file.
+📄 DOCS       ➖ N/A for these commits (work commits; changelog entries
+                deferred to dev.15 release, tracked above). README settings
+                table and admin panel's SETTING_LABELS updated for item 3's
+                two new settings, per
+                test_every_setting_the_backend_defaults_is_editable_in_the_admin_panel.
 📦 RELEASE    ⬜ not owed — work commit track
 🚀 SHIP       ⬜ not owed — work commit track
 
@@ -89,3 +94,20 @@ User's decisions (AskUserQuestion): per-user global scope, packet listing
   (capture_manager.start / capture_manager.get) was never reached, and the
   admin-settings test proves the new if/elif branches actually wire up
   (not just that the setting round-trips through the DB).
+
+## ServerAuth.hostname tightening (this session, second task)
+
+- `backend/models.py`: new module-level `validate_ssh_hostname`, same
+  character set KnownHostEndpoint already enforced (rejects space, `;`, `|`,
+  `&`, `$`, backtick, backslash, `\n`, `\r`). Both `KnownHostEndpoint.hostname`
+  and `ServerAuth.hostname` now call it instead of each carrying its own copy
+  — mirrors how `validate_ssh_username` is already shared between
+  `UsernameRequest` and `ServerAuth.username` in the same file.
+- Removed the stale docstring claim that ServerAuth.hostname was
+  "deliberately" looser — it no longer is.
+- Tests (tests/test_servers.py): a parametrized rejection table for
+  ServerAuth mirroring the existing KnownHostEndpoint one, plus one
+  acceptance case. Verified the 5 new characters ($, backtick, backslash,
+  \n, \r) fail against the pre-fix validator and pass against the fix.
+- No test file previously covered ServerAuth.hostname's rejected-character
+  set at all; this closes that gap as well as the looseness itself.

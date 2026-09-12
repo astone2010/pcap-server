@@ -31,6 +31,22 @@ def validate_ssh_username(v: str) -> str:
     return v
 
 
+def validate_ssh_hostname(v: str) -> str:
+    """Rejects a hostname that could forge a known_hosts entry, a log line, or a
+    shell command.
+
+    Shared by every model that takes a hostname bound for asyncssh or the
+    known_hosts store, so the rule can only drift by being changed here.
+    ServerAuth.hostname used to accept a smaller set than this -- $, backtick,
+    backslash, and the line breaks that let one entry forge another -- until
+    that gap was closed by pointing both validators at this function.
+    """
+    v = v.strip()
+    if not v or any(c in v for c in " ;|&$`\\\n\r"):
+        raise ValueError("invalid hostname")
+    return v
+
+
 class StoredUsername(BaseModel):
     id: str
     username: str
@@ -56,9 +72,8 @@ class KnownHostEndpoint(BaseModel):
     the only two routes in the API not backed by a model, and they were the
     only two that answered malformed input with a server error.
 
-    The rules are the ones that were already here. Deliberately stricter than
-    ServerAuth.hostname, which rejects a smaller set -- tightening that one is
-    a change to a different endpoint and does not belong in this model.
+    The rules are the ones that were already here, now shared with
+    ServerAuth.hostname via validate_ssh_hostname.
     """
 
     hostname: str
@@ -67,12 +82,7 @@ class KnownHostEndpoint(BaseModel):
     @field_validator("hostname")
     @classmethod
     def validate_hostname(cls, v: str) -> str:
-        v = v.strip()
-        # Everything a shell gives meaning to, plus the line breaks that would
-        # let one entry forge another in a known_hosts file or a log.
-        if not v or any(c in v for c in " ;|&$`\\\n\r"):
-            raise ValueError("invalid hostname")
-        return v
+        return validate_ssh_hostname(v)
 
 
 class ServerAuth(BaseModel):
@@ -104,10 +114,7 @@ class ServerAuth(BaseModel):
     @field_validator("hostname")
     @classmethod
     def validate_hostname(cls, v: str) -> str:
-        v = v.strip()
-        if not v or " " in v or ";" in v or "|" in v or "&" in v:
-            raise ValueError("invalid hostname")
-        return v
+        return validate_ssh_hostname(v)
 
     @field_validator("username")
     @classmethod

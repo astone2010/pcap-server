@@ -438,6 +438,47 @@ def test_endpoint_body_accepts_a_numeric_string_port():
     assert (endpoint.hostname, endpoint.port) == ("ok.example", 2222)
 
 
+# --- ServerAuth.hostname now matches KnownHostEndpoint's stricter rule -------
+#
+# ServerAuth.hostname used to reject only space/;/|/& -- $, backtick, backslash
+# and the line breaks were still let through, reaching asyncssh and the
+# known_hosts store. Both validators now call the same validate_ssh_hostname,
+# so this table is the same rejection set as test_endpoint_body_is_rejected_
+# as_a_bad_request above, checked against the other model.
+
+
+@pytest.mark.parametrize(
+    "hostname",
+    [
+        "",
+        "  ",
+        "evil.example; rm -rf /",
+        "a|b",
+        "a&b",
+        "a$b",
+        "a`whoami`",
+        "a\\b",
+        "a\nb",
+        "a\rb",
+    ],
+)
+def test_server_auth_hostname_rejects_the_same_characters_as_known_host_endpoint(hostname):
+    from pydantic import ValidationError
+
+    from backend.models import ServerAuth
+
+    with pytest.raises(ValidationError) as excinfo:
+        ServerAuth(hostname=hostname, username="alice", ssh_key_name="k")
+    assert "hostname" in {loc for err in excinfo.value.errors() for loc in err["loc"]}
+
+
+def test_server_auth_hostname_still_accepts_an_ordinary_hostname():
+    from backend.models import ServerAuth
+
+    server = ServerAuth(hostname="  ok.example  ", username="alice", ssh_key_name="k")
+    assert server.hostname == "ok.example"
+
+
 def test_existing_servers_are_backfilled_into_the_username_list(tmp_path):
     """Upgrading an install that predates the table must not start empty: the
     derived view was showing these names, so the stored list has to keep them."""
