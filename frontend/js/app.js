@@ -591,7 +591,7 @@ function showAddServer() {
             <div class="form-row">
                 <div class="form-group"><label>Port</label><input type="number" id="new-srv-port" value="22"></div>
                 <div class="form-group">
-                    ${usernamePicker("new-srv", usernames.length ? usernames[0].username : "root")}
+                    ${usernamePicker("new-srv", "")}
                 </div>
             </div>
             <div class="form-group">${sshKeyPicker("new-srv", keys)}</div>
@@ -627,24 +627,41 @@ async function loadUsernames() {
 // [A-Za-z0-9_][A-Za-z0-9._@-]{0,63}, so a leading "+" is unrepresentable.
 const NEW_USERNAME = "+new";
 
+// Same rule as the SSH key picker, for the same reason. A <select> selects its
+// first option, so on a new server this arrived with whichever name was used
+// most recently already filled in and the text box hidden -- and the only way
+// to a new name was the last entry in a dropdown nobody had a reason to open.
+// The field read as locked to the stored list, and adding a username through
+// the Admin panel first looked like the required route. It isn't, and never
+// was; the field just never said so.
+//
+// So: nothing is preselected when there is no current value. The placeholder is
+// disabled, so it cannot be chosen back once a real answer is given, and
+// serverFormProblem refuses an empty one.
 function usernamePicker(idPrefix, current) {
     const stored = knownUsernames.map((u) => u.username);
     const known = current && stored.includes(current);
     const opts = stored
         .map((u) => `<option value="${escHtml(u)}"${u === current ? " selected" : ""}>${escHtml(u)}</option>`)
         .join("");
-    const useNew = !stored.length || (current && !known);
+    // With nothing stored there is only one path, so take it rather than making
+    // someone pick "+ New username" out of a list of one.
+    const onlyNew = !stored.length;
+    // A current value absent from the list is a name typed earlier, being edited.
+    const useNew = onlyNew || Boolean(current && !known);
+    const needsPlaceholder = !useNew && !known;
     return `
         <label>Username</label>
         <select id="${idPrefix}-user-select">
+            ${needsPlaceholder ? `<option value="" selected disabled>\u2014 select or add \u2014</option>` : ""}
             ${opts}
             <option value="${NEW_USERNAME}"${useNew ? " selected" : ""}>+ New username\u2026</option>
         </select>
         <input type="text" id="${idPrefix}-user" value="${escHtml(useNew ? (current || "") : "")}"
                placeholder="e.g. serveradmin" autocomplete="off"${useNew ? "" : " hidden"}>
-        <div class="field-hint">${stored.length
-            ? "Saved usernames are offered here. Manage the list under SSH usernames below."
-            : "The first username you use is saved and offered next time."}</div>`;
+        <div class="field-hint">${onlyNew
+            ? "The first username you use is saved and offered next time."
+            : "Pick a saved username, or choose \u201c+ New username\u201d to type one \u2014 you do not have to add it in the Admin panel first."}</div>`;
 }
 
 // The select is the source of truth unless "+ New username" is chosen.

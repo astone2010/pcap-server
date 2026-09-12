@@ -15,7 +15,8 @@ Updated: 2026-09-12
                 generated fields, field-to-byte highlighting, byte-to-field
                 selection, the Apply-as-Filter menu, TCP flag bit filtering,
                 and the packet-row conversation filter. A second browser suite
-                covers the server form: 14 checks on the blank SSH key picker,
+                covers the server form: 28 checks on the blank SSH key picker,
+                the blank username picker and its "not the Admin panel" hint,
                 the refusal to add/test/probe without one, the standing
                 self-capture warning, the backend still rejecting localhost, and
                 the edit form keeping the server's own key. Zero JS errors.

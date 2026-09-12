@@ -23,6 +23,15 @@
 
 ### Changed
 
+- **The username field starts empty on a new server, and says the Admin panel
+  is not a prerequisite.** Same defect as the key field below, and more
+  confusing because of what it implied: the box arrived with the most recently
+  used name already filled in and the text input hidden, so the field read as
+  locked to the saved list — and the only route to a new name was the last entry
+  of a dropdown there was no reason to open. Adding the username through Admin →
+  SSH usernames first looked like the required route. It never was; the field
+  simply never said so. Nothing is preselected now, the hint spells out both
+  paths, and adding is refused until a name is actually given.
 - **The SSH key field starts empty on a new server.** A `<select>` selects its
   first option by default, so the add form silently arrived with whichever key
   sorted first already chosen — and a server added without looking would
