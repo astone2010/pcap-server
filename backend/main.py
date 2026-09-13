@@ -1156,8 +1156,12 @@ async def rename_capture(
 @app.delete("/api/captures/{capture_id}")
 async def delete_capture(capture_id: str, user: dict = Depends(get_current_user)):
     _require_own_capture(capture_id, user)
-    await capture_manager.delete(capture_id)
-    return {"ok": True}
+    # What was done is reported back rather than swallowed: deleting a running
+    # capture terminates it on the target host and removes the file it was
+    # writing, and an operator who asked for that is owed confirmation it
+    # happened -- particularly when the remote half did not.
+    result = await capture_manager.delete(capture_id)
+    return {"ok": True, **result}
 
 
 @app.get("/api/captures/{capture_id}")

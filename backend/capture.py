@@ -380,15 +380,65 @@ class CaptureManager:
         self._persist(info)
         return info
 
-    async def delete(self, capture_id: str) -> None:
-        process = self._processes.pop(capture_id, None)
-        if process:
-            await self._ssh.stop_tcpdump(process)
-            await process.close()
+    async def delete(self, capture_id: str) -> dict:
+        """Remove a capture, terminating it first if it is still running.
 
-        if capture_id in self._tasks:
-            self._tasks[capture_id].cancel()
-            del self._tasks[capture_id]
+        Deleting a running capture is a stop that keeps nothing, and it has to
+        do everything a stop does: interrupt tcpdump the same way, take the
+        file it was writing off the target host, release the SSH session, and
+        only then drop the record and the local copy.
+
+        Delete used to diverge from stop on all three counts. It signalled the
+        process but cancelled the monitor without awaiting it, so the monitor's
+        finally -- which ends in _persist() -- ran after the row had been
+        deleted and wrote it straight back, as a FAILED capture whose file was
+        already gone. And because the monitor never reached _collect, nothing
+        removed the remote pcap: the capture an operator deleted stayed on the
+        target, complete.
+
+        Returns what actually happened, so the caller can say so rather than
+        having the capture disappear with no account of what was done.
+        """
+        info = self._captures.get(capture_id)
+        remote_path = info.remote_path if info else ""
+        result = {"terminated": False, "remote_file_removed": False}
+
+        # Out of the monitor's reach before it is cancelled: terminating the
+        # capture is this method's job, done deliberately, rather than a side
+        # effect of the connection being torn down underneath it.
+        process = self._processes.pop(capture_id, None)
+
+        task = self._tasks.pop(capture_id, None)
+        if task:
+            task.cancel()
+            # A cancelled task has not run its finally until it is awaited.
+            # Waiting here is what keeps the delete final.
+            await asyncio.gather(task, return_exceptions=True)
+
+        if process:
+            # Live in this process, so it gets exactly the interrupt-then-kill a
+            # Stop performs. Signalling a process that has already exited raises
+            # instead, which is not a reason to fail the delete: closing the
+            # session below ends it either way, and refusing here would leave
+            # the record behind for a capture that is already over.
+            try:
+                await self._ssh.stop_tcpdump(process)
+            except Exception:
+                logger.warning("could not interrupt capture %s cleanly; closing its session", capture_id)
+            result["terminated"] = True
+            if remote_path:
+                try:
+                    await process.remove_remote_file(remote_path)
+                    result["remote_file_removed"] = True
+                except Exception:
+                    # The record and the local copy still go. A file left in
+                    # the target's /tmp is worth a warning and a word to the
+                    # caller, not a refusal to delete.
+                    logger.warning(
+                        "failed to remove remote file %s for deleted capture %s",
+                        remote_path, capture_id,
+                    )
+            await process.close()
 
         self._db.delete_capture(capture_id)
         info = self._captures.pop(capture_id, None)
@@ -396,6 +446,7 @@ class CaptureManager:
             path = Path(info.local_path)
             if path.exists():
                 path.unlink()
+        return result
 
     async def shutdown(self) -> None:
         for capture_id in list(self._processes.keys()):

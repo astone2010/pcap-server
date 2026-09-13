@@ -1371,12 +1371,60 @@ async function renameCapture(id) {
 }
 
 async function deleteCapture(id) {
-    if (!confirm("Delete this capture?")) return;
-    await api(`/api/captures/${id}`, { method: "DELETE" });
+    const capture = captures.find((c) => c.id === id);
+    const running = !!capture && ["running", "stopping", "transferring"].includes(capture.status);
+
+    // Deleting a live capture is not the same act as deleting a finished one
+    // and does not get the same one-line prompt: it ends the capture on the
+    // target host, and there is no partial pcap left over to fall back on.
+    const question = running
+        ? "This capture is still running.\n\n"
+            + "Deleting it stops tcpdump on the target host, removes the file it is "
+            + "writing there, and closes the SSH session. Nothing is kept \u2014 there "
+            + "is no partial capture to download afterwards.\n\n"
+            + "Stop and delete it?"
+        : "Delete this capture?";
+    if (!confirm(question)) return;
+
+    // Interrupting tcpdump and clearing the target takes a few seconds: it is
+    // given time to flush before it is killed. Without a busy state the row
+    // just sits there looking as though the click did nothing.
+    const btn = document.querySelector(
+        `[data-action="delete-capture"][data-id="${CSS.escape(id)}"]`,
+    );
+    const label = btn ? btn.textContent : "";
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = running ? "Stopping\u2026" : "Deleting\u2026";
+    }
+
+    let result;
+    try {
+        result = await api(`/api/captures/${id}`, { method: "DELETE" });
+    } catch (e) {
+        // A failed delete used to leave the row in place with nothing said, so
+        // the capture looked deleted until the next refresh brought it back.
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = label;
+        }
+        alert("Delete failed: " + e.message);
+        return;
+    }
+
     if (viewingCaptureId === id) {
         viewingCaptureId = null;
         show("viewer-empty");
         hide("packet-viewer");
+    }
+
+    // The one outcome worth interrupting for: the capture is gone from here,
+    // but a complete pcap is still on the target host and only the operator
+    // can clear it.
+    if (result && result.terminated && !result.remote_file_removed && capture && capture.remote_path) {
+        alert("The capture was stopped and deleted here, but its file could not be "
+            + "removed from the target host.\n\nDelete it there by hand:\n"
+            + capture.remote_path);
     }
     loadCaptures();
 }

@@ -95,6 +95,19 @@ class RemoteCapture:
     def kill(self) -> None:
         self.process.kill()
 
+    async def remove_remote_file(self, remote_path: str) -> None:
+        """Delete this capture's file on the target, over its own connection.
+
+        A capture deleted while it is running never reaches _collect, which is
+        what normally tidies the target host -- so without this the pcap an
+        operator just deleted is still sitting in the target's /tmp, complete
+        and readable by anyone with an account there. Reusing the connection
+        the capture is already running on keeps it to one round trip against a
+        host that is already authenticated, and it has to happen before
+        close(): afterwards there is nothing left to run it on.
+        """
+        await self._conn.run(f"rm -f {_shell_quote(remote_path)}", check=True, timeout=10)
+
     async def close(self) -> None:
         """Idempotent: safe to call from the monitor, from delete, and at shutdown."""
         if self._closed:

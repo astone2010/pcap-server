@@ -64,6 +64,10 @@ class FakeProcess:
     def __init__(self, stderr_chunks: list[str] | None = None) -> None:
         self.closed = False
         self._stderr = ScriptedStderr(stderr_chunks or [])
+        # Paths this capture was asked to clear from the target host, and
+        # whether asking is set up to fail.
+        self.removed: list[str] = []
+        self.remove_raises = False
 
     async def wait(self):
         await asyncio.Event().wait()
@@ -82,6 +86,11 @@ class FakeProcess:
     def kill(self) -> None:
         pass
 
+    async def remove_remote_file(self, remote_path: str) -> None:
+        if self.remove_raises:
+            raise OSError("target unreachable")
+        self.removed.append(remote_path)
+
     async def close(self) -> None:
         self.closed = True
 
@@ -91,14 +100,18 @@ class FakeSSHManager:
         self.run_tcpdump_calls = 0
         self.stderr_chunks: list[str] = []
         self.last_args: list[str] = []
+        self.stopped: list[object] = []
+        self.processes: list[FakeProcess] = []
 
     async def run_tcpdump(self, server, args, remote_path, *, duration=None):
         self.run_tcpdump_calls += 1
         self.last_args = list(args)
-        return FakeProcess(self.stderr_chunks)
+        process = FakeProcess(self.stderr_chunks)
+        self.processes.append(process)
+        return process
 
     async def stop_tcpdump(self, process) -> None:
-        pass
+        self.stopped.append(process)
 
     async def fetch_file(self, *a, **k) -> None:
         pass
@@ -722,3 +735,126 @@ async def test_capture_duration_is_capped_by_max_capture_seconds(manager):
         await asyncio.sleep(0)
 
     assert seen == [settings["max_capture_seconds"] + _MONITOR_GRACE_SECONDS]
+
+
+# --- delete(): a running capture is stopped, not abandoned --------------------
+#
+# Delete and Stop used to diverge. Stop interrupted tcpdump and let the monitor
+# finish; Delete signalled the process, cancelled the monitor WITHOUT awaiting
+# it, and dropped the row. Two things fell out of that gap: the monitor's
+# finally ran afterwards and wrote the row straight back, and nothing ever
+# removed the pcap from the target host, because only _collect does that and a
+# cancelled monitor never reaches it.
+
+
+async def _start_and_settle(mgr, server=None):
+    """Start a capture and let its monitor task actually get going."""
+    server = server or make_server()
+    info = await mgr.start(CaptureRequest(server_id=server.id, interface="eth0"), server, "u1")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    return info
+
+
+async def test_delete_while_running_terminates_the_capture(manager):
+    mgr, ssh, _ = manager
+    info = await _start_and_settle(mgr)
+    process = ssh.processes[0]
+
+    result = await mgr.delete(info.id)
+
+    assert ssh.stopped == [process], "tcpdump must be interrupted the way Stop interrupts it"
+    assert process.closed is True, "the SSH session must be released"
+    assert result["terminated"] is True
+
+
+async def test_delete_while_running_clears_the_file_from_the_target(manager):
+    mgr, ssh, _ = manager
+    info = await _start_and_settle(mgr)
+
+    result = await mgr.delete(info.id)
+
+    # The whole point of deleting a capture is that the packets stop existing.
+    # Leaving a complete pcap in the target's /tmp defeats it silently.
+    assert ssh.processes[0].removed == [info.remote_path]
+    assert result["remote_file_removed"] is True
+
+
+async def test_delete_while_running_removes_the_local_file(manager, tmp_path):
+    mgr, _ssh, _ = manager
+    info = await _start_and_settle(mgr)
+    local = Path(info.local_path)
+    local.write_bytes(b"partial pcap")
+
+    await mgr.delete(info.id)
+
+    assert not local.exists()
+
+
+async def test_deleted_running_capture_does_not_come_back(manager):
+    """The regression that made delete look like it worked and then undo itself.
+
+    The monitor's finally ends in _persist(), and upsert_capture is INSERT OR
+    REPLACE -- so a delete that cancels the task without awaiting it removes the
+    row and has the monitor write it back a tick later, as a FAILED capture
+    whose file is already gone.
+    """
+    mgr, _ssh, _ = manager
+    info = await _start_and_settle(mgr)
+
+    await mgr.delete(info.id)
+    # Well past the point where a cancelled-but-unawaited monitor would have
+    # unwound and re-persisted.
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert mgr._db.rows == {}
+    assert info.id not in mgr._captures
+    assert info.id not in mgr._tasks
+    assert info.id not in mgr._processes
+
+
+async def test_delete_reports_a_target_it_could_not_clear(manager):
+    mgr, ssh, _ = manager
+    info = await _start_and_settle(mgr)
+    ssh.processes[0].remove_raises = True
+
+    result = await mgr.delete(info.id)
+
+    # The capture still goes -- a file stranded on the target is not a reason to
+    # refuse -- but the caller is told, because only the operator can clear it.
+    assert result == {"terminated": True, "remote_file_removed": False}
+    assert mgr._db.rows == {}
+    assert info.id not in mgr._captures
+
+
+async def test_delete_of_a_finished_capture_does_not_touch_the_host(manager):
+    mgr, ssh, _ = manager
+    capture_id = seed_running_capture(mgr, CaptureStatus.COMPLETED)
+
+    result = await mgr.delete(capture_id)
+
+    assert ssh.stopped == []
+    assert result == {"terminated": False, "remote_file_removed": False}
+    assert capture_id not in mgr._captures
+
+
+async def test_delete_survives_a_process_that_has_already_exited(manager):
+    """A capture deleted while it is transferring has no tcpdump left to signal.
+
+    asyncssh raises rather than signalling a finished process, and refusing the
+    delete over it would strand the record for a capture that is already over.
+    """
+    mgr, ssh, _ = manager
+    info = await _start_and_settle(mgr)
+
+    async def already_gone(process):
+        raise OSError("channel closed")
+
+    ssh.stop_tcpdump = already_gone
+
+    result = await mgr.delete(info.id)
+
+    assert result["terminated"] is True
+    assert ssh.processes[0].closed is True
+    assert mgr._db.rows == {}

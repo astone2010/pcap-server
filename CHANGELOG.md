@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Deleting a running capture stops it, instead of letting go of it.** Delete
+  and Stop had drifted apart. Stop interrupted `tcpdump` and let the monitor
+  finish; Delete signalled the process, cancelled the monitor without waiting
+  for it, and dropped the row -- and two things fell out of that gap. The
+  monitor's `finally` ends in a `_persist()`, and `upsert_capture` is an
+  `INSERT OR REPLACE`, so the row was deleted and then written straight back a
+  tick later as a `failed` capture called "cancelled", whose file had already
+  been unlinked. And because only `_collect` clears the target host and a
+  cancelled monitor never reaches it, the pcap stayed in the target's `/tmp`,
+  complete and readable, after the operator had deleted it. A delete now waits
+  for the monitor to unwind before it touches the row, interrupts `tcpdump`
+  the same way Stop does, removes the remote file over the connection the
+  capture is already running on, and closes the session -- in that order.
+  Signalling a process that has already exited no longer fails the delete
+  either: a capture deleted while transferring has no `tcpdump` left to
+  interrupt, and the record should still go.
+- **Deleting a capture says what it did.** The prompt was one line for a
+  finished capture and the same line for a live one, and the row simply
+  vanished afterwards -- including when the request failed, which left the
+  capture looking deleted until the next refresh brought it back. Deleting a
+  running capture now says what it is about to do to the target host and asks
+  in those terms, the button reports that it is stopping rather than sitting
+  there looking unclicked, a failure is shown instead of swallowed, and the
+  one outcome an operator has to act on -- the capture gone from here but its
+  file still on the target -- names the path to remove by hand.
+
 ## 0.1.0-dev.16 — 2026-09-12
 
 ### Added
