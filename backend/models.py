@@ -415,6 +415,15 @@ class CaptureRequest(BaseModel):
         return v
 
 
+def _clean_filter_label(v: str) -> str:
+    cleaned = "".join(ch for ch in v if ch.isprintable()).strip()
+    if not cleaned:
+        raise ValueError("a saved filter needs a name")
+    if len(cleaned) > FILTER_LABEL_MAX:
+        raise ValueError(f"name must be at most {FILTER_LABEL_MAX} characters")
+    return cleaned
+
+
 class CustomFilterRequest(BaseModel):
     """One of the operator's own capture filters: a label and the expression.
 
@@ -431,12 +440,7 @@ class CustomFilterRequest(BaseModel):
     @field_validator("label")
     @classmethod
     def validate_label(cls, v: str) -> str:
-        cleaned = "".join(ch for ch in v if ch.isprintable()).strip()
-        if not cleaned:
-            raise ValueError("a saved filter needs a name")
-        if len(cleaned) > FILTER_LABEL_MAX:
-            raise ValueError(f"name must be at most {FILTER_LABEL_MAX} characters")
-        return cleaned
+        return _clean_filter_label(v)
 
     @field_validator("expression")
     @classmethod
@@ -451,6 +455,35 @@ class CustomFilterRequest(BaseModel):
         if any(c in cleaned for c in BPF_FORBIDDEN_CHARS):
             raise ValueError("BPF filter contains disallowed characters")
         return cleaned
+
+
+class DisplayFilterRequest(BaseModel):
+    """One of the operator's own display filters, reusable on any capture.
+
+    Not a saved view: a view belongs to one capture and appears as a tab on it.
+    This is a filter kept for use anywhere, and it goes through the same
+    validator the Viewer's filter box does, for the reason CaptureViewRequest
+    gives -- storing must not accept what running would refuse.
+    """
+
+    label: str
+    expression: str
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, v: str) -> str:
+        return _clean_filter_label(v)
+
+    @field_validator("expression")
+    @classmethod
+    def validate_expression(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("a saved filter needs an expression")
+        try:
+            return validate_display_filter(cleaned)
+        except DisplayFilterError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class CustomFilter(BaseModel):

@@ -31,7 +31,12 @@ chmod 0700 ssh-keys data captures secrets
 
 Existing installations were not created this way. Check with `ls -ld data` and
 fix it in place if the mode is not `0700` — nothing in the app depends on those
-directories being readable by anyone but the container's user.
+directories being readable by anyone but the container's user. **The app checks
+at startup** and logs `DATA DIRECTORY IS NOT PRIVATE` when group or other
+accounts have any access to it. It warns rather than refusing to start, since one
+`chmod` fixes it and nothing needs to restart. (A Docker *named* volume, rather
+than the bind mount the compose file uses, is already closed off by
+`/var/lib/docker`'s own permissions and can ignore the warning.)
 
 ## Captures at rest
 
@@ -61,12 +66,33 @@ encryption was switched on is sealed in place at the next start.
 
 ## Traffic in transit
 
-**Browser to pcap-server** is yours to terminate, because a LAN appliance cannot
-obtain its own certificates. Rather than pretend, the app degrades explicitly:
-**over plain HTTP it runs read-only.** Anything that changes state, and anything
-that exports a capture in bulk, is refused with an explanation rather than a
-bare 403. Viewing is allowed. Sign-in, sign-out and enrolment stay open, because
-refusing those would leave no way in at all rather than a degraded one.
+**Browser to pcap-server** is TLS from either
+[pcap-server itself](tls.md) — a Let's Encrypt certificate obtained over a DNS
+challenge, so no inbound port is needed — or a [reverse proxy](reverse-proxy.md)
+in front. Without either, the app degrades explicitly: **over plain HTTP it runs
+read-only.** Anything that changes state, and anything that exports a capture in
+bulk, is refused with an explanation rather than a bare 403. Viewing is allowed.
+Sign-in, sign-out and enrolment stay open, because refusing those would leave no
+way in at all rather than a degraded one.
+
+**The certificate routes stay open over plain HTTP too**, admin-only. They are
+how an install gets *off* plain HTTP without a proxy, so refusing them there
+would leave the proxy as the only way out. The cost is stated in the Admin panel
+when the page is on HTTP: the DNS provider credentials in that request cross the
+network in the clear. `python -m backend.tls issue`, run inside the container,
+does the same job with the credentials typed at a prompt and never sent anywhere.
+
+**The certificate's private key is sealed** under the master key, like captures
+and SSH keys, and is never a plaintext file: the ACME client (lego) works in
+`/dev/shm` and its directory is removed when it finishes, and at startup the key
+is opened into a memory-only file for the TLS library and closed. DNS credentials
+are sealed the same way, and lego is passed only the settings its documentation
+lists for the chosen provider — nothing that reconfigures lego itself or makes it
+read a file. Provider URL settings cannot point at the container's own loopback
+or at link-local space where cloud metadata services live, and settings that
+switch off TLS verification of a provider's API are not offered. Built-in HTTPS
+refuses passphrase mode, where a restart would leave the app unable to open its
+own key. Details in [Built-in HTTPS](tls.md).
 
 Loopback counts as secure — a connection that never leaves the machine has no
 wire to read. `X-Forwarded-Proto` is honoured only when `TRUST_PROXY_HEADERS` is

@@ -141,7 +141,8 @@ def _start_server(root: Path) -> tuple[LiveServer, subprocess.Popen]:
     handle = log.open("w")
     proc = subprocess.Popen(
         [
-            sys.executable, "-m", "uvicorn", "backend.main:app",
+            # The image's own entry point, so the launcher is what gets tested.
+            sys.executable, "-m", "backend.serve",
             "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning",
         ],
         cwd=REPO_ROOT,

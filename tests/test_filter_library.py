@@ -46,10 +46,6 @@ def _library() -> list[tuple[str, str]]:
     return _expressions("const FILTER_LIBRARY", "let filterLibraryQuery")
 
 
-def _suggestions() -> list[tuple[str, str]]:
-    return _expressions("const BPF_SUGGESTIONS", "function renderFilterSuggestions")
-
-
 def test_the_library_was_actually_found():
     """A regex that silently matched nothing would make every test below pass
     without checking anything at all."""
@@ -65,16 +61,6 @@ def test_every_library_filter_is_accepted_by_the_api(label, expr):
         CaptureRequest(server_id="s1", interface="eth0", bpf_filter=expr)
     except ValidationError as exc:
         pytest.fail(f"the library offers {label!r} but the API refuses it: {expr}\n{exc}")
-
-
-@pytest.mark.parametrize("label, expr", _suggestions())
-def test_every_suggestion_chip_is_accepted_by_the_api(label, expr):
-    """The chips are the worked examples on the Capture tab. One of them --
-    the tcpflags SYN filter -- was refused too."""
-    try:
-        CaptureRequest(server_id="s1", interface="eth0", bpf_filter=expr)
-    except ValidationError as exc:
-        pytest.fail(f"the chip {label!r} is refused by the API: {expr}\n{exc}")
 
 
 @pytest.mark.skipif(not shutil.which("tcpdump"), reason="tcpdump not installed")

@@ -220,7 +220,8 @@ themselves and need very little configuration — see below.
 ## Behind a reverse proxy
 
 Putting pcap-server behind TLS is what restores full access — over plain HTTP it
-is read-only. **[Setting up a reverse proxy](reverse-proxy.md)** is the whole
+is read-only. **No proxy is needed** if pcap-server gets its own certificate:
+[Built-in HTTPS](tls.md). Otherwise, **[Setting up a reverse proxy](reverse-proxy.md)** is the whole
 procedure, worked start to finish for
 [Caddy](reverse-proxy.md#caddy), [nginx](reverse-proxy.md#nginx) and
 [Nginx Proxy Manager](reverse-proxy.md#nginx-proxy-manager), with a
@@ -287,6 +288,9 @@ docker compose run --rm --entrypoint python pcap-server -m backend.rekey \
     --old-key-file /run/secrets/pcap_master_key \
     --generate-new-key /app/data/master.key.new
 ```
+
+It re-wraps the [built-in HTTPS](tls.md) key and token in `/app/data/tls` too —
+the compose file sets `DATA_DIR`, which is where the tool looks.
 
 That is a **dry run**: it reports what it would move and writes nothing, key
 file included. Add `--apply` to commit it. Then put the new key where the old

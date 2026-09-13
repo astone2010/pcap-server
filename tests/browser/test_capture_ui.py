@@ -333,19 +333,12 @@ async def test_the_composed_filter_never_uses_the_c_operators(app_page):
     assert "&&" not in composed and "||" not in composed
 
 
-async def test_a_suggestion_chip_composes_like_a_library_row(app_page):
-    """A chip and a library row are the same gesture; picking a second chip
-    should not wipe the first either."""
+async def test_the_capture_filter_has_no_example_chips(app_page):
+    """The library replaced them; a second, smaller list of examples beside it
+    was only something more to read."""
     await _capture_tab(app_page)
-    await _open_library(app_page)
-    first = await _pick_library_row(app_page)
-
-    await app_page.click("#bpf-suggestions .filter-chip")
-    await app_page.wait_for_selector("#filter-menu")
-    await app_page.click("#filter-menu .filter-menu-item:has-text('or this')")
-
-    composed = await app_page.input_value("#cap-bpf")
-    assert composed.startswith(f"({first}) or (")
+    assert await app_page.locator("#bpf-suggestions").count() == 0
+    assert await app_page.locator(".bpf-filter .filter-chip").count() == 0
 
 
 async def test_the_display_filter_chips_are_left_alone(app_page):
@@ -950,15 +943,33 @@ async def test_using_a_saved_filter_fills_in_the_field_above(app_page, api_clien
     assert await app_page.input_value("#cap-bpf") == "udp port 5353"
 
 
-async def test_saving_with_an_empty_field_says_so_and_asks_nothing(app_page):
-    """No point prompting for a name for nothing."""
+async def test_save_filter_appears_only_once_there_is_something_to_save(app_page):
+    """A Save button beside an empty box offers to save nothing."""
     await _capture_tab(app_page)
     await app_page.fill("#cap-bpf", "")
-    asked = []
-    app_page.on("dialog", lambda d: asked.append(d.message))
-    await app_page.click("#btn-save-filter")
-    await app_page.wait_for_selector("#save-filter-msg.save-filter-bad")
-    assert not asked, "it prompted for a name with nothing to save"
+    assert await app_page.is_hidden("#btn-save-filter")
+    await app_page.fill("#cap-bpf", "tcp port 22")
+    await app_page.wait_for_selector("#btn-save-filter", state="visible")
+    await app_page.fill("#cap-bpf", "   ")
+    await app_page.wait_for_selector("#btn-save-filter", state="hidden")
+
+
+async def test_save_filter_sits_to_the_left_of_the_field(app_page):
+    await _capture_tab(app_page)
+    await app_page.fill("#cap-bpf", "tcp port 22")
+    button = await app_page.locator("#btn-save-filter").bounding_box()
+    field = await app_page.locator("#cap-bpf").bounding_box()
+    assert button["x"] + button["width"] <= field["x"]
+    assert abs((button["y"] + button["height"] / 2) - (field["y"] + field["height"] / 2)) <= 3
+
+
+async def test_a_filter_chosen_from_the_library_brings_the_button_too(app_page):
+    """The field changes by code there, not by typing."""
+    await _capture_tab(app_page)
+    await app_page.fill("#cap-bpf", "")
+    await _open_library(app_page)
+    await _pick_library_row(app_page)
+    await app_page.wait_for_selector("#btn-save-filter", state="visible")
 
 
 async def test_saving_a_filter_puts_it_in_the_library_and_opens_it(app_page, api_client):

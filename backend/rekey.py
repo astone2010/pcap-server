@@ -14,9 +14,10 @@ a window where plaintext exists somewhere.
 
 What it covers
 --------------
-Captures and stored SSH private keys. Both are sealed with the same envelope by
-the same master key, and a rotation that moved only one of them would leave the
-other unopenable -- which startup then refuses to continue past, so a partial
+Captures, stored SSH private keys, and the built-in HTTPS material in
+DATA_DIR/tls (the certificate's private key and the DNS credentials). All are
+sealed with the same envelope by the same master key, and a rotation that moved
+only some of them would leave the rest unopenable -- which startup then refuses to continue past, so a partial
 rotation is a broken installation rather than a degraded one.
 
 Safety properties
@@ -97,8 +98,10 @@ class RekeyRefused(Exception):
     """Raised before anything is written, when the run must not start."""
 
 
-def _targets(captures_dir: Path | None, ssh_keys_dir: Path | None) -> list[Path]:
-    """Every sealed object, captures and SSH keys alike.
+def _targets(
+    captures_dir: Path | None, ssh_keys_dir: Path | None, tls_dir: Path | None = None,
+) -> list[Path]:
+    """Every sealed object: captures, SSH keys, and the TLS key and token.
 
     SSH keys carry no distinguishing suffix -- they are whatever the operator
     uploaded -- so the directory is taken as a whole and each file is judged by
@@ -109,6 +112,8 @@ def _targets(captures_dir: Path | None, ssh_keys_dir: Path | None) -> list[Path]
         found += sorted(p for p in captures_dir.glob(f"*{ENCRYPTED_SUFFIX}") if p.is_file())
     if ssh_keys_dir and ssh_keys_dir.exists():
         found += sorted(p for p in ssh_keys_dir.iterdir() if p.is_file())
+    if tls_dir and tls_dir.exists():
+        found += sorted(p for p in tls_dir.glob(f"*{ENCRYPTED_SUFFIX}") if p.is_file())
     return found
 
 
@@ -196,6 +201,7 @@ def rekey_all(
     *,
     captures_dir: Path | None,
     ssh_keys_dir: Path | None,
+    tls_dir: Path | None = None,
     apply: bool,
 ) -> Outcome:
     if old.kek_id == new.kek_id:
@@ -204,7 +210,7 @@ def rekey_all(
             f"(id {old.kek_id.hex()[:12]}) -- nothing to rotate"
         )
 
-    paths = _targets(captures_dir, ssh_keys_dir)
+    paths = _targets(captures_dir, ssh_keys_dir, tls_dir)
     if not paths:
         raise RekeyRefused(
             "no sealed files found -- check --captures-dir and --ssh-keys-dir "
@@ -293,7 +299,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--captures-dir", type=Path, default=os.environ.get("CAPTURES_DIR"))
     p.add_argument("--ssh-keys-dir", type=Path, default=os.environ.get("SSH_KEYS_DIR"))
     p.add_argument("--data-dir", type=Path, default=os.environ.get("DATA_DIR"),
-                   help="only needed for passphrase mode, to read the stored salt")
+                   help="holds the built-in HTTPS key and DNS credentials (DATA_DIR/tls), and "
+                        "the salt for passphrase mode")
     for which in ("old", "new"):
         p.add_argument(f"--{which}-key-file")
         p.add_argument(f"--{which}-key-env", metavar="VAR")
@@ -350,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
             old, new,
             captures_dir=args.captures_dir,
             ssh_keys_dir=args.ssh_keys_dir,
+            tls_dir=args.data_dir / "tls" if args.data_dir else None,
             apply=args.apply,
         )
     except (RekeyRefused, KeyUnavailable, ValueError) as exc:

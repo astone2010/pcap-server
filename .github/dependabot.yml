@@ -1,0 +1,14 @@
+# Keeps the base image digest in the Dockerfile current. The image is pinned by
+# digest so a build is reproducible; without this, the pin would also freeze out
+# every Debian and CPython security fix pushed to python:3.12-slim.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # Stay on 3.12: the pins in backend/requirements.txt are what decide the
+      # interpreter (scripts/check.sh explains), so a minor bump is its own change.
+      - dependency-name: python
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]

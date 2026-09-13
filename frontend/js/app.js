@@ -217,10 +217,11 @@ function checkCookieConfig(cookieSecure) {
             "Because of that pcap-server runs read-only on this connection: you can browse ",
             "servers and view captures, but ",
             { strong: "captures cannot be downloaded, SSH keys cannot be uploaded, and nothing can be changed" },
-            ". To get full access, serve pcap-server over HTTPS \u2014 either put a reverse proxy in front ",
-            "that can obtain and renew its own certificates (Caddy, Nginx Proxy Manager and Traefik all do ",
-            "this automatically; plain nginx needs certbot or similar alongside it) ",
-            "and set ",
+            ". To get full access, serve pcap-server over HTTPS. An admin can have it get its own ",
+            "certificate under ",
+            { strong: "Admin \u2192 HTTPS certificate" },
+            " \u2014 no proxy, no inbound ports. Or put a reverse proxy in front that obtains its own ",
+            "certificates (Caddy, Nginx Proxy Manager and Traefik all do) and set ",
             { code: "TRUST_PROXY_HEADERS=true" },
             " so it recognises the proxy's TLS, then set ",
             { code: "COOKIE_SECURE=true" },
@@ -378,7 +379,8 @@ function enterApp() {
     applyDrawerState();
     renderFilterLibrary();
     loadCustomFilters();
-    renderFilterSuggestions("bpf-suggestions", BPF_SUGGESTIONS);
+    loadDisplayFilters();
+    syncSaveButton("btn-save-filter", "cap-bpf");
     renderFilterSuggestions("display-filter-suggestions", DISPLAY_SUGGESTIONS);
     renderFilterPreview();
     loadServers();
@@ -427,6 +429,7 @@ function selectStaticTab(name) {
     activatePanel(name);
     if (name === "admin") {
         loadEncryptionStatus();
+        loadTlsStatus();
         loadAdminSettings();
         loadAdminUsers();
         loadAdminSSHKeys();
@@ -1403,8 +1406,8 @@ function combineBpf(current, expr, mode) {
 // confirmed the click had landed -- but that made picking a second filter a
 // matter of reopening the list, which is most of the work in building one up.
 // Reading rather than writing: the field stays the single source of truth, and
-// this follows it whether the change came from a library row, a chip, or
-// somebody typing.
+// this follows it whether the change came from a library row or somebody
+// typing.
 function renderFilterPreview() {
     const bar = $("filter-preview");
     const box = $("cap-bpf");
@@ -1416,11 +1419,20 @@ function renderFilterPreview() {
 }
 
 // Everything that changes the BPF field goes through here -- typing, a library
-// row, a chip, the Clear button. Two things follow the field and neither may be
+// row, the Clear button. Two things follow the field and neither may be
 // left behind: the preview bar, and whether a live stream now has a target.
 function onBpfFilterChanged() {
     renderFilterPreview();
     updateLiveTargetNotice();
+    syncSaveButton("btn-save-filter", "cap-bpf");
+}
+
+// A Save button beside an empty box offers to save nothing, so it is not shown
+// until there is something to save.
+function syncSaveButton(buttonId, boxId) {
+    const btn = $(buttonId);
+    const box = $(boxId);
+    if (btn && box) btn.hidden = !box.value.trim();
 }
 
 function applyBpfFilter(expr, mode) {
@@ -2630,20 +2642,9 @@ function applyTimeColumnWidth(flags) {
     }
 }
 
-// Clickable starting points for both filters. The BPF examples existed only
-// buried inside the "Where are the tcpdump flags?" explainer, and the display
-// filter had nothing at all beyond its placeholder -- so the two filters people
-// most needed help with were the two with the least of it.
-const BPF_SUGGESTIONS = [
-    ["host 10.0.0.1", "one host, both directions"],
-    ["tcp port 443", "one TCP port"],
-    ["port 53", "DNS, TCP and UDP"],
-    ["net 192.168.1.0/24", "a whole subnet"],
-    ["icmp or arp", "protocols by name"],
-    ["not port 22", "everything except SSH"],
-    ["tcp[tcpflags] & tcp-syn != 0", "connection attempts"],
-];
-
+// Clickable starting points for the display filter. The capture filter had a
+// row of these too, until the filter library under it made them redundant --
+// eight examples beside eighty-odd searchable ones.
 const DISPLAY_SUGGESTIONS = [
     ["ip.addr == 10.0.0.1", "one host, either direction"],
     ["tcp.port == 443", "one TCP port"],
@@ -3100,6 +3101,9 @@ function packetRowHtml(p, cols) {
 }
 
 async function loadPackets(captureId, filter = "") {
+    // Every apply, view switch and capture change comes through here, which is
+    // what keeps the Save button in step with a box changed by code.
+    syncSaveButton("btn-save-display-filter", "display-filter");
     const tbody = $("packet-tbody");
     const cols = packetColumns();
     const { flags, span } = cols;
@@ -3181,6 +3185,7 @@ function liveScroller() {
 }
 
 function startLiveView(captureId, filter = "") {
+    syncSaveButton("btn-save-display-filter", "display-filter");
     liveCaptureId = captureId;
     liveHighestFrame = 0;
     liveFilter = filter;
@@ -3394,17 +3399,87 @@ async function stopLiveCapture() {
     }
 }
 
-function useFilterSuggestion(expr, el, ev) {
-    // Which box the chip belongs to is decided by where it sits, so one handler
-    // serves both filters.
-    const inBpf = el.closest("#bpf-suggestions") !== null;
-    if (inBpf) {
-        // Same composition the library rows get: a chip and a library row are
-        // the same gesture, and picking a second one should not wipe the first.
-        useLibraryFilter(expr, el, ev);
+// --- the operator's own display filters ---
+//
+// The display-filter counterpart of Your filters in the capture library: kept
+// per account, usable on any capture, listed at the top of Filter help. Not a
+// saved view -- a view is a tab on one capture.
+
+let customDisplayFilters = [];
+
+async function loadDisplayFilters() {
+    try {
+        customDisplayFilters = await api("/api/display-filters");
+    } catch (e) {
+        customDisplayFilters = [];
+    }
+    renderDisplayFilters();
+}
+
+function renderDisplayFilters(message = "", bad = false) {
+    const el = $("display-own-filters");
+    if (!el) return;
+    const note = message
+        ? `<span class="hint ${bad ? "save-filter-bad" : "save-filter-ok"}" role="status">${escHtml(message)}</span>`
+        : "";
+    if (!customDisplayFilters.length) {
+        el.innerHTML = note;
         return;
     }
-    // The display filter is left alone. It already has composition, on the
+    el.innerHTML = `
+        <div class="display-own-head"><strong>Your filters</strong> ${note}</div>
+        <div class="display-own-list">
+            ${customDisplayFilters.map((f) => `
+            <span class="display-own-item">
+                <button type="button" class="filter-chip" data-action="use-display-filter"
+                        data-id="${escHtml(f.id)}" title="${escHtml(f.expression)}">${escHtml(f.label)}</button>
+                <button type="button" class="display-own-delete" data-action="delete-display-filter"
+                        data-id="${escHtml(f.id)}" aria-label="Forget ${escHtml(f.label)}"
+                        title="Forget this saved filter">&times;</button>
+            </span>`).join("")}
+        </div>`;
+}
+
+async function saveCurrentDisplayFilter() {
+    const expr = $("display-filter").value.trim();
+    if (!expr) return;
+    const label = prompt("Name for this display filter", "");
+    if (label === null) return;
+    try {
+        await api("/api/display-filters", {
+            method: "POST",
+            body: JSON.stringify({ label, expression: expr }),
+        });
+    } catch (e) {
+        if (!e.httpsRequired) showDisplayFilterError(e.message || "Could not save that filter.");
+        return;
+    }
+    await loadDisplayFilters();
+    // Open Filter help, where it landed, so the click visibly did something.
+    const open = openDrawers();
+    if (!open.has("filter-help")) toggleDrawer("filter-help");
+    renderDisplayFilters(`Saved as \u201c${label.trim()}\u201d.`, false);
+}
+
+function useDisplayFilter(id) {
+    const f = customDisplayFilters.find((x) => x.id === id);
+    if (f) useFilterSuggestion(f.expression);
+}
+
+async function deleteDisplayFilter(id) {
+    const f = customDisplayFilters.find((x) => x.id === id);
+    if (!confirm(`Forget the saved display filter ${f ? `"${f.label}"` : "this"}?`)) return;
+    try {
+        await api(`/api/display-filters/${id}`, { method: "DELETE" });
+    } catch (e) {
+        renderDisplayFilters(e.message, true);
+        return;
+    }
+    await loadDisplayFilters();
+}
+
+function useFilterSuggestion(expr) {
+    // Replaces rather than composes. It already has composition, on the
     // right-click menu over a packet field, and these chips are its worked
     // examples -- a starting point rather than something to build onto.
     const box = $("display-filter");
@@ -4592,6 +4667,9 @@ function initStaticHandlers() {
     $("btn-apply-filter")?.addEventListener("click", applyDisplayFilter);
     $("btn-save-view")?.addEventListener("click", saveCurrentView);
     $("display-filter")?.addEventListener("input", noteFilterEditedByHand);
+    $("display-filter")?.addEventListener("input",
+        () => syncSaveButton("btn-save-display-filter", "display-filter"));
+    $("btn-save-display-filter")?.addEventListener("click", saveCurrentDisplayFilter);
     initDisplayFilterAutocomplete();
     delegate("view-tabs", {
         "select-view": (id) => selectView(id),
@@ -4684,11 +4762,12 @@ function initEventDelegation() {
         "use-library-filter": (expr, el, ev) => useLibraryFilter(expr, el, ev),
         "delete-custom-filter": (id) => deleteCustomFilter(id),
     });
-    delegate("bpf-suggestions", {
-        "use-filter": (expr, el, ev) => useFilterSuggestion(expr, el, ev),
+    delegate("display-own-filters", {
+        "use-display-filter": (id) => useDisplayFilter(id),
+        "delete-display-filter": (id) => deleteDisplayFilter(id),
     });
     delegate("display-filter-suggestions", {
-        "use-filter": (expr, el, ev) => useFilterSuggestion(expr, el, ev),
+        "use-filter": (expr) => useFilterSuggestion(expr),
     });
     delegate("username-list", {
         "rename-username": (id) => renameStoredUsername(id),

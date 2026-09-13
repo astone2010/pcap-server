@@ -1,5 +1,97 @@
 # Changelog
 
+## 0.1.0-dev.28 — 2026-09-13
+
+### Added
+
+- **pcap-server can get its own HTTPS certificate.** Admin → HTTPS certificate
+  requests one from Let's Encrypt, a button switches the app over to it, and it
+  renews itself — `docker compose up -d` and no reverse proxy is now a complete
+  install. The domain is proved with a DNS record (DNS-01), so the machine needs
+  no inbound port at all, and **about two hundred DNS providers** are offered:
+  pick yours and the form shows that provider's settings. Everything happens in
+  the panel. Full guide: [docs/tls.md](docs/tls.md).
+
+- **The same thing from the command line**, which keeps DNS credentials off the
+  network: `docker compose exec -it pcap-server python -m backend.tls issue
+  --domain … --email … --provider …` prompts for them. Also `status`, `renew`
+  and `providers`.
+
+- **Saved display filters.** The Viewer has a **Save filter** button beside the
+  display filter, and what you save is listed as **Your filters** at the top of
+  **Filter help**, for use on any capture. Like saved capture filters they are
+  private to your account. They are not saved views: a view is a tab on one
+  capture.
+
+- **A startup warning when the data directory is not private.** dev.27 told new
+  installs to `chmod 0700` their directories, but nothing told existing ones.
+  The app now logs `DATA DIRECTORY IS NOT PRIVATE` when other accounts on the
+  host can reach the database, which holds every user's TOTP secret. It warns
+  and carries on; one `chmod 0700 data` fixes it without a restart.
+
+### Security
+
+- **The certificate's private key is sealed under the master key** and is never
+  a plaintext file. The ACME client works in a `/dev/shm` directory that is
+  removed when it exits, and at startup the key is handed to the TLS library
+  through a memory-only file. DNS credentials are sealed the same way.
+- **The ACME client is only ever told what its documentation lists for the
+  chosen provider.** lego also reads `LEGO_*` variables (which include hooks
+  that run commands) and `NAME_FILE` variables (which read a file); neither can
+  be set. Settings a provider takes as a file path are pasted as contents and
+  written by the app. The `exec`, `manual` and `acmedns` providers are left out,
+  and so are three file settings whose contents reach further than a
+  credential: an AWS shared credentials file (`credential_process` runs a
+  command), an Oracle Cloud config file (it names a key file path), and a
+  Kerberos keytab (binary).
+- **Provider URLs cannot point back into the container.** URL and server
+  settings must be `http(s)://`, and may not be loopback, link-local (where cloud
+  metadata lives), unspecified or multicast — checked when saved and again after
+  a DNS lookup just before lego runs. LAN addresses stay allowed, for
+  self-hosted DNS servers.
+- **Settings that switch off TLS verification of a provider's API are not
+  offered** (ISPConfig, EfficientIP, NameSurfer, Infoblox).
+- **The certificate routes work over plain HTTP**, admin-only — they are how an
+  install gets off plain HTTP without a proxy. On HTTP the credentials in that
+  request cross the network unencrypted; the Admin panel says so and offers the
+  command above instead.
+- **Domain and email are validated before they reach lego's command line**,
+  every value is passed as `--flag=value`, and the finished command is checked
+  again — a domain beginning with `-` would otherwise be read as a flag.
+- **Built-in HTTPS refuses passphrase mode.** A restarted app is locked and could
+  not open its own key; if a certificate is stored and passphrase mode is turned
+  on, the app refuses to start and says how to fix it.
+- TLS 1.2 is the minimum, with ECDHE/AEAD ciphers only. Session cookies are
+  marked `Secure` whenever built-in HTTPS is serving, whatever `COOKIE_SECURE`
+  says.
+
+### Changed
+
+- **The image starts with `python -m backend.serve`** instead of uvicorn's CLI,
+  because the app has to open its vault before the TLS context is built.
+  `docker-compose.yml` is unchanged.
+- **lego 5.4.1 is in the image**: one static binary, downloaded at build time by
+  pinned version and SHA-256 in a build stage of its own. No extra Python
+  environment.
+- **The base image is pinned by digest** (`python:3.12-slim@sha256:78387bc3…`)
+  rather than by tag, so a rebuild is the same image. `.github/dependabot.yml`
+  proposes the new digest weekly, so the pin does not freeze out Debian and
+  CPython security fixes.
+- **`python -m backend.rekey` also re-wraps** the TLS key and DNS credentials in
+  `data/tls`.
+- **The capture filter's example chips are gone.** The filter library under the
+  field has eighty-odd searchable expressions; eight more beside it were only
+  something else to read. The display filter keeps its examples.
+- **Save filter sits to the left of the BPF field, and only appears once there
+  is something in it.** It used to sit below the field whether or not there was
+  anything to save.
+- **The Live stream option lines up with the rest of the form.** Its tickbox
+  used to float above a label that wrapped into the filter column, because the
+  form's generic field styling was stretching it into a full-width input. It is
+  now a field like the others — **Live stream — still saved**, then
+  **Watch as it records** — and the note about needing a target says the same
+  thing in half the words.
+
 ## 0.1.0-dev.27 — 2026-09-13
 
 ### Fixed

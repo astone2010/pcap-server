@@ -53,6 +53,7 @@ from backend.models import (
     CaptureViewRequest,
     CustomFilter,
     CustomFilterRequest,
+    DisplayFilterRequest,
     KnownHostConfirm,
     KnownHostEndpoint,
     ServerAuth,
@@ -68,6 +69,8 @@ from backend.packet_parser import (
 )
 from backend.localnet import SELF_CAPTURE_EXPLANATION, describe_if_local
 from backend.ssh_manager import SSHManager, host_key_fingerprint, resolve_key_path
+from backend.tls import INSECURE_ALLOWED_PATHS as TLS_INSECURE_ALLOWED_PATHS
+from backend.tls import TlsManager, build_router as build_tls_router
 from backend.vault import CaptureVault, StartupRefused
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -77,7 +80,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.27"
+APP_VERSION = "0.1.0-dev.28"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -101,6 +104,9 @@ async def _housekeeping() -> None:
             capture_start_rate_limiter.prune()
             live_poll_rate_limiter.prune()
             filter_check_rate_limiter.prune()
+            # Renews under 30 days left, and picks up a certificate renewed from
+            # the CLI. lego can take minutes, so it runs off the event loop.
+            await asyncio.to_thread(tls_manager.maybe_renew)
             if sessions or devices:
                 logger.info(
                     "housekeeping: removed %d expired session(s), %d expired device(s)",
@@ -137,12 +143,46 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(title="pcap-server", version=APP_VERSION, lifespan=_lifespan)
 
+
+
+def warn_if_data_dir_exposed(path: Path) -> bool:
+    """Say so when other accounts on the host can reach the database.
+
+    The database holds every user's TOTP secret in plain text -- codes have to
+    be computed from it -- so a data directory other accounts can enter hands
+    them a working second factor for every user. The Quick start creates it
+    0700; installs made before that did not, and nothing else would tell them.
+    A warning rather than a refusal: an upgrade should not stop a working app
+    over something one chmod fixes.
+    """
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        return False
+    if not mode & 0o077:
+        return False
+    logger.warning(
+        "DATA DIRECTORY IS NOT PRIVATE: %s is mode %03o, so other accounts on the "
+        "host can read the database -- including every user's TOTP secret. On the "
+        "host, close the directory mounted there (./data in the Quick start):\n"
+        "    chmod 0700 data\n"
+        "Nothing needs to restart. A Docker named volume is already closed by "
+        "/var/lib/docker's own permissions and can ignore this. See docs/security.md.",
+        path, mode,
+    )
+    return True
+
+
+warn_if_data_dir_exposed(DATA_DIR)
+
 db = Database(DATA_DIR / "pcap-server.db")
 
 # Fail closed: a missing or wrong key stops the app rather than silently storing
 # captures in the clear. StartupRefused carries the exact remedy.
 try:
     vault = CaptureVault(dict(os.environ), db, CAPTURES_DIR)
+    tls_manager = TlsManager(DATA_DIR / "tls", vault)
+    tls_manager.startup_check()
 except StartupRefused as exc:
     logger.error("REFUSING TO START\n\n%s\n", exc)
     raise SystemExit(1) from exc
@@ -306,6 +346,12 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
 
 _COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() in ("1", "true", "yes")
 
+
+def _cookie_secure() -> bool:
+    """Built-in HTTPS always marks cookies Secure, whatever COOKIE_SECURE says:
+    the compose file sets that false so plain-HTTP sign-in works at all."""
+    return _COOKIE_SECURE or tls_manager.serving
+
 # X-Forwarded-Proto is set by whatever spoke to us last, so a client can send it
 # too. It is only evidence of TLS when a proxy we trust is known to be in front
 # and to overwrite it -- so trusting it is opt-in, not a default.
@@ -333,17 +379,22 @@ def _is_secure_transport(request: Request) -> bool:
 # The exceptions are the endpoints without which the app cannot be used at all.
 # Sign-in over HTTP is already unsafe and the banner says so loudly -- but
 # refusing it too would leave no way in rather than a degraded way in.
+#
+# The built-in HTTPS routes are the other exception, and a deliberate one: they
+# are how an installation gets *off* plain HTTP. backend/tls/routes.py says why,
+# and what it costs.
 _INSECURE_ALLOWED_PATHS = frozenset({
     "/api/auth/login",
     "/api/auth/logout",
     "/api/auth/register",
     "/api/auth/totp/confirm",
-})
+}) | TLS_INSECURE_ALLOWED_PATHS
 
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 _HTTPS_REMEDY = (
-    "Put pcap-server behind an HTTPS reverse proxy that can obtain and renew its "
+    "Let pcap-server obtain its own certificate (Admin, HTTPS certificate), or put it "
+    "behind an HTTPS reverse proxy that can obtain and renew its "
     "own certificates (Caddy, Nginx Proxy Manager and Traefik all do this "
     "automatically; plain nginx needs certbot or similar alongside it), then set "
     "TRUST_PROXY_HEADERS=true so pcap-server recognises the proxy's TLS."
@@ -508,7 +559,7 @@ def _set_session_cookie(response: Response, token: str) -> None:
         # Strict, not Lax: nothing here is reached by cross-site navigation, so
         # the cookie never needs to ride one -- and Lax would still send it on a
         # top-level GET, which includes the capture download URL.
-        httponly=True, samesite="strict", secure=_COOKIE_SECURE,
+        httponly=True, samesite="strict", secure=_cookie_secure(),
         max_age=max_age,
     )
 
@@ -604,7 +655,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 trust_token = create_device_trust(db, user["id"])
                 response.set_cookie(
                     "device_trust", trust_token,
-                    httponly=True, samesite="strict", secure=_COOKIE_SECURE,
+                    httponly=True, samesite="strict", secure=_cookie_secure(),
                     max_age=trust_days * 86400,
                 )
 
@@ -804,6 +855,11 @@ async def admin_encryption_unlock(req: UnlockRequest, user: dict = Depends(requi
         raise HTTPException(400, str(exc))
     migrated, failed = vault.migrate_plaintext()
     return {"ok": True, "migrated": migrated, "failed": failed}
+
+
+# --- admin: built-in HTTPS (backend/tls) ---
+
+app.include_router(build_tls_router(tls_manager, require_admin, lambda: capture_manager.active_count()))
 
 
 # --- admin: known hosts ---
@@ -1323,6 +1379,39 @@ async def delete_custom_filter(
     # 404 on someone else's id for the same reason _require_own_capture gives
     # it: a 403 would confirm the id exists.
     if not db.delete_custom_filter(user["id"], filter_id):
+        raise HTTPException(404, "filter not found")
+    return {"ok": True}
+
+
+# --- the operator's own saved display filters ---
+#
+# Private to the account for the same reason as the capture filters above, and
+# distinct from saved views: a view is a tab on one capture, these are for any.
+
+
+@app.get("/api/display-filters")
+async def list_display_filters(user: dict = Depends(get_current_user)):
+    return [CustomFilter(**row) for row in db.list_custom_filters(user["id"], "display")]
+
+
+@app.post("/api/display-filters")
+async def create_display_filter(
+    body: DisplayFilterRequest,
+    user: dict = Depends(get_current_user),
+):
+    try:
+        row = db.add_custom_filter(user["id"], body.label, body.expression, "display")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return CustomFilter(**row)
+
+
+@app.delete("/api/display-filters/{filter_id}")
+async def delete_display_filter(
+    filter_id: str,
+    user: dict = Depends(get_current_user),
+):
+    if not db.delete_custom_filter(user["id"], filter_id, "display"):
         raise HTTPException(404, "filter not found")
     return {"ok": True}
 

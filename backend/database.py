@@ -153,12 +153,27 @@ class Database:
                 UNIQUE(user_id, label)
             );
 
+            -- The same shape for display filters, in a table of its own: the
+            -- two are different languages with different validators, and one
+            -- table with a kind column would need its UNIQUE(user_id, label)
+            -- rebuilt -- SQLite cannot alter a constraint in place.
+            CREATE TABLE IF NOT EXISTS custom_display_filters (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                label TEXT NOT NULL,
+                expression TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, label)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_captures_user_id ON captures(user_id);
             CREATE INDEX IF NOT EXISTS idx_active_servers_user_id ON active_servers(user_id);
             CREATE INDEX IF NOT EXISTS idx_capture_views_owner
                 ON capture_views(capture_id, user_id, position);
             CREATE INDEX IF NOT EXISTS idx_custom_filters_owner
                 ON custom_filters(user_id, label);
+            CREATE INDEX IF NOT EXISTS idx_custom_display_filters_owner
+                ON custom_display_filters(user_id, label);
         """)
         active_columns = {r["name"] for r in conn.execute("PRAGMA table_info(active_servers)")}
         if "tcpdump_path" not in active_columns:
@@ -533,15 +548,27 @@ class Database:
 
     # --- custom capture filters ---
 
-    def list_custom_filters(self, user_id: str) -> list[dict]:
+    # Saved filters come in two kinds, one table each. The table name is chosen
+    # from this literal map and never from input, which keeps the rule that the
+    # only SQL interpolation is of hardcoded literals.
+    _FILTER_TABLES = {"capture": "custom_filters", "display": "custom_display_filters"}
+
+    def _filter_table(self, kind: str) -> str:
+        try:
+            return self._FILTER_TABLES[kind]
+        except KeyError:
+            raise ValueError(f"unknown filter kind {kind!r}") from None
+
+    def list_custom_filters(self, user_id: str, kind: str = "capture") -> list[dict]:
+        table = self._filter_table(kind)
         rows = self._conn().execute(
-            "SELECT id, label, expression, created_at FROM custom_filters "
+            f"SELECT id, label, expression, created_at FROM {table} "
             "WHERE user_id = ? ORDER BY label COLLATE NOCASE",
             (user_id,),
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def add_custom_filter(self, user_id: str, label: str, expression: str) -> dict:
+    def add_custom_filter(self, user_id: str, label: str, expression: str, kind: str = "capture") -> dict:
         """Saves one, or raises ValueError if the user already has that label.
 
         Surfaced as a 409 rather than letting the UNIQUE constraint arrive as a
@@ -554,9 +581,10 @@ class Database:
         expressions and is meant to be the big one -- so the ceiling is a stop
         on a script, not a limit anybody will meet by using the feature.
         """
+        table = self._filter_table(kind)
         conn = self._conn()
         count = conn.execute(
-            "SELECT COUNT(*) AS n FROM custom_filters WHERE user_id = ?", (user_id,)
+            f"SELECT COUNT(*) AS n FROM {table} WHERE user_id = ?", (user_id,)
         ).fetchone()["n"]
         if count >= MAX_CUSTOM_FILTERS_PER_USER:
             raise ValueError(
@@ -566,7 +594,7 @@ class Database:
         filter_id = str(uuid.uuid4())
         try:
             conn.execute(
-                "INSERT INTO custom_filters (id, user_id, label, expression, created_at) "
+                f"INSERT INTO {table} (id, user_id, label, expression, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (filter_id, user_id, label, expression, _utcnow().isoformat()),
             )
@@ -576,16 +604,17 @@ class Database:
         conn.commit()
         return dict(
             conn.execute(
-                "SELECT id, label, expression, created_at FROM custom_filters WHERE id = ?",
+                f"SELECT id, label, expression, created_at FROM {table} WHERE id = ?",
                 (filter_id,),
             ).fetchone()
         )
 
-    def delete_custom_filter(self, user_id: str, filter_id: str) -> bool:
+    def delete_custom_filter(self, user_id: str, filter_id: str, kind: str = "capture") -> bool:
         # user_id is in the WHERE clause, not checked beforehand: one statement
         # that cannot delete another account's row beats two that could race.
+        table = self._filter_table(kind)
         cur = self._conn().execute(
-            "DELETE FROM custom_filters WHERE id = ? AND user_id = ?",
+            f"DELETE FROM {table} WHERE id = ? AND user_id = ?",
             (filter_id, user_id),
         )
         self._conn().commit()

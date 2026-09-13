@@ -6,6 +6,11 @@
 upload an SSH key, or change any setting — and read-only is enough to block your
 first capture. Putting it behind TLS is what restores full access.
 
+**You may not need a proxy at all.** pcap-server can obtain and renew its own
+Let's Encrypt certificate and serve HTTPS itself — see
+[Built-in HTTPS](tls.md). A proxy is the better fit when you already run one,
+or in passphrase mode.
+
 This page is the setup, start to finish, for the three proxies people actually
 use. Pick one and follow it; you do not need the other two.
 
@@ -102,7 +107,7 @@ in front of the real address.
 ```yaml
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.27
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.28
     # No `ports:` at all. Caddy reaches it by name over the shared network,
     # and nothing else can reach it directly.
     environment:
@@ -266,7 +271,7 @@ run.
 ```yaml
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.27
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.28
     # No `ports:`. NPM reaches it by name; nothing else can reach it at all,
     # which is what makes trusting X-Forwarded-Proto safe here.
     environment:

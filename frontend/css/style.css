@@ -1682,6 +1682,69 @@ body {
     width: 1%;
 }
 
+.tls-form { margin-top: 14px; }
+
+.tls-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 10px 14px;
+    margin-top: 10px;
+}
+
+.tls-field label {
+    display: block;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.tls-field label.tls-var-name {
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
+}
+
+.tls-form > .tls-field { margin-top: 10px; }
+
+.tls-field input,
+.tls-field select,
+.tls-field textarea {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+}
+
+.tls-field textarea { font-family: var(--font-mono, monospace); font-size: 0.75rem; resize: vertical; }
+
+.tls-more { margin-top: 10px; }
+
+/* Its own row rather than .admin-inline-form, whose input rule would give the
+   tickbox a text box's padding and width. */
+.tls-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+    margin: 14px 0 10px;
+}
+
+.tls-actions .btn { width: auto; }
+
+.tls-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.tls-check input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+.tls-more > summary { cursor: pointer; font-size: 0.8125rem; color: var(--text-secondary); }
+
 .enc-howto {
     margin-top: 12px;
     padding: 10px;
@@ -2160,13 +2223,37 @@ body {
    kind of thing. */
 .filter-group-own { border-left: 3px solid var(--accent); }
 
-.bpf-save-row {
+.filter-save-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    flex-wrap: wrap;
-    margin-top: 6px;
 }
+
+.filter-save-row .btn { flex: none; white-space: nowrap; }
+.capture-config .filter-save-row input { flex: 1 1 auto; min-width: 0; }
+
+.display-own-filters:empty { display: none; }
+.display-own-filters { margin-bottom: 10px; }
+.display-own-head { font-size: 0.8125rem; margin-bottom: 6px; }
+.display-own-list { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.display-own-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.display-own-delete {
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 2px 4px;
+}
+
+.display-own-delete:hover { color: var(--danger); }
 
 .save-filter-ok { color: var(--success); }
 .save-filter-bad { color: var(--danger); }
@@ -2179,24 +2266,33 @@ body {
    still arriving, how far the preview is allowed to get, and that Stop is
    reachable without going back to the Captures tab. */
 
-.live-stream-option {
-    justify-content: flex-end;
-}
-
-.live-stream-toggle {
-    display: inline-flex;
+/* Laid out like the fields beside it -- a label on top, then a control the
+   height of an input -- so it lines up with Snap length instead of floating.
+   The selectors carry .capture-config because the generic .form-group label
+   and .form-group input rules would otherwise make the label a block and give
+   the tickbox a full-width input's box, which is what stacked it before. */
+.capture-config .live-stream-toggle {
+    display: flex;
     align-items: center;
-    gap: 6px;
-    cursor: pointer;
+    gap: 8px;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text-primary);
     font-size: 0.875rem;
+    line-height: normal;
     white-space: nowrap;
+    cursor: pointer;
 }
 
-.live-stream-toggle input { cursor: pointer; }
-
-.live-stream-hint {
-    display: block;
-    margin-top: 2px;
+.capture-config .live-stream-toggle input {
+    width: auto !important;
+    margin: 0;
+    padding: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
 }
 
 /* Full width on its own row under the form, not tucked beside the checkbox:

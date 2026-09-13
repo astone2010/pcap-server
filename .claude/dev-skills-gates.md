@@ -1,13 +1,99 @@
 # Dev Skills gate state
-Track: 0.1.0-dev.27 CLOSED AND SHIPPED. All six gates + all four post-ship
-       checks verified. Next cycle is dev.28; nothing opened yet.
-Version: 0.1.0-dev.27 (RELEASED 2026-09-13). Tag v0.1.0-dev.27 confirmed on
-         the remote: object b63c695, ^{} -> d70e47b = branch head.
+Track: 0.1.0-dev.28 OPEN — release sequence. dev.27 closed and shipped (below).
+Version: 0.1.0-dev.28 (bumped). Previous tag v0.1.0-dev.27 confirmed on
+         the remote: object b63c695, ^{} -> d70e47b.
 Updated: 2026-09-13 (session: local CLI, Fedora 44, bash)
-Branch: claude/admiring-wright-k20ptf — canonical.
+Branch: claude/admiring-wright-k20ptf — canonical. Head 39e48ee = origin.
 Environment: LOCAL Claude Code CLI — Claude PRESENTS git commands, the user
         runs them (SKILL.md 5.8). Not a container.
-Model: Opus 5, above the Sonnet ceiling; the user approved staying on it.
+Model: Opus 5, above the Sonnet ceiling; the user approved staying on it FOR
+       dev.28 (2026-09-13).
+
+## 0.1.0-dev.28 tracker
+
+GATES RUNNING (user: "run the gates", 2026-09-13).
+
+🔢 VERSION    ✅ 0.1.0-dev.28 in all seven refs: backend/main.py:83,
+                docker-compose.yml:92, CHANGELOG heading, README.md:130/225/241,
+                docs/reverse-proxy.md:110/274. grep for dev.27 outside CHANGELOG
+                history and this file: none. Previous tag v0.1.0-dev.27 on
+                remote (^{} d70e47b). Release-notes link built from APP_VERSION.
+                pyproject.toml is pytest config only -- no app manifest.
+🔨 BUILD      ✅ ./scripts/check.sh AFTER the bump: 1214 passed, 0 skipped,
+                exit 0, 3m40s. Browser suites run the real app via
+                backend.serve (golden path: sign-in, capture form, viewer,
+                admin). CAVEAT CARRIED TO SHIP: Docker image not built here (no
+                docker socket) and CI builds it only on tag push -- the user must
+                `docker compose build` (lego stage is new) BEFORE tagging.
+🔒 SECURITY   ✅ 0 Critical, 0 High. User: "fix all issues" -> every Medium/Low/
+                quality item below was FIXED, not accepted, except one that is a
+                standing user decision:
+                  FIXED High (before): AWS_SHARED_CREDENTIALS_FILE (credential_
+                    process RCE), OCI_CONFIG_FILE (key_file path read) excluded.
+                  FIXED Medium: SSRF -- backend/tls/destinations.py refuses non-
+                    http(s) URLs and loopback/link-local/unspecified/multicast,
+                    literal at save and resolved just before lego runs. LAN
+                    allowed by design. Residual (Low, documented): DNS rebinding
+                    between our lookup and lego's.
+                  FIXED Medium: *_INSECURE_SKIP_VERIFY / INFOBLOX_SSL_VERIFY no
+                    longer offered (generator SKIP_VERIFY_NAME).
+                  FIXED Low: base image pinned by index digest
+                    sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+                    (verified: body hash matches, not e3b0, amd64+arm64), both
+                    stages; .github/dependabot.yml (docker, weekly, 3.12 only).
+                  FIXED Low: TLS routes call manager.status via to_thread.
+                  FIXED Quality: manager.status split into helpers; tls.js
+                    renderTls/tlsRequestForm split into single-purpose builders.
+                  NOT CHANGED (user decision 2026-09-13, reaffirmed "understood
+                    on the skip"): DNS credentials may cross plain HTTP; UI warns,
+                    CLI offered. Only real fixes are refusing it or loopback-only.
+                pip-audit clean. check.sh after fixes: 1243 passed, 0 skipped.
+📄 DOCS       ✅ CHANGELOG dev.28 entry dated 2026-09-13 (now lists the
+                excluded settings); README layout table gained backend/tls,
+                serve.py, js/tls.js, scripts/; tls.md gained excluded settings +
+                endpoint note; architecture/security/operating/filters/
+                reverse-proxy consistent (grep: no certbot/backend.acme/Cloudflare-
+                only/"Save this filter"/chip leftovers). Security-fix docs added
+                (tls.md endpoints + cert checks, CHANGELOG, architecture,
+                security). Final rebuild: check.sh 1243 passed, 0 skipped, exit 0.
+📦 RELEASE    ⏳ branch in sync with origin (both 39e48ee); awaiting commit
+                approval. PR ➖ N/A: no PR workflow in this repo (as dev.27).
+🚀 SHIP       ⬜
+
+### dev.28 scope
+1. Built-in HTTPS -- backend/tls/ package (self-contained), lego 5.4.1.
+2. DATA_DIR not-private startup warning (warn only).
+3. Capture form: BPF example chips removed; Live stream option restyled;
+   Save filter left of BPF field, hidden when empty.
+4. Saved display filters: table custom_display_filters, /api/display-filters,
+   Save filter button left of the Viewer's display filter, listed as "Your
+   filters" at top of Filter help.
+
+USER DECISIONS (2026-09-13):
+- Passphrase mode + built-in TLS: REFUSE. File/env keys allowed.
+- ACME setup allowed over plain HTTP, admin-only, plus a CLI path.
+- memfd, not tmpfs -> docker-compose.yml unchanged.
+- lego (not certbot), Proxmox-style provider picker, ~216 providers.
+- "Self-contained" = all from web UI + no extra runtime + isolated package.
+  HTTP-01 NOT wanted.
+- Port: HTTPS on whatever host port compose publishes (container stays 8080).
+- Stay on Opus for dev.28.
+
+DESIGN (mine, surfaced):
+- Provider allowlist generated from lego source TOML (scripts/gen_lego_providers.py)
+  -> backend/tls/lego_providers.json; test pins its version to Dockerfile ARG.
+  Excluded: exec, manual, acmedns. No LEGO_*, no *_FILE; path-type vars are
+  "file" kind: admin pastes contents, app writes into /dev/shm scratch.
+- lego runs with env = PATH/HOME/LANG + validated provider vars only; cwd =
+  fresh /dev/shm dir (lego auto-loads .lego.yml from cwd).
+- Credentials merge: blank keeps stored value for same provider; new provider
+  starts empty.
+- lego fetched in a Docker build stage via backend/tls/fetch_lego.py, SHA-256
+  pinned for amd64 + arm64.
+
+VERIFIED: real lego 5.4.1 parsed our exact argv (reached ACME directory fetch
+against a closed local port). Real certbot was verified earlier but is gone.
+NOT VERIFIED: image build; a real issuance end to end (needs user's domain).
 
 ## 0.1.0-dev.27 tracker
 

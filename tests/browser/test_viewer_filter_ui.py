@@ -346,3 +346,62 @@ async def test_the_display_filter_sits_below_the_capture_label(app_page):
         "the filter must start at or below the bottom of the label, not beside it"
     assert box["labelWidth"] > box["toolbarWidth"] * 0.8, \
         "the label should own its row rather than sharing it"
+
+
+# --- saved display filters ---------------------------------------------------
+
+
+async def test_the_viewer_save_button_appears_only_with_a_filter_and_left_of_the_box(app_page):
+    await _viewer(app_page)
+    await app_page.fill("#display-filter", "")
+    assert await app_page.is_hidden("#btn-save-display-filter")
+    await app_page.fill("#display-filter", "dns")
+    await app_page.wait_for_selector("#btn-save-display-filter", state="visible")
+    button = await app_page.locator("#btn-save-display-filter").bounding_box()
+    field = await app_page.locator("#display-filter").bounding_box()
+    assert button["x"] + button["width"] <= field["x"]
+
+
+async def test_saving_a_display_filter_lists_it_under_filter_help(app_page, api_client):
+    await _viewer(app_page)
+    await app_page.fill("#display-filter", "tcp.analysis.retransmission")
+
+    async def name_it(dialog):
+        await dialog.accept("retransmits")
+
+    app_page.on("dialog", name_it)
+    try:
+        await app_page.click("#btn-save-display-filter")
+        await app_page.wait_for_selector("#display-own-filters .filter-chip:has-text('retransmits')")
+        assert await app_page.is_visible("#drawer-filter-help")
+        saved = api_client.get("/api/display-filters").json()
+        assert [(f["label"], f["expression"]) for f in saved] == [("retransmits", "tcp.analysis.retransmission")]
+    finally:
+        app_page.remove_listener("dialog", name_it)
+        for f in api_client.get("/api/display-filters").json():
+            api_client.delete(f"/api/display-filters/{f['id']}")
+
+
+async def test_choosing_a_saved_display_filter_fills_the_box(app_page, api_client):
+    created = api_client.post("/api/display-filters",
+                              json={"label": "just dns", "expression": "dns"}).json()
+    try:
+        await _viewer(app_page)
+        await app_page.evaluate("() => loadDisplayFilters()")
+        await app_page.evaluate("() => { const o = openDrawers(); if (!o.has('filter-help')) toggleDrawer('filter-help'); }")
+        await app_page.fill("#display-filter", "")
+        await app_page.click("#display-own-filters .filter-chip:has-text('just dns')")
+        assert await app_page.input_value("#display-filter") == "dns"
+    finally:
+        api_client.delete(f"/api/display-filters/{created['id']}")
+
+
+async def test_a_saved_display_filter_label_cannot_inject_markup(app_page, api_client):
+    created = api_client.post("/api/display-filters",
+                              json={"label": "<img src=x onerror=alert(1)>", "expression": "arp"}).json()
+    try:
+        await _viewer(app_page)
+        await app_page.evaluate("() => loadDisplayFilters()")
+        assert await app_page.locator("#display-own-filters img").count() == 0
+    finally:
+        api_client.delete(f"/api/display-filters/{created['id']}")

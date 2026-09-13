@@ -24,7 +24,8 @@ operator — `ip.addr == 10.0.0.1`, `frame.len > 1000`,
 `http.request.method == "GET"` — or use a bare protocol name on its own, like
 `dns`. Combine with `and`, `or`, `not`, or with `&&`, `||`, `!`.
 
-Both boxes offer clickable examples. **Browse the capture filter library** sits
+The display filter offers clickable examples, and **Save filter** beside it keeps
+one of your own, listed at the top of **Filter help** for any capture. **Browse the capture filter library** sits
 under the BPF field on the Capture tab — a searchable list grouped by protocol,
 which fills the field above it when you choose one. The Viewer has a full
 display-filter cheatsheet behind **Filter help**.

@@ -172,3 +172,42 @@ async def test_enter_in_the_add_user_box_creates_the_user(app_page, api_client):
         for user in api_client.get("/api/admin/users").json():
             if user["username"] == "second-operator":
                 api_client.delete(f"/api/admin/users/{user['id']}")
+
+
+async def test_the_admin_panel_offers_a_certificate_and_the_cli_alternative(app_page):
+    """Served on loopback, so the page counts as secure transport and the
+    plain-HTTP token warning stays away; the CLI route is offered regardless."""
+    await app_page.click("#admin-tab")
+    await app_page.wait_for_selector("#panel-admin.active")
+    await app_page.wait_for_selector("#admin-tls .enc-state")
+    assert (await app_page.text_content("#admin-tls .enc-state")).strip() == "No certificate"
+    assert await app_page.is_visible("#tls-domain")
+    assert await app_page.input_value("#tls-provider") == "cloudflare"
+    assert await app_page.get_attribute("#tls-var-CF_DNS_API_TOKEN", "type") == "password"
+    assert "python -m backend.tls issue" in await app_page.text_content("#tls-cli")
+    assert await app_page.locator("#admin-tls .enc-notice-bad").count() == 0
+
+
+async def test_choosing_a_provider_shows_that_providers_settings(app_page):
+    await app_page.click("#admin-tab")
+    await app_page.wait_for_selector("#tls-provider")
+    await app_page.select_option("#tls-provider", "route53")
+    await app_page.wait_for_selector("#tls-var-AWS_SECRET_ACCESS_KEY")
+    assert await app_page.locator("#tls-var-CF_DNS_API_TOKEN").count() == 0
+    assert "--provider route53" in await app_page.text_content("#tls-cli")
+    # A setting lego reads as a path is a box for the file's contents instead.
+    await app_page.select_option("#tls-provider", "transip")
+    await app_page.wait_for_selector("textarea#tls-var-TRANSIP_PRIVATE_KEY_PATH")
+
+
+async def test_a_refused_certificate_request_is_shown_where_it_was_made(app_page):
+    await app_page.click("#admin-tab")
+    await app_page.wait_for_selector("#tls-domain")
+    await app_page.fill("#tls-domain", "--config-dir=/app/data")
+    await app_page.fill("#tls-email", "you@example.com")
+    await app_page.fill("#tls-var-CF_DNS_API_TOKEN", "cf_TestToken_0123456789abcdefghijklmnop")
+    await app_page.click("#btn-tls-request")
+    await app_page.wait_for_function(
+        "() => (document.querySelector('#tls-msg')?.textContent || '').includes('fully qualified')"
+    )
+    assert "cf_TestToken" not in await app_page.text_content("#admin-tls")

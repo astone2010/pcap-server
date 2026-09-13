@@ -79,6 +79,19 @@ async def test_the_live_option_says_the_capture_is_still_saved(app_page):
     assert "saved" in label.lower()
 
 
+async def test_the_live_option_lines_up_with_the_fields_beside_it(app_page):
+    """It used to stack: the generic form rules made its label a block and gave
+    the tickbox a full-width input box. Its control should now sit at the same
+    height as the snap length box next to it."""
+    await _capture_tab(app_page)
+    toggle = await app_page.locator(".live-stream-toggle").bounding_box()
+    snaplen = await app_page.locator("#cap-snaplen").bounding_box()
+    tick = await app_page.locator("#cap-live").bounding_box()
+    assert abs(toggle["y"] - snaplen["y"]) <= 2
+    assert abs(toggle["height"] - snaplen["height"]) <= 2
+    assert tick["width"] < 30, "the tickbox is back to being a full-width input"
+
+
 async def test_starting_a_capture_sends_the_live_flag(app_page):
     """The checkbox has to reach the request body. A tickbox that changes
     nothing is worse than no tickbox."""

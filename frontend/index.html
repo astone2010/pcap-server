@@ -236,27 +236,27 @@
                      reading -- that live captures are held in the browser and
                      lost if you close it -- is the one people assume. -->
                 <div class="form-group live-stream-option">
+                    <label for="cap-live">Live stream <span class="hint">&mdash; still saved</span></label>
                     <label class="live-stream-toggle"
-                           title="Open the capture in the Viewer as it records. It is still saved in full and can be reopened later like any other capture. Needs an interface or a BPF filter: the preview it feeds is a fixed-size buffer, and everything on every link fills it in seconds.">
+                           title="Opens the capture in the Viewer as it records. It is saved in full either way, and can be reopened later like any other capture.">
                         <input type="checkbox" id="cap-live">
-                        <span>Live stream</span>
+                        <span>Watch as it records</span>
                     </label>
-                    <span class="hint live-stream-hint">watch packets arrive; still saved in full</span>
                 </div>
                 <div class="form-group bpf-filter">
-                    <label>BPF filter <span class="hint">&mdash; this is how you capture specific traffic</span></label>
-                    <input type="text" id="cap-bpf" placeholder="e.g. tcp port 80 and host 10.0.0.1">
+                    <label for="cap-bpf">BPF filter <span class="hint">&mdash; this is how you capture specific traffic</span></label>
                     <!-- Saving what is in the field, under a name. The filter
                          library below is the same eighty-odd expressions for
                          everyone; these are the operator's own, and private to
                          their account -- a capture filter usually names the
-                         hosts and ports somebody is investigating. -->
-                    <div class="bpf-save-row">
-                        <button type="button" id="btn-save-filter" class="btn btn-sm btn-secondary"
-                                title="Save the expression above under a name of your own. It joins the filter library as Your filters, visible only to you.">Save this filter</button>
-                        <span id="save-filter-msg" class="hint" role="status" aria-live="polite"></span>
+                         hosts and ports somebody is investigating. The button
+                         only appears once there is something to save. -->
+                    <div class="filter-save-row">
+                        <button type="button" id="btn-save-filter" class="btn btn-sm btn-secondary" hidden
+                                title="Save this expression under a name of your own. It joins the filter library as Your filters, visible only to you.">Save filter</button>
+                        <input type="text" id="cap-bpf" placeholder="e.g. tcp port 80 and host 10.0.0.1">
                     </div>
-                    <div id="bpf-suggestions" class="filter-suggestions"></div>
+                    <span id="save-filter-msg" class="hint" role="status" aria-live="polite"></span>
                 </div>
                 <!-- Shown while "Live stream" is ticked and neither the
                      interface nor the filter narrows anything. The server
@@ -265,13 +265,11 @@
                      about the form in front of you, and finding that out from
                      a failed request is finding it out one step too late. -->
                 <div id="live-target-notice" class="live-target-notice" role="status" hidden>
-                    <strong>A live stream needs a target.</strong>
-                    Pick an interface instead of <code>any</code>, or set a BPF filter &mdash;
-                    either one will do. The live preview is a fixed-size buffer held in memory;
-                    pointed at every packet on every link it fills within seconds and stops
-                    updating for the rest of the capture.
-                    <span class="live-target-note">Capturing without live streaming has no such
-                    limit &mdash; untick it and <code>any</code> is fine.</span>
+                    <strong>Live streaming needs a target.</strong>
+                    Choose an interface other than <code>any</code>, or add a BPF filter.
+                    The live preview holds a fixed amount in memory, and every packet on every
+                    interface fills it within seconds.
+                    <span class="live-target-note">Without live streaming, <code>any</code> is fine.</span>
                 </div>
                 <button id="btn-start-capture" class="btn btn-primary btn-sm">Start capture</button>
             </div>
@@ -402,6 +400,11 @@
                          rather than here, so the inline style no longer fights
                          the stylesheet over white-space. -->
                     <span id="viewer-capture-label"></span>
+                    <!-- To the operator's own list, for any capture -- not a
+                         saved view, which is a tab on this one capture. Shown
+                         only when the box has something in it. -->
+                    <button type="button" id="btn-save-display-filter" class="btn btn-sm btn-secondary" hidden
+                            title="Save this display filter to your own list, to use on any capture. It appears under Filter help.">Save filter</button>
                     <!-- Wrapped so the suggestion list can be positioned against
                          the box it belongs to. .packet-toolbar input carries the
                          flex:1 that used to size the input directly, so the
@@ -483,6 +486,7 @@
                 </div>
 
                 <div id="drawer-filter-help" class="viewer-drawer" hidden>
+                    <div id="display-own-filters" class="display-own-filters"></div>
                     <div id="display-filter-suggestions" class="filter-suggestions"></div>
                     <div class="explainer-body">
                             <p>
@@ -575,6 +579,17 @@
                     <div id="admin-encryption"></div>
                 </div>
                 <div class="admin-section">
+                    <h3>HTTPS certificate</h3>
+                    <p class="field-hint" style="margin-bottom:10px">
+                        pcap-server can get its own Let's Encrypt certificate and serve HTTPS
+                        itself, with no reverse proxy. It proves the domain is yours with a DNS
+                        record, through any of about two hundred DNS providers, so the machine
+                        never has to be reachable from the internet. Credentials are stored
+                        encrypted under the master key, and renewal is automatic.
+                    </p>
+                    <div id="admin-tls"></div>
+                </div>
+                <div class="admin-section">
                     <h3>Settings</h3>
                     <div id="admin-settings" class="admin-settings-grid"></div>
                     <button id="btn-save-settings" class="btn btn-sm btn-primary" style="margin-top:12px">Save settings</button>
@@ -638,5 +653,6 @@
 </div>
 
 <script src="/js/app.js"></script>
+<script src="/js/tls.js"></script>
 </body>
 </html>

@@ -48,6 +48,8 @@ over an unencrypted connection.
 | `localnet.py` | Detecting that a capture target is the machine pcap-server runs on |
 | `bpf.py` | Deciding whether a capture filter can match anything, before the capture runs |
 | `resetmfa.py` | Host-side second-factor reset, for when nobody can sign in to press the button |
+| `serve.py` | The container's entry point: opens the vault, then starts uvicorn — over TLS when a certificate is stored |
+| `tls/` | Built-in HTTPS, self-contained: the DNS provider allowlist (`providers.py`), where URL settings may point (`destinations.py`), what is stored and sealed (`store.py`), the one place lego runs (`lego.py`), the running app's view (`manager.py`), the memfd hand-off (`serving.py`), and the Admin routes and `python -m backend.tls` CLI |
 
 There is no ORM, no service layer and no dependency-injection container. Routes
 call the managers directly, and `database.py` is the only module that writes
@@ -269,14 +271,66 @@ run unattended.
 
 Two different links, protected differently.
 
-**Browser to pcap-server** is the operator's problem to terminate, because a LAN
-appliance cannot obtain its own certificates. So instead of pretending, the app
-degrades explicitly: **over plain HTTP it runs read-only.** Anything that changes
+**Browser to pcap-server** is TLS terminated either by pcap-server itself or by
+a reverse proxy. Built-in HTTPS lives in its own package, `backend/tls`, and
+touches the rest of the app only through what `backend/tls/__init__.py` exports.
+It obtains a Let's Encrypt certificate with [lego](https://go-acme.github.io/lego/)
+over DNS-01 — the only challenge that needs no inbound port, which a LAN capture
+box rarely has — and uvicorn serves it directly; there is no bundled nginx and
+still one process in the container. lego is a single static binary, fetched at
+build time by pinned version and checksum.
+
+Four details carry the security weight:
+
+- **The key is never a file.** uvicorn and Python's `ssl` module only load a key
+  from a path, so `serve.py` opens the sealed key into a `memfd` — an anonymous
+  in-memory file reachable as `/proc/self/fd/N` — lets uvicorn build its context
+  from it, and closes it. lego runs with a directory under `/dev/shm` as its
+  working directory, `HOME` and `--path`, removed when it exits, so its ACME
+  account key, the issued key and any credential file never reach disk either.
+  This is also why `serve.py` exists: uvicorn's CLI builds the TLS context
+  *before* importing the app, and only the app's vault can open the key.
+- **lego's environment is an allowlist.** Provider settings reach lego as
+  environment variables, and lego reads more than provider settings: `LEGO_*`
+  variables include hooks that run commands, and any `NAME_FILE` makes lego read
+  `NAME` from a file. `backend/tls/lego_providers.json`, generated from lego's own
+  provider metadata by `scripts/gen_lego_providers.py`, lists the variables each
+  provider documents; only those are passed, validated by name, with nothing
+  from the app's own environment. Variables lego reads as paths are filled with
+  files the app writes into the scratch directory from contents the admin
+  pasted. `exec`, `manual` and `acmedns` are excluded outright, as are settings
+  that disable TLS verification and file settings whose contents can run a
+  command or name another path. URL and address settings go through
+  `destinations.py`: `http(s)` only, and never loopback, link-local (cloud
+  metadata), unspecified or multicast — checked as typed and again after
+  resolution immediately before lego runs. The residual is DNS rebinding in the
+  seconds between that lookup and lego's own; LAN addresses are allowed by
+  design.
+- **Renewal reloads in place.** `SSLContext.load_cert_chain` on the context the
+  server is already using swaps the certificate for every later handshake, so a
+  renewal needs no restart. Only the first switch from HTTP does, and `serve.py`
+  handles that by `execv`-ing itself — same PID, so the container never stops.
+- **lego's argv is built defensively.** It runs without a shell, but a domain of
+  `--path=...` would still be read as a flag. The domain and email are validated
+  to a plain hostname and address, every user value is passed as `--flag=value`,
+  and the finished argv is checked once more before it runs. lego also loads a
+  `.lego.yml` from its working directory if one exists; the fresh scratch
+  directory has none.
+
+The cipher list is narrowed to ECDHE with AEAD for TLS 1.2, with TLS 1.2 as the
+floor. uvicorn's own default string, `TLSv1`, selects the TLS 1.0-era CBC/SHA-1
+suites for a TLS 1.2 client.
+
+Without TLS from either source, the app degrades explicitly: **over plain HTTP it
+runs read-only.** Anything that changes
 state, and anything that exports capture contents in bulk, is refused with a
 structured error the UI renders in full rather than as a bare 403. Viewing is
 allowed. The exceptions are the endpoints without which there is no way in at
 all — login, logout, register, TOTP confirm — because refusing those would leave
-no degraded mode, just a locked door.
+no degraded mode, just a locked door. The built-in certificate routes under
+`/api/admin/tls` are the other exception — they are how an install gets off
+plain HTTP without a proxy — and stay admin-only; the DNS credentials they
+carry are the cost, and the CLI is the way to avoid paying it.
 
 Loopback counts as secure transport: a connection that never leaves the machine
 has no wire to be read from. `X-Forwarded-Proto` is honoured only when
@@ -538,6 +592,7 @@ cannot do TLS would lock operators out of their own tool.
 | `/app/data` | SQLite database | WAL mode, foreign keys on |
 | `/app/captures` | Capture files | `<uuid>.pcap.enc` when encryption is on |
 | `/app/ssh-keys` | SSH private keys | Uploaded through the Admin panel |
+| `/app/data/tls` | Built-in HTTPS certificate, sealed key, sealed DNS credentials, settings | Mode `0700`; see [tls.md](tls.md#what-is-stored) |
 | `/run/secrets/…` | Master key | Deliberately **not** on a data volume |
 
 **Host-side modes are the operator's to set, and `data/` is the one that
@@ -549,14 +604,18 @@ text**, because codes have to be computed from it, so a world-readable `data/`
 hands over a working second factor for every account. Password hashes are
 scrypt and session tokens are stored only as digests, so those degrade to an
 offline-cracking problem rather than an immediate one; the TOTP seeds do not.
-The Quick start therefore creates all four directories `0700`.
+The Quick start therefore creates all four directories `0700`, and
+`warn_if_data_dir_exposed()` in `main.py` logs a warning at startup when the data
+directory is open to group or others — the only way an install made before that
+advice would find out.
 
 Captures and stored SSH keys are sealed, so their directories leak metadata
 rather than contents. `secrets/` is never chowned — the Docker daemon reads the
 master key as root before the container exists.
 
 Tables: `users`, `sessions`, `trusted_devices`, `active_servers`, `known_hosts`,
-`known_usernames`, `captures`, `capture_views`, `custom_filters`, `settings`.
+`known_usernames`, `captures`, `capture_views`, `custom_filters`,
+`custom_display_filters`, `settings`.
 
 Four of those are **scoped to one account** and hold what an operator was
 looking at rather than how the app is configured: `active_servers`,

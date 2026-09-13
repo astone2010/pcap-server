@@ -29,6 +29,7 @@ full, for when you need it.
 | [Filters](docs/filters.md) | The two filter languages in full, building one by clicking, and the ways a capture filter records nothing |
 | [Streaming a capture live](docs/live-streaming.md) | Why a live stream needs a target, what it costs, and the two limits on it |
 | [Security](docs/security.md) | Encryption at rest, transport policy, sign-in, what runs on the target, and what is *not* protected |
+| [Built-in HTTPS](docs/tls.md) | Letting pcap-server get and renew its own Let's Encrypt certificate — no proxy, no inbound ports, DNS-01 through about two hundred DNS providers |
 | [Reverse proxy setup](docs/reverse-proxy.md) | Getting it behind TLS — Caddy, nginx or Nginx Proxy Manager, external or as a sidecar in this stack, with DNS challenges for hosts that are not exposed |
 | [Operating it](docs/operating.md) | Environment variables, admin settings, sessions, MFA recovery, TLS, rotating the master key |
 | [Architecture](docs/architecture.md) | How it is built: the envelope format, every validator, and why each exists |
@@ -94,7 +95,9 @@ the SSH client all live inside the image. It listens on port 8080.
 the UI is plain HTML, CSS and JavaScript served by the app itself.
 
 **HTTPS is not required to start, but the app is read-only without it** — and
-read-only is enough to block a first capture. See
+read-only is enough to block a first capture. pcap-server can
+[get its own certificate](docs/tls.md), or sit behind a
+[reverse proxy](docs/reverse-proxy.md). See also
 [Traffic in transit](docs/security.md#traffic-in-transit) and
 [Running it without a reverse proxy](docs/operating.md#running-it-without-a-reverse-proxy).
 
@@ -124,7 +127,7 @@ cd /opt/docker/pcap
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.27/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.28/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -219,7 +222,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.27` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.28` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -235,7 +238,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcap
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.27/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.28/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -337,9 +340,11 @@ capture ends up run against the wrong host.
 
 ### Your own saved filters
 
-**Save this filter** puts whatever is in the BPF box into a list of your own,
-under a name you choose. It appears at the top of the library as **Your
-filters** the next time you open it.
+**Save filter**, to the left of the BPF box once there is something in it, puts
+the expression into a list of your own under a name you choose. It appears at
+the top of the library as **Your filters**. The Viewer's display filter has the
+same button: saved display filters are listed at the top of **Filter help**, for
+use on any capture.
 
 These are **private to your account** — a capture filter usually names the hosts
 and ports you are investigating, so they are treated the way your servers and
@@ -503,9 +508,10 @@ Two things are worth knowing before you read any of it:
 
 - **Over plain HTTP the app is read-only.** It will not start a capture, hand a
   capture over, or change any setting. This is intended, and it is enough to
-  block your first capture. **[Setting up a reverse
-  proxy](docs/reverse-proxy.md)** fixes it — Caddy, nginx or Nginx Proxy
-  Manager, each worked start to finish — and
+  block your first capture. **[Built-in HTTPS](docs/tls.md)** fixes it with no
+  proxy at all — pcap-server requests and renews its own Let's Encrypt
+  certificate — or **[Setting up a reverse proxy](docs/reverse-proxy.md)**
+  does, with Caddy, nginx or Nginx Proxy Manager each worked start to finish; and
   [Running it without a reverse proxy](docs/operating.md#running-it-without-a-reverse-proxy)
   covers what you can still do if you would rather not.
 - **`COOKIE_SECURE=false` is already set** in the published compose file, which
@@ -586,7 +592,10 @@ so read the skip list.
 | `backend/resetmfa.py` | host-side second-factor reset, for when nobody can sign in to press the button |
 | `backend/packet_parser.py` | everything that shells out to tshark or capinfos |
 | `backend/database.py` | the SQLite schema and every query |
-| `frontend/` | `index.html`, `css/style.css`, `js/app.js`. No build step |
+| `backend/serve.py` | the container's entry point: opens the vault, then starts uvicorn, over TLS when a certificate is stored |
+| `backend/tls/` | built-in HTTPS, self-contained: DNS provider allowlist, sealed storage, the one place lego runs, renewal, Admin routes and `python -m backend.tls` |
+| `frontend/` | `index.html`, `css/style.css`, `js/app.js`, `js/tls.js`. No build step |
+| `scripts/` | `check.sh`, the test entry point; `gen_lego_providers.py`, which regenerates the provider allowlist when lego's version moves |
 | `docs/` | one document per subject; the README links them all from the top |
 | `tests/` | API and unit suites |
 | `tests/browser/` | playwright suites driving the real UI |
