@@ -1,10 +1,10 @@
 # Dev Skills gate state
-Track: RELEASE SEQUENCE — 0.1.0-dev.25. Gates 1-4 PASSED, 5 awaiting the
-       user's push, 6 awaiting the user's tag.
-Version: 0.1.0-dev.25 (NOT yet released)
+Track: 0.1.0-dev.25 CLOSED AND SHIPPED. All six gates done and verified
+       from the remote.
+Version: 0.1.0-dev.25 (RELEASED 2026-09-13)
 Updated: 2026-09-13 (session: local CLI, Fedora 44, bash)
-Branch: claude/admiring-wright-k20ptf — canonical. Was in sync with origin at
-        0b98c8e; this release adds one commit on top.
+Branch: claude/admiring-wright-k20ptf — canonical, in sync with origin at
+        dc65ae4. Working tree clean.
 Environment: LOCAL Claude Code CLI — Claude PRESENTS git commands, the user
         runs them (SKILL.md 5.8). Not a container.
 
@@ -40,11 +40,26 @@ Environment: LOCAL Claude Code CLI — Claude PRESENTS git commands, the user
                 version", "Upgrading", and "Running it without a reverse
                 proxy"; docs/architecture.md gained the bpf.py module row and
                 a "Filters that cannot match anything" design section.
-📦 RELEASE    ⏳ commit + push presented to the user, not yet run.
+📦 RELEASE    ✅ dc65ae4 on the remote (user-driven push).
                 No PR: default branch out of scope by standing decision.
-🚀 SHIP       ⏳ tag block presented to the user. NOT ✅ until
-                `git ls-remote --tags origin v0.1.0-dev.25` confirms it and
-                the release run is green.
+🚀 SHIP       ✅ VERIFIED FROM THE REMOTE, not assumed:
+                * tag v0.1.0-dev.25 -> dc65ae4, matching the branch head.
+                * Release run 34765771944 success (1m18s); published as the
+                  prerelease "v0.1.0-dev.25 (Dev)", 0 assets -- this repo's
+                  norm since dev.22.
+                * targetCommitish is claude/admiring-wright-k20ptf this time,
+                  not the default branch as in dev.22/.23/.24. Cosmetic
+                  either way; the tag resolves correctly regardless.
+                * Image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.25 AND
+                  :dev BOTH resolve to sha256:62db8905..., and both report
+                  APP_VERSION 0.1.0-dev.25 when run. :dev was moved.
+                * Check run 34765505612 on the branch push passed (5m12s) and
+                  34765771940 on the tag passed -- a clean checkout verified
+                  this commit independently, twice.
+                * END-TO-END: curl'd docker-compose.yml from the README's own
+                  tag-pinned URL and confirmed it names the dev.25 image. The
+                  no-clone Quick start works as documented.
+                NOT yet confirmed deployed.
 
 ### SECURITY detail — 0.1.0-dev.25
 
@@ -221,7 +236,7 @@ containerised install with a PUBLISHED PORT this never fires. Ran the published
 image under rootless podman, `-p 18080:8080`, curled 127.0.0.1:18080:
 
     secure_transport: false, read_only: true
-    container log peer: 10.0.0.56  (the gateway, not 127.0.0.1)
+    container log peer: the bridge gateway's address, not 127.0.0.1
 
 With `--network=host`, the same curl:
 
