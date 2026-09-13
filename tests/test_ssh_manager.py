@@ -4,7 +4,9 @@ that must never reach a shell command."""
 
 from __future__ import annotations
 
+import asyncio
 import re
+from pathlib import Path
 
 import pytest
 
@@ -656,3 +658,86 @@ def test_capability_check_offers_a_way_to_install_getcap():
     check = _check(checks, "Capability check")
     assert check["status"] == "warn"
     assert "libcap2-bin" in check["fix"]
+
+
+# --- known_hosts file ordering ------------------------------------------------
+#
+# The order of this file is not cosmetic. asyncssh derives its list of
+# acceptable server host key algorithms by walking the matched entries in file
+# order, and SSH settles on the first algorithm the server also holds -- so the
+# first line decides what the handshake uses.
+#
+# The rows come out of SQLite in insertion order, which is whatever order
+# ssh-keyscan printed them in, and ssh-keyscan asks for rsa before ed25519. A
+# host carrying both was negotiating RSA because of the order it had been
+# scanned in, and forgetting and rescanning a host could change which key it
+# used with nothing said.
+
+
+class StubKnownHostsDB:
+    """Hands back rows in the order given, the way SQLite hands back rowids."""
+
+    def __init__(self, key_types: list[str]) -> None:
+        self._rows = [
+            {"key_type": kt, "host_key": f"AAAA{kt}", "hostname": "h", "port": 22}
+            for kt in key_types
+        ]
+
+    def get_known_hosts(self, hostname: str, port: int) -> list[dict]:
+        return list(self._rows)
+
+
+def _known_hosts_algorithms(manager, key_types, port=22):
+    manager._db = StubKnownHostsDB(key_types)
+    path = asyncio.run(manager._get_known_hosts_file("target.example", port))
+    try:
+        return [line.split()[1] for line in Path(path).read_text().splitlines() if line.strip()]
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_known_hosts_puts_the_strongest_key_first(manager):
+    """ssh-keyscan's own order, which is what was being written verbatim."""
+    algs = _known_hosts_algorithms(manager, ["ssh-rsa", "ecdsa-sha2-nistp256", "ssh-ed25519"])
+    assert algs[0] == "ssh-ed25519"
+    assert algs == ["ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa"]
+
+
+def test_known_hosts_order_does_not_depend_on_scan_order(manager):
+    """The regression itself: a forget-and-rescan reshuffles the rows, and that
+    must not change which key the handshake settles on."""
+    scanned_one_way = _known_hosts_algorithms(manager, ["ssh-rsa", "ssh-ed25519"])
+    scanned_the_other = _known_hosts_algorithms(manager, ["ssh-ed25519", "ssh-rsa"])
+    assert scanned_one_way == scanned_the_other == ["ssh-ed25519", "ssh-rsa"]
+
+
+def test_known_hosts_keeps_every_key_it_was_given(manager):
+    """Preferring the strongest is not the same as discarding the others: the
+    host may rotate, and a key that is not in the file will not verify."""
+    algs = _known_hosts_algorithms(manager, ["ssh-rsa", "ssh-dss", "ssh-ed25519"])
+    assert sorted(algs) == sorted(["ssh-rsa", "ssh-dss", "ssh-ed25519"])
+
+
+def test_known_hosts_sorts_an_unrecognised_algorithm_last(manager):
+    """An algorithm the rank has never heard of must not be preferred over
+    ed25519 just because it was scanned first."""
+    algs = _known_hosts_algorithms(manager, ["nonsense-algo", "ssh-ed25519"])
+    assert algs[0] == "ssh-ed25519"
+
+
+def test_known_hosts_brackets_a_non_default_port(manager):
+    """Ordering must not disturb the [host]:port form a non-22 endpoint needs."""
+    manager._db = StubKnownHostsDB(["ssh-rsa", "ssh-ed25519"])
+    path = asyncio.run(manager._get_known_hosts_file("target.example", 2222))
+    try:
+        lines = Path(path).read_text().splitlines()
+    finally:
+        Path(path).unlink(missing_ok=True)
+    assert lines[0].startswith("[target.example]:2222 ssh-ed25519 ")
+
+
+def test_known_hosts_file_is_absent_when_nothing_is_trusted(manager):
+    """The state that disables verification entirely -- unchanged here, but it
+    is the branch the ordering must not accidentally take over."""
+    manager._db = StubKnownHostsDB([])
+    assert asyncio.run(manager._get_known_hosts_file("target.example", 22)) is None

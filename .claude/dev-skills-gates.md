@@ -11,48 +11,55 @@ Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to
 ## 0.1.0-dev.16 — RELEASED AND VERIFIED, nothing outstanding
 
 Verified from this container on 2026-09-13:
-- tag v0.1.0-dev.16 -> 55ad719 on the remote (git ls-remote --tags origin),
-  which is exactly the branch head
-- Release workflow run #16 completed success; image pushed to
+- tag v0.1.0-dev.16 -> 55ad719 on the remote, exactly the branch head
+- Release workflow run #16 success; image pushed to
   ghcr.io/darthrater78/pcap-server:0.1.0-dev.16 and :dev moved forward
 - GitHub release published, prerelease, body compares dev.15...dev.16
-- Check run #42 (the tag ref) completed success, as did #41 on the same SHA
+- Check runs #41, #42 and #43 all success
 
 All six gates for dev.16 closed. Do not re-run them.
 
+## Committed since dev.16, pushed, CI green
+
+- f148595 "Delete a running capture the way Stop stops one". delete() awaits
+  the cancelled monitor before touching the row (it was resurrecting the row
+  via the monitor's finally -> _persist -> INSERT OR REPLACE), interrupts
+  tcpdump, clears the remote pcap over the capture's own connection, closes
+  the session, and returns what it did. Frontend gained a running-aware
+  prompt, a busy button, an error path and a remote-path fallback message.
+  Check run #43 success.
+
 ## What is in the working tree now
 
-Delete-a-running-capture fix, reported by the user: a delete had to perform the
-same termination, remote file removal and session close a stop performs.
-Nothing committed yet — awaiting approval.
+Host key ordering fix, reported by the user: forgetting a host's keys and
+rescanning made the handshake settle on RSA. Nothing committed yet — awaiting
+approval.
 
-- backend/capture.py: delete() awaits the cancelled monitor before touching the
-  row (it was resurrecting the row via the monitor's finally -> _persist ->
-  INSERT OR REPLACE), interrupts tcpdump, clears the remote pcap, closes the
-  session, and returns what it did.
-- backend/ssh_manager.py: RemoteCapture.remove_remote_file() — rm -f over the
-  connection the capture is already on, before it is closed.
-- backend/main.py: the DELETE route returns that result instead of a bare ok.
-- frontend/js/app.js: a running capture gets its own prompt, a busy button, an
-  alert on failure, and the remote path to clear by hand if that half failed.
-- tests/test_capture.py: 7 new tests, including a regression test that fails
-  against the old delete() (verified by reverting the await and watching it go
-  red with error='cancelled').
+- backend/ssh_manager.py: _get_known_hosts_file writes entries strongest first
+  by host_key_strength. asyncssh derives its acceptable server-host-key-alg
+  list by walking the file in order and SSH takes the first the server holds,
+  so line one was deciding the algorithm on the strength of ssh-keyscan's
+  print order (rsa before ed25519). Verified directly against asyncssh's own
+  match_known_hosts: rsa line first -> prefers rsa-sha2-256; ed25519 line
+  first -> prefers ssh-ed25519.
+- tests/test_ssh_manager.py: 6 new tests, including one asserting the result
+  is independent of scan order, and one that every stored key is still
+  written (a key absent from the file cannot verify a rotation).
 
 ## Gates
 
 🔢 VERSION    ⬜ not owed on a work commit; a bump to dev.17 is the user's call
-🔨 BUILD      ✅ ./scripts/check.sh — 557 passed, 21 skipped, 2m37s. Up from
-                550. The 21 skips are tshark and capinfos, not installable in
-                this container (apt repos 403/unsigned); browser suites DID run.
-🔒 SECURITY   ✅ reviewed the diff against SECURITY_REFERENCE.md. rm -f path is
-                _shell_quote'd and server-generated (/tmp/pcap_<uuid>.pcap),
-                never user input; the command is timeout-bounded and check=True;
-                authorisation is unchanged (_require_own_capture still gates
-                the route); the response carries two booleans and no internal
-                state; the frontend uses CSS.escape in the button selector and
-                alert() text, so no new injection surface.
-📄 DOCS       ✅ CHANGELOG "Unreleased" section covers both fixes.
+🔨 BUILD      ✅ ./scripts/check.sh — 584 passed, 0 skipped, 2m49s. The
+                session-start hook installed tshark and capinfos, so the 21
+                tests that skip in a bare container RAN for the first time
+                here and pass. Browser suites ran too.
+🔒 SECURITY   ✅ The ordering change is a strengthening: it makes the client
+                prefer ed25519 over RSA where both are trusted, and it changes
+                nothing about WHICH keys are trusted — every stored key is
+                still written, so a rotation still verifies. No new input
+                reaches a shell; the file is still built from stored key types
+                and written to the data dir as before.
+📄 DOCS       ✅ CHANGELOG "Unreleased" covers both fixes.
 📦 RELEASE    ➖ N/A — no PR. The default branch is out of scope by the user's
                 standing decision from earlier sessions.
 🚀 SHIP       ⬜ not owed on a work commit.

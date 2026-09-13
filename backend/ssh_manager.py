@@ -169,6 +169,25 @@ class SSHManager:
         entries = self._db.get_known_hosts(hostname, port)
         if not entries:
             return None
+        # Strongest first, and the ordering is the point rather than tidiness.
+        # asyncssh builds its list of acceptable server host key algorithms by
+        # walking the matched entries in file order, and SSH settles on the
+        # first algorithm the server also holds -- so the first line here
+        # decides what the handshake actually uses.
+        #
+        # The rows arrive in insertion order, which is whichever order
+        # ssh-keyscan happened to print them in -- and every write reshuffles
+        # it, because add_known_host is an INSERT OR REPLACE against a UNIQUE
+        # key and a replaced row is re-inserted with a new autoincrement id.
+        # So which algorithm a verified host used came down to the order of
+        # the last scan: rescanning, or forgetting and rescanning, could move
+        # a host onto its RSA key with nothing said. Sorting here makes the
+        # result independent of whatever order the keys arrive in.
+        # _HOST_KEY_RANK already knew which was better; it was only ever
+        # consulted to report the mismatch afterwards, never to prevent it.
+        entries = sorted(
+            entries, key=lambda e: host_key_strength(e["key_type"]), reverse=True
+        )
         lines = []
         for e in entries:
             if port == 22:

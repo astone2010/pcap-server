@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- **A trusted host uses its strongest key, not the one it was scanned in.**
+  Forgetting a host's keys and rescanning could quietly change which key the
+  handshake settled on -- in practice down to RSA. The stored keys were
+  written into the temporary `known_hosts` file in the order SQLite returned
+  them, which is the order `ssh-keyscan` printed them; and every write
+  reshuffles that, since `add_known_host` is an `INSERT OR REPLACE` against a
+  `UNIQUE` key and a replaced row is re-inserted with a new autoincrement id.
+  asyncssh builds its list of acceptable server host
+  key algorithms by walking that file in order and SSH takes the first one the
+  server also holds, so the first line was deciding the algorithm -- on the
+  strength of nothing but scan order. The file is now written strongest first,
+  by the same `_HOST_KEY_RANK` that already existed to *report* a
+  weaker-than-available choice after the fact but had never been allowed to
+  prevent one. Every stored key is still written, because a key missing from
+  the file is a key that cannot verify the host after a rotation.
 - **Deleting a running capture stops it, instead of letting go of it.** Delete
   and Stop had drifted apart. Stop interrupted `tcpdump` and let the monitor
   finish; Delete signalled the process, cancelled the monitor without waiting
