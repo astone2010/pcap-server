@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.1.0-dev.22 — 2026-09-13
+
+### Fixed
+
+- **The app offered eight capture filters its own API refused.** `validate_bpf`
+  banned `&` and `|` along with the shell metacharacters, and every `tcpflags`
+  or byte-offset filter needs them -- so the whole **TCP behaviour** group in
+  the library, plus one of the worked-example chips on the Capture tab, failed
+  with "BPF filter contains disallowed characters" the moment you pressed
+  Start. Each half was correct on its own terms and nothing connected them,
+  which is why no test saw it.
+
+  `&` and `|` are allowed now; `;`, `$`, a backtick and a backslash still are
+  not, and none of those mean anything in BPF. The expression was never
+  exposed to the remote shell in the first place: it is one argv element,
+  quoted by `_shell_quote` before the command string is assembled, and passed
+  after `--` so it cannot be read as an option. The character check is the
+  second line of defence under that quoting rather than the only one.
+
+  `tests/test_filter_library.py` now reads the real library out of `app.js` and
+  puts every expression through both gates -- the request validator, and
+  `tcpdump -d`, which is the only authority on whether an expression is a
+  filter at all. The list and the validator cannot drift apart again.
+
+### Added
+
+- **Fragment filters in the capture library**, under Size and shape. Two rows,
+  not one: a fragment either carries the MF flag or sits at a non-zero offset,
+  and matching only the offset misses the first fragment -- the one carrying
+  the transport headers. The second row, fragments after the first, is what
+  arrives when the first one went missing.
+- **NTLMSSP.** As a display-filter protocol in the Viewer, with its four most
+  useful fields (`ntlmssp.messagetype`, `.auth.username`, `.auth.domain`,
+  `.ntlmserverchallenge`), all checked against `tshark -G fields` rather than
+  written from memory.
+
+  On the capture side it is a row under Windows and Active Directory that
+  records the transports NTLM negotiates over. NTLMSSP has no port of its own
+  -- it rides inside SMB, RPC, LDAP and HTTP at an offset that moves with the
+  enclosing protocol, and BPF matches fixed offsets -- so there is no capture
+  filter for it, and the row says where the real one lives.
+
+### Changed
+
+- **The Viewer's display filter sits below the capture name** instead of
+  beside it. Sharing a row cost the filter half the width on a narrow window,
+  and put the name of the capture and the thing you are doing to it on one
+  line as though they were the same kind of thing.
+
+- **The capture filter library stays open while you choose.** It collapsed
+  itself on every pick, because the field it fills sits above the list and the
+  collapse was the only sign the click had landed. That made choosing a second
+  filter a matter of reopening the list -- which is most of the work in
+  building one up from several rows.
+
+  The feedback moves inside the library instead: a bar showing the expression
+  as it is being built, so picking three filters in a row never takes your eye
+  off the list you are picking them from. It has a **Clear** button, because
+  starting over is a normal part of composing and by then the field itself can
+  be scrolled out of sight behind the list.
+
+  The bar reads the field rather than tracking clicks, so it follows a typed
+  edit or a manual clear just as well as a library pick -- the field stays the
+  single source of truth.
+
+  Choosing a filter no longer pulls focus into the field either. Both the
+  collapse and the focus jump moved the page out from under someone part-way
+  through choosing.
+
+  The browser tests for filter composition used to reopen the library between
+  picks, which is how plain the friction was from the inside. They no longer
+  need to, and that file now runs in a third of the time.
+
 ## 0.1.0-dev.21 — 2026-09-13
 
 ### Added
