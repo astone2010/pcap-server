@@ -421,14 +421,57 @@ function renderServerList() {
         return;
     }
     el.innerHTML = activeServers
-        .map(
-            (s) => `
+        .map((s) => {
+            // A connection to a host with no trusted keys is refused outright,
+            // so the list has to say which entries cannot be used yet --
+            // otherwise the first sign of it is a capture that will not start,
+            // reported from a screen that never mentioned trust. The trust
+            // store itself stays admin-owned and keyed on the endpoint, since
+            // several servers can point at one host and share one decision;
+            // this only surfaces the state and, for an admin, the way to fix
+            // it without leaving the page.
+            //
+            // The delegator resolves e.target.closest("[data-action]"), so the
+            // nested button wins over the row and trusting does not also
+            // select the server.
+            const warning = s.host_trusted === false
+                ? `<div class="detail" style="color:var(--warning,#d29922);margin-top:4px">
+                       Host not trusted &mdash; connections to it are refused.
+                       ${currentUser && currentUser.is_admin
+                            ? `<button class="btn btn-sm btn-secondary" style="margin-left:6px"
+                                 data-action="trust-server-host"
+                                 data-id="${escHtml(s.hostname)}:${s.port}">Trust host</button>`
+                            : "<br>Ask an admin to trust it under Admin \u2192 Known Hosts."}
+                   </div>`
+                : "";
+            return `
         <div class="server-item" data-action="select-server" data-id="${escHtml(s.id)}">
             <div class="name">${escHtml(s.name || s.hostname)}</div>
             <div class="detail">${escHtml(s.username)}@${escHtml(s.hostname)}:${s.port}</div>
-        </div>`
-        )
+            ${warning}
+        </div>`;
+        })
         .join("");
+}
+
+async function trustServerHost(endpoint) {
+    // Deliberately not adminTrustHost(): that reports into the Admin tab's
+    // message element, which nobody standing on the Servers tab can see.
+    if (!confirm(`Trust the host keys ${endpoint} answers with?\n\n`
+        + "Whatever answers on that address right now is what gets pinned, and "
+        + "every later connection is checked against it. Do this only if you are "
+        + "confident nothing is impersonating the host.")) return;
+    try {
+        const result = await api("/api/admin/known-hosts/scan", {
+            method: "POST",
+            body: JSON.stringify(splitEndpoint(endpoint)),
+        });
+        alert(`Stored ${result.keys.length} host key(s) for ${endpoint}. It can be used now.`);
+    } catch (e) {
+        alert(`Could not trust ${endpoint}: ${e.message}`);
+        return;
+    }
+    await loadServers();
 }
 
 function selectServer(id) {
@@ -3383,6 +3426,7 @@ function initEventDelegation() {
     });
     delegate("admin-known-hosts", {
         "trust-host": (id) => adminTrustHost(id),
+        "trust-server-host": (id) => trustServerHost(id),
         "forget-host": (id) => adminForgetHost(id),
     });
     $("packet-tbody")?.addEventListener("click", (e) => {

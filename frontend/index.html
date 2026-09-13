@@ -516,8 +516,9 @@
                         <em>host's</em> identity — proof the machine answering is the one you
                         meant — not the login keys under SSH Keys above. Trusting a host pins
                         what it answers with, so an impostor on that address is refused instead
-                        of being handed your key. An unverified host still connects; it just
-                        isn't checked.
+                        of being handed your key. A host with no trusted keys is refused
+                        outright &mdash; nothing connects to it until it is trusted here, or
+                        from the <strong>Trust host</strong> button on the server itself.
                     </p>
                     <p class="field-hint" style="margin-bottom:10px">
                         A host usually answers with <strong>several keys — one per algorithm</strong>

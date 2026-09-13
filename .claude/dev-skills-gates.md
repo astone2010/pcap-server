@@ -31,37 +31,49 @@ All six gates for dev.16 closed. Do not re-run them.
 
 ## What is in the working tree now
 
-Host key ordering fix, reported by the user: forgetting a host's keys and
-rescanning made the handshake settle on RSA. Nothing committed yet — awaiting
-approval.
+Option 1 (fail closed) on host key trust, approved by the user for a
+development-stage project. Nothing committed yet — awaiting approval.
 
-- backend/ssh_manager.py: _get_known_hosts_file writes entries strongest first
-  by host_key_strength. asyncssh derives its acceptable server-host-key-alg
-  list by walking the file in order and SSH takes the first the server holds,
-  so line one was deciding the algorithm on the strength of ssh-keyscan's
-  print order (rsa before ed25519). Verified directly against asyncssh's own
-  match_known_hosts: rsa line first -> prefers rsa-sha2-256; ed25519 line
-  first -> prefers ssh-ed25519.
-- tests/test_ssh_manager.py: 6 new tests, including one asserting the result
-  is independent of scan order, and one that every stored key is still
-  written (a key absent from the file cannot verify a rotation).
+- backend/ssh_manager.py: _connect refuses before opening a socket when no
+  keys are stored, naming the host and where to trust it. known_hosts is never
+  None now (that is asyncssh's "disable validation" value). The
+  HostKeyNotVerifiable message no longer says "scan the host key first" — it
+  could only ever fire for a MISMATCH, never for the no-keys case it named.
+- backend/main.py: /api/servers reports host_trusted per row.
+- frontend/js/app.js: the server list shows "Host not trusted — connections
+  are refused", with an inline Trust host button for admins and an ask-an-
+  admin line otherwise. trustServerHost() rather than adminTrustHost(),
+  because the latter reports into the Admin tab's message element.
+- frontend/index.html + README.md: the "an unverified host still connects"
+  claim is now false and is corrected in both. README's first-capture steps
+  reordered so trusting the host comes BEFORE Test connection, which can no
+  longer run without it. The Security section explains the asyncssh
+  known_hosts=None trap and why trust is endpoint-scoped and admin-owned.
+- tests: 7 new (3 fail-closed in test_ssh_manager.py, 4 host_trusted in
+  test_servers.py, including one pinning that two servers on one host share a
+  single decision and one that port 22's keys do not vouch for port 2222).
+
+BREAKING for any deployment with servers whose hosts were never scanned: they
+stop working until an admin trusts them. Accepted by the user — still in
+development.
 
 ## Gates
 
 🔢 VERSION    ⬜ not owed on a work commit; a bump to dev.17 is the user's call
-🔨 BUILD      ✅ ./scripts/check.sh — 584 passed, 0 skipped, 2m49s. The
-                session-start hook installed tshark and capinfos, so the 21
-                tests that skip in a bare container RAN for the first time
-                here and pass. Browser suites ran too.
-🔒 SECURITY   ✅ The ordering change is a strengthening: it makes the client
-                prefer ed25519 over RSA where both are trusted, and it changes
-                nothing about WHICH keys are trusted — every stored key is
-                still written, so a rotation still verifies. No new input
-                reaches a shell; the file is still built from stored key types
-                and written to the data dir as before.
-📄 DOCS       ✅ CHANGELOG "Unreleased" covers both fixes.
-📦 RELEASE    ➖ N/A — no PR. The default branch is out of scope by the user's
-                standing decision from earlier sessions.
+🔨 BUILD      ✅ ./scripts/check.sh — 591 passed, 0 skipped, 2m39s. tshark and
+                capinfos are installed by the session-start hook, so the 21
+                that skip in a bare container ran here too.
+🔒 SECURITY   ✅ This IS the security change: it closes a fail-open default.
+                Reviewed for the obvious own-goal — no chicken and egg, since
+                scan_host_keys() uses ssh-keyscan as a subprocess and never
+                goes through _connect(). host_trusted on /api/servers reveals
+                only whether a host the caller already configured is trusted,
+                which Test connection would tell them anyway; establishing
+                trust is still require_admin.
+📄 DOCS       ✅ CHANGELOG (a Changed section, marked breaking), README summary
+                + first-capture order + Security section, and the Known Hosts
+                hint in index.html.
+📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
 🚀 SHIP       ⬜ not owed on a work commit.
 
 ## Raised this session, not changed

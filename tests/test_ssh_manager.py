@@ -741,3 +741,79 @@ def test_known_hosts_file_is_absent_when_nothing_is_trusted(manager):
     is the branch the ordering must not accidentally take over."""
     manager._db = StubKnownHostsDB([])
     assert asyncio.run(manager._get_known_hosts_file("target.example", 22)) is None
+
+
+# --- connections fail closed --------------------------------------------------
+#
+# asyncssh reads known_hosts=None as "skip host key validation", not as "fall
+# back to ~/.ssh/known_hosts". So a host with nothing stored used to connect
+# with nothing checked, offering the SSH key to whatever answered on that
+# address. There is no chicken and egg in refusing: trusting a host goes
+# through ssh-keyscan in scan_host_keys(), which never reaches _connect().
+
+
+def _plaintext_key(manager) -> None:
+    import asyncssh as _asyncssh
+    key = _asyncssh.generate_private_key("ssh-ed25519")
+    (manager._keys_dir / "k").write_bytes(key.export_private_key())
+
+
+def _server(**kw):
+    from backend.models import ServerAuth
+    return ServerAuth(hostname="target.example", username="alice", ssh_key_name="k", **kw)
+
+
+def test_connect_refuses_a_host_with_no_trusted_keys(manager, monkeypatch):
+    import asyncssh as _asyncssh
+    _plaintext_key(manager)
+    manager._db = StubKnownHostsDB([])
+
+    reached = False
+
+    async def must_not_be_called(*args, **kwargs):
+        nonlocal reached
+        reached = True
+
+    monkeypatch.setattr(_asyncssh, "connect", must_not_be_called)
+
+    with pytest.raises(ConnectionError) as exc:
+        asyncio.run(manager._connect(_server()))
+
+    assert not reached, "an untrusted host must be refused before a socket is opened"
+    assert "no trusted host keys" in str(exc.value)
+    assert "target.example:22" in str(exc.value)
+
+
+def test_refusal_names_where_to_trust_the_host(manager):
+    """The message is the only thing standing between the operator and a
+    connection that simply does not work."""
+    _plaintext_key(manager)
+    manager._db = StubKnownHostsDB([])
+
+    with pytest.raises(ConnectionError) as exc:
+        asyncio.run(manager._connect(_server()))
+
+    assert "Known Hosts" in str(exc.value)
+
+
+def test_a_mismatched_host_key_is_not_reported_as_a_setup_step(manager, monkeypatch):
+    """HostKeyNotVerifiable can only fire when keys ARE stored and the host
+    answered with something else -- the no-keys case is refused earlier. The
+    message used to say "scan the host key first", describing the one
+    situation it can never be raised for, and reading like a setup step
+    rather than the alarm it is."""
+    import asyncssh as _asyncssh
+    _plaintext_key(manager)
+    manager._db = StubKnownHostsDB(["ssh-ed25519"])
+
+    async def mismatched(*args, **kwargs):
+        raise _asyncssh.HostKeyNotVerifiable("nope")
+
+    monkeypatch.setattr(_asyncssh, "connect", mismatched)
+
+    with pytest.raises(ConnectionError) as exc:
+        asyncio.run(manager._connect(_server()))
+
+    message = str(exc.value)
+    assert "does not match" in message
+    assert "scan the host key first" not in message.lower()

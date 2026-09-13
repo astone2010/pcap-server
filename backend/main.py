@@ -847,7 +847,23 @@ def _require_key(ssh_key_name: str) -> None:
 
 @app.get("/api/servers")
 async def list_servers(user: dict = Depends(get_current_user)):
-    return [_server_from_row(row) for row in db.list_active_servers(user["id"])]
+    """Each server, plus whether its host is trusted yet.
+
+    A connection to an untrusted host is refused outright, so a server list
+    that does not say which of its entries are unusable is a list that sends
+    people to a failure they cannot explain. Trust itself stays admin-owned
+    and endpoint-scoped -- this only reports the state of a host the caller
+    has already configured, which tells them nothing they could not learn by
+    pressing Test connection.
+    """
+    servers = []
+    for row in db.list_active_servers(user["id"]):
+        info = _server_from_row(row)
+        servers.append({
+            **info.model_dump(),
+            "host_trusted": bool(db.get_known_hosts(info.hostname, info.port)),
+        })
+    return servers
 
 
 @app.post("/api/servers")

@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Changed
+
+- **An untrusted host is refused, not connected to unverified.** This is a
+  breaking change for any host whose keys have never been scanned. Previously
+  a host with nothing stored was connected to with host key validation turned
+  off -- not "unverified but otherwise normal", but the SSH key offered to
+  whatever answered on that address, with nothing checked. That was because
+  asyncssh reads `known_hosts=None` as *skip validation* rather than *use the
+  default file*, and the empty case handed it exactly that. `_connect` now
+  refuses before a socket is opened, naming the host and where to trust it.
+  Trusting a host still works, because that runs `ssh-keyscan` and never goes
+  through `_connect`.
+- **A server says when its host is not trusted yet.** `/api/servers` reports
+  `host_trusted` per row and the server list shows it, with a **Trust host**
+  button inline for admins and a "ask an admin" line for everyone else. The
+  refusal above is otherwise invisible until a capture will not start, on a
+  screen that never mentions trust. The store stays admin-owned and keyed on
+  the endpoint rather than moving into the per-user server profile: several
+  servers can point at one host and share one decision, and re-pinning a host
+  decides what every user's connections to it are checked against.
+- **The host key mismatch error says what a mismatch is.** It read "Host key
+  verification failed. Scan the host key first via Admin > Known Hosts" --
+  which described the one situation it can never be raised for, since the
+  no-keys case is now refused earlier and previously never reached it either.
+  It now says the host answered with a key that does not match the trusted
+  ones, and that the cause is a rebuild, a re-key, or something else answering
+  on that address.
+
 ### Fixed
 
 - **A trusted host uses its strongest key, not the one it was scanned in.**

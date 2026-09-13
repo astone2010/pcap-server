@@ -53,7 +53,8 @@ capture tells a DNS server what you are investigating.
 data volume, and decrypted in flight so no plaintext pcap ever touches disk.
 Passwords are scrypt-hashed, TOTP is required, and sessions are stored only as
 digests. Over plain HTTP the app refuses to change anything or hand a capture
-over. SSH host keys are verified per host. See [Security](#security).
+over. A target host must have its SSH host keys trusted before anything will
+connect to it. See [Security](#security).
 
 **Operating.** Multi-user with an admin panel, per-account server lists and
 stored SSH usernames, SSH keys uploaded through the UI and sealed under the same
@@ -119,16 +120,20 @@ Open `http://localhost:8080`. The first user to register becomes the admin.
 1. **Upload an SSH key.** Admin → SSH Keys. It is sealed under the master key
    the moment it lands, the same way captures are.
 2. **Add the server.** Servers → + Add. Give it a name, a hostname and the login
-   it should use. **Test connection** and **Check prerequisites** run against it
-   before you commit to saving.
-3. **Sort out capture privilege** if the check says it is missing. It prints the
+   it should use.
+3. **Trust the host's keys.** Admin → Known Hosts → Trust keys, or the **Trust
+   host** button on the server itself. This has to happen before anything will
+   connect: a host with no trusted keys is refused rather than connected to
+   unverified, so **Test connection**, **Check prerequisites** and captures all
+   fail until it is done. Whatever answers on that address when you press it is
+   what gets pinned, so do it from a network you trust.
+4. **Test connection** and **Check prerequisites**, now that they can run.
+5. **Sort out capture privilege** if the check says it is missing. It prints the
    exact command for the host in front of you — see
    [Preparing a target host](#preparing-a-target-host).
-4. **Trust the host key.** Admin → Known Hosts. Until you do, the connection
-   still works but is not verified, and the UI says so.
-5. **Capture.** Capture tab: pick the server and interface, set a duration, add
+6. **Capture.** Capture tab: pick the server and interface, set a duration, add
    a filter. Watch the packet count climb while it runs.
-6. **Read it.** View on a finished capture. Click a packet for its protocol tree
+7. **Read it.** View on a finished capture. Click a packet for its protocol tree
    and hex dump.
 
 ## Preparing a target host
@@ -484,10 +489,23 @@ matter, including why proxy buffering must be off.
 called with `password=None` and `passphrase=None` explicitly, so there is no
 path by which a password could be used.
 
-Host keys are verified per host. A host answers with one key per algorithm and
-whichever the two ends negotiate is the one checked, so all of a host's keys are
-trusted or forgotten as a set. The negotiated algorithm is reported, and a
-negotiation weaker than what the host offered is flagged.
+Host keys are verified per host, and verification is not optional: a host with
+no trusted keys is refused outright rather than connected to unverified. That
+matters more than it sounds, because asyncssh reads "no known-hosts file" as
+*skip validation*, not as *use the default one* — so the alternative to
+refusing is offering the SSH key to whatever answers on that address.
+
+A host answers with one key per algorithm and whichever the two ends negotiate
+is the one checked, so all of a host's keys are trusted or forgotten as a set.
+They are offered strongest first, so a host with both an ed25519 and an RSA key
+is verified against the ed25519 one regardless of the order they were scanned
+in. The negotiated algorithm is reported, and a negotiation weaker than what
+the host offered is flagged.
+
+Trust is stored per endpoint, not per server: several server entries can point
+at one host and they share a single trust decision. Establishing it is
+admin-only, since re-pinning a host decides what every user's connections to it
+are checked against.
 
 ### Signing in
 

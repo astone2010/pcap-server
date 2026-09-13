@@ -237,6 +237,22 @@ class SSHManager:
             raise ConnectionError(str(exc)) from exc
 
         kh_file = await self._get_known_hosts_file(server.hostname, server.port)
+        if not kh_file:
+            # Fail closed. asyncssh reads known_hosts=None as "skip host key
+            # validation entirely" rather than "fall back to the default
+            # file", so connecting without stored keys does not mean
+            # "unverified but otherwise normal" -- it means this client offers
+            # its private key to whatever answers on that address, with
+            # nothing checked. Refusing is the only honest reading of a host
+            # nobody has vouched for.
+            #
+            # No chicken and egg: trusting a host goes through ssh-keyscan in
+            # scan_host_keys(), which does not come through here.
+            raise ConnectionError(
+                f"{server.hostname}:{server.port} has no trusted host keys, so its "
+                "identity cannot be checked. An admin must trust it under "
+                "Admin > Known Hosts before it can be used."
+            )
 
         try:
             conn = await asyncssh.connect(
@@ -244,7 +260,9 @@ class SSHManager:
                 port=server.port,
                 username=server.username,
                 client_keys=[client_key],
-                known_hosts=kh_file if kh_file else None,
+                # Never None: that is asyncssh's "disable validation" value,
+                # and the empty case is refused above rather than reaching here.
+                known_hosts=kh_file,
                 password=None,
                 passphrase=None,
                 # A host that accepts TCP but never finishes the handshake would
@@ -256,7 +274,17 @@ class SSHManager:
                 keepalive_count_max=KEEPALIVE_COUNT_MAX,
             )
         except asyncssh.HostKeyNotVerifiable:
-            raise ConnectionError("Host key verification failed. Scan the host key first via Admin > Known Hosts.")
+            # Reachable only when keys ARE stored and the host answered with
+            # something else -- the no-keys case is refused above. This used to
+            # say "scan the host key first", which described the one situation
+            # it can never be raised for, and read as a setup step rather than
+            # as the alarm it is.
+            raise ConnectionError(
+                f"{server.hostname}:{server.port} answered with a host key that does not "
+                "match the keys trusted for it. Either the host was rebuilt or re-keyed, "
+                "or something else is answering on that address. Confirm which before "
+                "forgetting and re-trusting it."
+            )
         finally:
             if kh_file:
                 Path(kh_file).unlink(missing_ok=True)

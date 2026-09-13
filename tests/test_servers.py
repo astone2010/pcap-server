@@ -508,3 +508,87 @@ def test_the_backfill_does_not_resurrect_a_deleted_username(tmp_path):
     assert db.delete_username(user_id, stored_id)
 
     assert _names(Database(path), user_id) == []
+
+
+# --- /api/servers reports host trust ------------------------------------------
+#
+# A connection to a host with no trusted keys is refused outright, so a server
+# list that does not say which entries are unusable sends people to a failure
+# they cannot explain from the screen they are standing on.
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from backend import main  # noqa: E402
+from backend.auth import create_session_token  # noqa: E402
+
+
+@pytest.fixture()
+def api_client():
+    with TestClient(main.app, base_url="https://testserver") as c:
+        yield c
+
+
+@pytest.fixture()
+def signed_in(api_client):
+    user_id = str(uuid.uuid4())
+    main.db.create_user(user_id, f"trust-{user_id[:8]}", "scrypt$1$1$1$00$00", is_admin=True)
+    main.db.set_totp_secret(user_id, "A" * 32)
+    main.db.confirm_totp(user_id)
+    token, _ = create_session_token(main.db, user_id)
+    api_client.cookies.set("session", token)
+    try:
+        yield user_id
+    finally:
+        main.db.delete_user(user_id)
+
+
+def _add_server(user_id: str, hostname: str, port: int = 22) -> str:
+    server_id = str(uuid.uuid4())
+    main.db.add_active_server(
+        server_id, user_id, "probe", hostname, port, "alice", "k", False,
+    )
+    return server_id
+
+
+def test_server_is_reported_untrusted_until_its_host_is_trusted(api_client, signed_in):
+    _add_server(signed_in, "never-scanned.example")
+    rows = api_client.get("/api/servers").json()
+    row = next(r for r in rows if r["hostname"] == "never-scanned.example")
+    assert row["host_trusted"] is False
+
+
+def test_server_is_reported_trusted_once_keys_are_stored(api_client, signed_in):
+    _add_server(signed_in, "scanned.example")
+    main.db.add_known_host("scanned.example", 22, "ssh-ed25519", "AAAAkey", signed_in)
+    try:
+        rows = api_client.get("/api/servers").json()
+        row = next(r for r in rows if r["hostname"] == "scanned.example")
+        assert row["host_trusted"] is True
+    finally:
+        main.db.forget_known_host("scanned.example", 22)
+
+
+def test_trust_is_keyed_on_the_endpoint_not_the_server_row(api_client, signed_in):
+    """Two servers on one host share one decision -- the reason trust lives in
+    admin against an endpoint rather than inside a per-user server profile."""
+    _add_server(signed_in, "shared.example")
+    _add_server(signed_in, "shared.example")
+    main.db.add_known_host("shared.example", 22, "ssh-ed25519", "AAAAkey", signed_in)
+    try:
+        rows = [r for r in api_client.get("/api/servers").json()
+                if r["hostname"] == "shared.example"]
+        assert len(rows) == 2
+        assert all(r["host_trusted"] is True for r in rows)
+    finally:
+        main.db.forget_known_host("shared.example", 22)
+
+
+def test_a_different_port_is_a_different_trust_decision(api_client, signed_in):
+    _add_server(signed_in, "ported.example", 2222)
+    main.db.add_known_host("ported.example", 22, "ssh-ed25519", "AAAAkey", signed_in)
+    try:
+        rows = api_client.get("/api/servers").json()
+        row = next(r for r in rows if r["hostname"] == "ported.example")
+        assert row["host_trusted"] is False, "port 22's keys must not vouch for 2222"
+    finally:
+        main.db.forget_known_host("ported.example", 22)
