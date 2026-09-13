@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.1.0-dev.24 — 2026-09-13
+
+### Changed
+
+- **A live stream now has to be pointed at something.** Ticking **Live stream**
+  with the interface on `any` and no BPF filter is refused, by the capture form
+  and by the server. Either an interface or a filter is enough; both narrow it
+  further.
+
+  The live preview is a fixed-size buffer held in the server's memory, and it
+  does not refill: pointed at every packet on every link of a host doing real
+  work it fills within seconds, and the preview is then frozen for the rest of
+  the capture. Raising the limit buys seconds and spends memory. Narrowing the
+  capture is the lever that works, so it is now required rather than suggested
+  after the fact.
+
+  The capture form explains this in place, as soon as **Live stream** is ticked
+  on a form that narrows nothing, and clears itself as soon as an interface or
+  a filter is chosen. The Start button does not send a request that would be
+  refused.
+
+  **Ordinary captures are untouched.** `any` with no filter is still the
+  default and still the normal thing to run — there is no preview buffer to
+  fill when nobody is watching, and the saved pcap is complete either way.
+
+- **The frozen-preview message now names the remedy.** It said the capture was
+  still running and would be saved in full, which is the reassurance; it now
+  also says that a narrower filter or a more specific interface keeps the next
+  live view going for longer, which is the only thing left to act on by the
+  time it appears.
+
+### Fixed
+
+- **`scripts/check.sh` now picks a Python the pins actually support.** It built
+  its virtualenv with bare `python3`, and distributions have started shipping
+  3.14 there — Fedora 44 does. `pydantic-core` has no wheel above cp313, so pip
+  fell back to building it from source, which needs PyO3 ≤ 3.13 and failed with
+  a Rust error that never mentions Python versions. The project's own test
+  script was unrunnable on a current machine, and the reason was unreadable.
+
+  It now searches `python3.12`, `python3.13`, `python3.11`, `python3` and takes
+  the first in range — 3.12 first, since that is what the Dockerfile and CI
+  use — honours `PYTHON=` as an override and refuses rather than silently
+  substituting, and rebuilds an existing `.venv` that was built by an
+  unsupported interpreter instead of reusing it forever. When nothing suitable
+  is installed it says so in one line, naming the range and what it found.
+
+- **Long capture titles no longer run off the Capture page.** An unnamed
+  capture is titled with the whole tcpdump command, including the remote
+  `/tmp/pcap_<uuid>.pcap` path. The row is a flex layout whose text column took
+  its content's intrinsic width, so instead of wrapping it grew wider than the
+  panel, the page scrolled sideways, and the text was cut off at the edge. It
+  wraps now, the row itself breaks onto a second line when the window is narrow
+  rather than crushing the buttons, and the status badges sit level with the
+  first line of the title instead of floating in the middle of the block.
+
 ## 0.1.0-dev.23 — 2026-09-13
 
 ### Added

@@ -362,7 +362,9 @@ form:
 
 A fifth control, **Live stream**, does not change what the capture contains —
 it adds `-U` so tcpdump writes packet by packet, and opens the capture in the
-Viewer while it runs. See [Streaming a capture live](#streaming-a-capture-live).
+Viewer while it runs. It does constrain the two above it: a live stream needs
+an interface other than `any`, or a BPF filter, or both. See
+[Streaming a capture live](#streaming-a-capture-live).
 
 Capturing *specific* traffic is the filter's job, not a flag's, and the filter
 takes full BPF syntax: `host 10.0.0.230`, `tcp port 443`,
@@ -396,6 +398,30 @@ capture and an ordinary one are the same file by the time either is saved.
 Closing the browser does not lose it. This is also why a dropped SSH connection
 mid-capture costs nothing: the packets are on the target, not in the browser.
 
+### A live stream has to be pointed at something
+
+**Live streaming needs an interface or a BPF filter — either one will do.**
+Ticking **Live stream** with the interface left on `any` and no filter is
+refused, and the capture form says so before the Start button does.
+
+The reason is the preview buffer below: it is a fixed number of megabytes held
+in the server's memory, and it does not refill. `any` with no filter points it
+at every packet on every link the target host has, which on a host doing real
+work fills it within seconds — the preview then freezes for the rest of the
+capture and there is nothing to do but start again. Narrowing the capture is
+the fix, so the narrowing is required up front rather than suggested afterwards.
+
+Which one to reach for depends on the question. `-i eth0` when it is about one
+link; a filter such as `host 10.0.0.5` or `tcp port 443` when it is about one
+conversation. Both together narrow it further still, and the
+[capture filter library](#building-a-filter-by-clicking) on the same screen is
+there to build the expression from.
+
+**Capturing without live streaming has no such requirement.** `any` with no
+filter remains the default and is the normal thing to run — there is no preview
+buffer to fill when nobody is watching, and the pcap comes back complete either
+way. Untick **Live stream** and the restriction is gone.
+
 ### Stopping and keeping it
 
 **Stop capture**, from the live bar or the capture list, ends it. The capture
@@ -420,7 +446,10 @@ saying so; an ordinary capture can still start, since that limit is separate.
 view freezes and says so plainly — *"the capture is still running and will be
 saved in full"* — because the capture does keep going, and its final pcap is
 complete. The running packet count continues to climb next to the frozen
-preview so it is obvious which of the two stopped.
+preview so it is obvious which of the two stopped. The message also names the
+remedy, because by then the only one left is for next time: a narrower filter
+or a more specific interface keeps a live view going for longer. Raising the
+limit is the wrong lever — it buys seconds and spends the server's memory.
 
 Freezing was chosen over the alternative, dropping the oldest packets to keep a
 rolling window. A rolling window renumbers frames underneath the detail pane,
@@ -717,7 +746,7 @@ These are configurable from the Admin tab by the admin user:
 | Max capture packets | 100000 | Maximum packets per capture |
 | Max concurrent captures | 5 | Captures running or finishing up at once, across all users — each holds an SSH connection to a target host plus a local file. Separately, and not configurable: one capture at a time per interface per server, so `eth0` and `eth1` on the same host can run together but a second capture on either is refused |
 | Max simultaneous live streams | 2 | Live-streamed captures at once, across all users. Far lower than the limit above because a live stream costs more than an ordinary capture: an SFTP channel held open on the target, and a tshark run over the whole buffer on every poll. An ordinary capture can still start when this is full |
-| Live stream preview limit (MB) | 16 | How much of a live capture the preview holds and re-reads. Past it the preview stops updating and says so; **the capture itself keeps running and is saved in full**. Raising it costs CPU as well as memory, because every poll re-parses the whole buffer |
+| Live stream preview limit (MB) | 16 | How much of a live capture the preview holds and re-reads. Past it the preview stops updating and says so; **the capture itself keeps running and is saved in full**. Raising it costs CPU as well as memory, because every poll re-parses the whole buffer — narrowing the capture with an interface or a filter is the lever that actually helps, and is why a live stream [requires one](#a-live-stream-has-to-be-pointed-at-something) |
 | Session duration (hours) | 8 | Login session lifetime |
 | Session idle timeout (minutes) | 60 | Idle window before a session is deleted, independent of the absolute duration above. `0` disables idle expiry |
 | Device trust (days) | 30 | How long a trusted device skips MFA |
@@ -908,6 +937,29 @@ skipped test is printed with its reason rather than quietly dropped.
 `.github/workflows/check.yml` runs that same script rather than reimplementing
 the checks, so CI and a developer's machine cannot pass and fail independently
 of each other.
+
+**It needs Python 3.11–3.13, and it picks the interpreter itself.** The ceiling
+is not a preference: `pydantic-core` ships no wheel above cp313, and pip's
+source fallback needs PyO3 ≤ 3.13, so on a newer Python the install dies in a
+Rust build that never mentions Python versions. Distributions have started
+shipping 3.14 as `python3` — Fedora 44 does — which made the script unrunnable
+on a current machine.
+
+So it searches `python3.12`, `python3.13`, `python3.11`, then `python3`, and
+uses the first one in range; 3.12 comes first because that is what the
+Dockerfile and CI use. Set `PYTHON=/path/to/python3.12` to override the search,
+and it will refuse rather than quietly pick something else. An existing `.venv`
+is checked too, not trusted — one built by an out-of-range interpreter is
+rebuilt, because otherwise a single bad run poisons every later one with the
+same unreadable failure. If nothing suitable is installed it says so in one
+line, with the range and what it found:
+
+```
+No supported Python found. This project needs 3.11-3.13; pydantic-core has no
+wheel above 3.13 and its source build refuses to compile.
+Found: python3 = 3.14.7
+Install one (e.g. 'sudo dnf install python3.12'), or set PYTHON=/path/to/python3.12
+```
 
 **Missing tools skip, they do not fail.** The suites that need tshark,
 capinfos or a browser report as SKIPPED with the remedy in the reason. That is

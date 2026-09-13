@@ -103,11 +103,149 @@ async def test_starting_a_capture_sends_the_live_flag(app_page):
         }"""
     )
     await app_page.check("#cap-live")
+    # A live stream has to be pointed at something or the form refuses to send
+    # it at all, so this one carries a filter. What is under test is the flag
+    # reaching the body, not the rule.
+    await app_page.fill("#cap-bpf", "tcp port 443")
     await app_page.click("#btn-start-capture")
     await app_page.wait_for_function("window.__sentBody !== null")
 
     body = await app_page.evaluate("window.__sentBody")
     assert body["live_stream"] is True
+
+
+# --- a live stream has to be pointed at something ----------------------------
+#
+# The server refuses an untargeted live stream outright (LiveStreamNotTargeted
+# -> 400). These are about the form saying so first: the answer is entirely in
+# the fields on screen, and finding it out from a bounced request is finding it
+# out one step too late.
+
+
+async def test_the_target_notice_is_hidden_until_live_streaming_is_asked_for(app_page):
+    """It is not an error. Nothing is wrong with an ordinary capture on "any",
+    which is the normal thing to run."""
+    await _capture_tab(app_page)
+    assert await app_page.is_hidden("#live-target-notice")
+
+
+async def test_ticking_live_stream_on_an_untargeted_form_explains_why_not(app_page):
+    await _capture_tab(app_page)
+    await app_page.check("#cap-live")
+    await app_page.wait_for_selector("#live-target-notice", state="visible")
+    text = await app_page.inner_text("#live-target-notice")
+    # Both ways out, because either one is enough and an operator told only
+    # about filters will not think of the dropdown.
+    assert "interface" in text.lower()
+    assert "bpf filter" in text.lower()
+
+
+async def test_typing_a_filter_clears_the_notice(app_page):
+    """The field that resolves it is the field the notice points at, so the
+    notice has to follow it as it is typed rather than on submit."""
+    await _capture_tab(app_page)
+    await app_page.check("#cap-live")
+    await app_page.wait_for_selector("#live-target-notice", state="visible")
+    await app_page.fill("#cap-bpf", "host 10.0.0.5")
+    await app_page.wait_for_selector("#live-target-notice", state="hidden")
+
+
+async def test_clearing_the_filter_brings_the_notice_back(app_page):
+    """Emptying the box puts the form back where it started, and a notice that
+    only ever appeared once would leave it looking valid."""
+    await _capture_tab(app_page)
+    await app_page.check("#cap-live")
+    await app_page.fill("#cap-bpf", "host 10.0.0.5")
+    await app_page.wait_for_selector("#live-target-notice", state="hidden")
+    await app_page.fill("#cap-bpf", "   ")
+    await app_page.wait_for_selector("#live-target-notice", state="visible")
+
+
+async def test_unticking_live_stream_clears_the_notice(app_page):
+    """Capturing everything without watching it has no such limit, so the
+    notice must not linger over a form it no longer applies to."""
+    await _capture_tab(app_page)
+    await app_page.check("#cap-live")
+    await app_page.wait_for_selector("#live-target-notice", state="visible")
+    await app_page.uncheck("#cap-live")
+    await app_page.wait_for_selector("#live-target-notice", state="hidden")
+
+
+async def test_an_untargeted_live_capture_is_never_sent(app_page):
+    """The request would be refused, so it is not made. Letting it go and
+    surfacing the 400 would be the same answer, one round trip later, in an
+    alert rather than next to the field that fixes it."""
+    await _capture_tab(app_page)
+    await app_page.evaluate(
+        """() => {
+            window.__posted = false;
+            window.__origFetch = window.fetch;
+            window.fetch = (url, opts) => {
+                if (String(url).endsWith('/api/captures') && opts && opts.method === 'POST') {
+                    window.__posted = true;
+                }
+                return window.__origFetch(url, opts);
+            };
+            const sel = document.getElementById('cap-server');
+            sel.innerHTML = '<option value="s1">s1</option>';
+            sel.value = 's1';
+        }"""
+    )
+    await app_page.check("#cap-live")
+    await app_page.click("#btn-start-capture")
+    await app_page.wait_for_selector("#live-target-notice", state="visible")
+    assert await app_page.evaluate("window.__posted") is False
+
+
+# --- the capture list has to fit the panel -----------------------------------
+
+
+LONG_COMMAND = (
+    "tcpdump -w /tmp/pcap_11111111-1111-1111-1111-111111111111.pcap -v -U "
+    "-i eth0 -s 128 -- tcp port 443 and host 198.51.100.77 and not port 22"
+)
+
+
+async def test_a_long_capture_title_wraps_instead_of_running_off_the_panel(app_page):
+    """An unnamed capture is titled with the whole tcpdump command, which is
+    longer than the panel on any window.
+
+    .capture-item is a flex row, and a flex item's min-width defaults to its
+    content's intrinsic width -- so the text column grew wider than the panel
+    rather than wrapping inside it, the panel scrolled sideways, and the line
+    ran off the edge where it could not be read. Asserted as "the list is no
+    wider than the space it has" rather than against a pixel count, because
+    that is the property that was broken.
+    """
+    await _seed_captures(app_page, [_row(name="", command=LONG_COMMAND)])
+    await app_page.wait_for_selector(".capture-item")
+    overflow = await app_page.evaluate(
+        """() => {
+            const list = document.getElementById('capture-list');
+            const item = document.querySelector('.capture-item');
+            return {
+                list: list.scrollWidth - list.clientWidth,
+                item: item.scrollWidth - item.clientWidth,
+            };
+        }"""
+    )
+    assert overflow["list"] <= 1, f"capture list scrolls sideways by {overflow['list']}px"
+    assert overflow["item"] <= 1, f"capture row scrolls sideways by {overflow['item']}px"
+
+
+async def test_a_long_capture_title_is_actually_shown_on_more_than_one_line(app_page):
+    """Fitting the panel is not enough on its own -- clipping it would do that
+    too. The text has to still be there, wrapped."""
+    await _seed_captures(app_page, [_row(name="", command=LONG_COMMAND)])
+    await app_page.wait_for_selector(".capture-item .title")
+    lines = await app_page.evaluate(
+        """() => {
+            const t = document.querySelector('.capture-item .title');
+            const line = parseFloat(getComputedStyle(t).lineHeight) || 16;
+            return Math.round(t.getBoundingClientRect().height / line);
+        }"""
+    )
+    assert lines >= 2, "the command was put on one line and cut off, not wrapped"
 
 
 # --- how a live capture reads in the list ------------------------------------

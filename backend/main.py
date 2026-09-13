@@ -38,6 +38,7 @@ from backend.capture import (
     CaptureManager,
     InterfaceAlreadyCapturing,
     LiveStreamLimitExceeded,
+    LiveStreamNotTargeted,
 )
 from backend.crypto import CryptoError
 from backend.database import Database
@@ -71,7 +72,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.23"
+APP_VERSION = "0.1.0-dev.24"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -1211,6 +1212,10 @@ async def start_capture(req: CaptureRequest, user: dict = Depends(get_current_us
         # 429 like the concurrency limit, not 409: the slot does clear by
         # waiting, and the same request will then succeed unchanged.
         raise HTTPException(429, str(exc))
+    except LiveStreamNotTargeted as exc:
+        # 400, not 429 or 409: nothing is busy and nothing will clear. The
+        # request as sent would never be accepted, whatever else is running.
+        raise HTTPException(400, str(exc))
     except Exception:
         logger.exception("failed to start capture")
         raise HTTPException(500, "failed to start capture")

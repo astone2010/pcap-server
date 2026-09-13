@@ -211,7 +211,7 @@
                      lost if you close it -- is the one people assume. -->
                 <div class="form-group live-stream-option">
                     <label class="live-stream-toggle"
-                           title="Open the capture in the Viewer as it records. It is still saved in full and can be reopened later like any other capture.">
+                           title="Open the capture in the Viewer as it records. It is still saved in full and can be reopened later like any other capture. Needs an interface or a BPF filter: the preview it feeds is a fixed-size buffer, and everything on every link fills it in seconds.">
                         <input type="checkbox" id="cap-live">
                         <span>Live stream</span>
                     </label>
@@ -221,6 +221,21 @@
                     <label>BPF filter <span class="hint">&mdash; this is how you capture specific traffic</span></label>
                     <input type="text" id="cap-bpf" placeholder="e.g. tcp port 80 and host 10.0.0.1">
                     <div id="bpf-suggestions" class="filter-suggestions"></div>
+                </div>
+                <!-- Shown while "Live stream" is ticked and neither the
+                     interface nor the filter narrows anything. The server
+                     refuses that combination outright (LiveStreamNotTargeted),
+                     so this says so before the Start button does: the rule is
+                     about the form in front of you, and finding that out from
+                     a failed request is finding it out one step too late. -->
+                <div id="live-target-notice" class="live-target-notice" role="status" hidden>
+                    <strong>A live stream needs a target.</strong>
+                    Pick an interface instead of <code>any</code>, or set a BPF filter &mdash;
+                    either one will do. The live preview is a fixed-size buffer held in memory;
+                    pointed at every packet on every link it fills within seconds and stops
+                    updating for the rest of the capture.
+                    <span class="live-target-note">Capturing without live streaming has no such
+                    limit &mdash; untick it and <code>any</code> is fine.</span>
                 </div>
                 <button id="btn-start-capture" class="btn btn-primary btn-sm">Start capture</button>
             </div>

@@ -454,17 +454,44 @@ body {
 
 .capture-item {
     display: flex;
-    align-items: center;
+    /* flex-start, not center: the title and meta wrap to several lines now, and
+       a centred status badge beside a four-line block floats in the middle of
+       it with nothing to line up against. Top-aligned, it sits level with the
+       first line -- the one naming the capture it describes. */
+    align-items: flex-start;
     gap: 12px;
     padding: 12px;
     background: var(--bg-surface);
     border-radius: 8px;
     margin-bottom: 8px;
+    /* The row is allowed to break. On a narrow window the badges and four
+       buttons were squeezing the text column to nothing rather than moving
+       down a line. */
+    flex-wrap: wrap;
 }
 
-.capture-item .info { flex: 1; }
+/* min-width:0 is the whole fix. A flex item's min-width defaults to auto,
+   which is its content's intrinsic width -- so an unnamed capture, whose title
+   is the full tcpdump command including a /tmp/pcap_<uuid>.pcap path, made this
+   item wider than the panel instead of wrapping inside it. The panel then
+   scrolled sideways and the text ran off the edge, unreadable.
+
+   overflow-wrap:anywhere is the other half: the command is one long run with
+   few break opportunities, and a line that may only break at spaces still
+   overflows on the path. */
+.capture-item .info {
+    flex: 1 1 260px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
 .capture-item .info .title { font-size: 0.875rem; font-weight: 500; }
-.capture-item .info .meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; }
+.capture-item .info .meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+    line-height: 1.5;
+}
 
 .status-badge {
     font-size: 0.6875rem;
@@ -481,7 +508,14 @@ body {
     background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning);
 }
 
-.capture-actions { display: flex; gap: 4px; }
+/* flex-wrap so four buttons stack rather than shrink, and margin-left:auto so
+   they stay on the right of the row until the row itself breaks. */
+.capture-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-left: auto;
+}
 
 /* --- packet viewer (wireshark style) --- */
 
@@ -2004,6 +2038,41 @@ body {
 .live-stream-hint {
     display: block;
     margin-top: 2px;
+}
+
+/* Full width on its own row under the form, not tucked beside the checkbox:
+   it is the reason Start will refuse, and a refusal explained in a 120px
+   column beside a tickbox is a refusal nobody reads. Warning-coloured rather
+   than danger-coloured -- nothing has gone wrong yet, and the form is still
+   one field away from being valid. */
+.live-target-notice {
+    flex: 1 1 100%;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    max-width: 80ch;
+}
+
+.live-target-notice strong { color: var(--text-primary); }
+
+.live-target-notice code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.live-target-note {
+    display: block;
+    margin-top: 6px;
+    color: var(--text-muted);
 }
 
 .live-bar {

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from backend.models import (
+    ANY_INTERFACE,
     assert_no_forbidden_flags,
     CaptureInfo,
     CaptureRequest,
@@ -120,6 +121,27 @@ class _LiveSession:
     def __init__(self, cap_bytes: int) -> None:
         self.buffer = LiveBuffer(cap_bytes)
         self.lock = asyncio.Lock()
+
+
+class LiveStreamNotTargeted(Exception):
+    """Raised when a live stream is asked for without narrowing what is captured.
+
+    The preview buffer is a fixed number of megabytes (live_stream_buffer_mb),
+    and the whole of it is held in this container's memory. `-i any` with no
+    filter points that buffer at every packet on every link the target host
+    has, which fills it in seconds on any host doing real work: the preview
+    freezes almost immediately and the live view stops being live.
+
+    Refused rather than warned about, because the buffer is the one resource
+    here the operator cannot get back by waiting -- once it is full the view is
+    frozen for the rest of the capture, and the only fix is to start again.
+    Raising the cap instead would trade a frozen preview for this container's
+    memory, which is the worse of the two.
+
+    An interface OR a filter is enough. Either one bounds the traffic, and
+    which one is right depends on what is being hunted: `-i eth0` when the
+    question is about one link, a filter when it is about one conversation.
+    """
 
 
 class InterfaceAlreadyCapturing(Exception):
@@ -301,6 +323,18 @@ class CaptureManager:
         return args
 
     async def start(self, req: CaptureRequest, server: ServerInfo, user_id: str) -> CaptureInfo:
+        # Before the resource limits, because this one is about the shape of the
+        # request rather than what else is running: an operator who gets "too
+        # many captures" for a form that would never have worked is sent looking
+        # in the wrong place, and the message they need is the one below.
+        if req.live_stream and req.interface == ANY_INTERFACE and not req.bpf_filter.strip():
+            raise LiveStreamNotTargeted(
+                "a live stream needs to be pointed at something: choose an interface "
+                f'instead of "{ANY_INTERFACE}", or set a BPF filter -- or both. Watching '
+                "every packet on every link fills the preview buffer in seconds, and it "
+                "does not refill. Capturing without live streaming has no such limit."
+            )
+
         # Checked first, before any connection is opened or file created: each
         # running capture holds an SSH connection to a target host plus a local
         # file handle, and neither this container's descriptor table nor the

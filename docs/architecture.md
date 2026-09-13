@@ -148,6 +148,25 @@ There is one filtering implementation, not two: the live routes call the same
 which `PcapSource` they are handed. A separate live filter path is how the two
 halves of the app would end up disagreeing about what a filter means.
 
+**A live stream must arrive narrowed.** `start()` refuses one whose interface
+is `any` and whose BPF filter is empty (`LiveStreamNotTargeted` -> HTTP 400).
+This is a precondition rather than a limit: the buffer below is a fixed size and
+does not refill, so an untargeted stream does not degrade, it freezes seconds in
+and stays frozen for the rest of the capture. Either an interface or a filter
+satisfies it, because either one bounds the traffic and which is appropriate
+depends on the question being asked. The check runs before the concurrency and
+per-interface checks, so a full container answers an unacceptable request with
+the reason it is unacceptable rather than with "too many captures" — a message
+that would send the operator to stop something when the problem is the form.
+
+The rule applies to live streaming alone. An ordinary capture on `any` with no
+filter has no preview buffer to fill and remains the default.
+
+The frontend enforces the same rule in `liveStreamIsTargeted()` and explains it
+in place on the capture form. The server is the authority; the client copy
+exists so the answer appears while the form is being filled in rather than after
+a request that was never going to be accepted.
+
 **Two limits, for two different costs.** `max_live_streams` (2) bounds
 concurrent live captures — each holds an SFTP channel on the target and costs a
 tshark run over the whole buffer per poll — and is checked in `start()` in the
@@ -512,6 +531,9 @@ subprocess handling get driven in a real browser against a real server.
   through memory in flight on the way to tshark; what is new is the duration and
   the volume, and it is bounded by that setting and by `max_live_streams`. It is
   never written to the data volume, and it is discarded when the capture ends.
+- A live stream cannot be taken of everything at once. `any` with no filter is
+  refused, because the fixed-size buffer above would freeze within seconds of a
+  busy host and stay frozen. Ordinary captures are unaffected.
 - Self-capture detection cannot see the host's LAN address from inside a bridged
   container.
 - Passwordless sudo for `tcpdump` on the target is a privilege boundary the

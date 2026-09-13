@@ -1206,6 +1206,14 @@ function renderFilterPreview() {
     if (expr) expr.textContent = value;
 }
 
+// Everything that changes the BPF field goes through here -- typing, a library
+// row, a chip, the Clear button. Two things follow the field and neither may be
+// left behind: the preview bar, and whether a live stream now has a target.
+function onBpfFilterChanged() {
+    renderFilterPreview();
+    updateLiveTargetNotice();
+}
+
 function applyBpfFilter(expr, mode) {
     const box = $("cap-bpf");
     if (!box) return;
@@ -1213,7 +1221,7 @@ function applyBpfFilter(expr, mode) {
     // Deliberately no longer collapses the library, and deliberately does not
     // steal focus into the field either: both of them move the page out from
     // under someone who is part-way through choosing several filters.
-    renderFilterPreview();
+    onBpfFilterChanged();
 }
 
 // The same four modes the display filter's right-click menu offers, for the
@@ -1398,12 +1406,17 @@ function updateServerDropdown() {
     loadInterfaces();
 }
 
+// tcpdump's every-link pseudo-interface, and the one thing a live stream may
+// not be pointed at. Mirrors ANY_INTERFACE in backend/models.py.
+const ANY_INTERFACE = "any";
+
 async function loadInterfaces() {
     const serverId = $("cap-server").value;
     const sel = $("cap-interface");
     const previous = sel.value;
     if (!serverId) {
-        fillSelect(sel, ["any"]);
+        fillSelect(sel, [ANY_INTERFACE]);
+        updateLiveTargetNotice();
         return;
     }
     let names;
@@ -1411,20 +1424,55 @@ async function loadInterfaces() {
         ({ interfaces: names } = await api(`/api/servers/${serverId}/interfaces`));
     } catch {
         // Unreachable host — leave "any" available rather than an empty dropdown.
-        fillSelect(sel, ["any"]);
+        fillSelect(sel, [ANY_INTERFACE]);
+        updateLiveTargetNotice();
         return;
     }
     fillSelect(sel, names);
     if (names.includes(previous)) sel.value = previous;
+    // Refilling the list can move the selection back to "any" without a change
+    // event ever firing, which would leave the notice contradicting the form.
+    updateLiveTargetNotice();
+}
+
+
+// A live stream feeds a fixed-size in-memory buffer, so it has to be aimed at
+// something narrower than "every packet on every link" or the preview fills
+// within seconds and freezes for the rest of the capture. Either an interface
+// or a filter is enough.
+//
+// The server enforces this too (LiveStreamNotTargeted -> 400) and is the
+// authority; this copy exists so the form can say so while it is being filled
+// in, rather than after a request that was never going to be accepted.
+function liveStreamIsTargeted() {
+    const iface = $("cap-interface").value || ANY_INTERFACE;
+    return iface !== ANY_INTERFACE || $("cap-bpf").value.trim() !== "";
+}
+
+function updateLiveTargetNotice() {
+    const notice = $("live-target-notice");
+    if (!notice) return;
+    notice.hidden = !($("cap-live").checked && !liveStreamIsTargeted());
 }
 
 async function startCapture() {
     const serverId = $("cap-server").value;
     if (!serverId) return alert("Add a server first");
 
+    // Refused here rather than sent and bounced: the answer is entirely in the
+    // form, so the form is where it belongs. The notice is already the
+    // explanation -- this only makes sure it is on screen and puts the cursor
+    // in the field that resolves it.
+    if ($("cap-live").checked && !liveStreamIsTargeted()) {
+        updateLiveTargetNotice();
+        $("live-target-notice")?.scrollIntoView({ block: "nearest" });
+        $("cap-bpf").focus();
+        return;
+    }
+
     const body = {
         server_id: serverId,
-        interface: $("cap-interface").value || "any",
+        interface: $("cap-interface").value || ANY_INTERFACE,
         bpf_filter: $("cap-bpf").value,
         live_stream: $("cap-live").checked,
     };
@@ -2623,9 +2671,13 @@ function renderLiveStatus(data) {
     }
     if (data.frozen) {
         const mb = Math.round(data.buffer_capacity / (1024 * 1024));
+        // The remedy is on the end because it is the part that is actionable,
+        // and the buffer does not refill: by the time this appears the only
+        // thing left to do is narrow the next capture.
         setLiveStatus(
             `Preview full at ${mb} MB and no longer updating. The capture is still running `
-            + `(${data.captured_packets} packets) and will be saved in full.`,
+            + `(${data.captured_packets} packets) and will be saved in full. `
+            + "A narrower BPF filter or a specific interface keeps the next one live for longer.",
             "warn",
         );
         return;
@@ -3825,6 +3877,11 @@ function initStaticHandlers() {
     $("btn-logout")?.addEventListener("click", doLogout);
     $("btn-add-server")?.addEventListener("click", showAddServer);
     $("btn-start-capture")?.addEventListener("click", startCapture);
+    // Three fields decide whether a live stream is targeted, so all three
+    // update the notice. Tying it to the checkbox alone left it stale the
+    // moment the interface or the filter changed under it.
+    $("cap-live")?.addEventListener("change", updateLiveTargetNotice);
+    $("cap-interface")?.addEventListener("change", updateLiveTargetNotice);
     $("btn-apply-filter")?.addEventListener("click", applyDisplayFilter);
     $("btn-save-view")?.addEventListener("click", saveCurrentView);
     $("display-filter")?.addEventListener("input", noteFilterEditedByHand);
@@ -3906,14 +3963,14 @@ function initEventDelegation() {
     });
     // The field is the source of truth, so the bar follows it however it
     // changed -- including someone typing or clearing it by hand.
-    $("cap-bpf")?.addEventListener("input", renderFilterPreview);
+    $("cap-bpf")?.addEventListener("input", onBpfFilterChanged);
     $("filter-preview-clear")?.addEventListener("click", () => {
         // Starting over is a normal part of composing, and the field can be
         // scrolled out of sight behind the list by the time you want to.
         const box = $("cap-bpf");
         if (!box) return;
         box.value = "";
-        renderFilterPreview();
+        onBpfFilterChanged();
     });
     delegate("filter-library", {
         "use-library-filter": (expr, el, ev) => useLibraryFilter(expr, el, ev),

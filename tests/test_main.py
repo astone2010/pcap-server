@@ -758,6 +758,23 @@ def test_the_live_stream_limit_is_a_429_naming_live_streaming(secure_client, enr
     assert "live stream" in resp.json()["detail"]
 
 
+def test_an_untargeted_live_stream_is_a_400(secure_client, enrolled):
+    """400, not 429 or 409: nothing is busy and nothing clears by waiting. The
+    request as sent would be refused on a completely idle server.
+
+    Not monkeypatched -- this one goes through the real manager, because the
+    point is that the request never reaches a target host at all.
+    """
+    server_id = _a_server(enrolled)
+    resp = secure_client.post(
+        "/api/captures",
+        json={"server_id": server_id, "interface": "any", "live_stream": True},
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "interface" in detail and "BPF filter" in detail
+
+
 def test_the_live_poll_limiter_is_reconfigured_from_the_admin_panel(secure_client, enrolled):
     """A limiter the panel writes to but never reloads is frozen at boot."""
     original = main.live_poll_rate_limiter.max_per_minute

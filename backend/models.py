@@ -322,9 +322,15 @@ def assert_no_forbidden_flags(args: list[str]) -> None:
 BPF_FORBIDDEN_CHARS = ";$`\\"
 
 
+# tcpdump's pseudo-interface: every link on the host at once. The right default
+# for a capture you are going to read afterwards, and the one thing a live
+# stream cannot be pointed at -- see LiveStreamNotTargeted in capture.py.
+ANY_INTERFACE = "any"
+
+
 class CaptureRequest(BaseModel):
     server_id: str
-    interface: str = "any"
+    interface: str = ANY_INTERFACE
     count: int | None = Field(default=None, ge=1, le=1_000_000)
     snap_len: int | None = Field(default=None, ge=0, le=65535)
     duration_seconds: int | None = Field(default=None, ge=1, le=600)

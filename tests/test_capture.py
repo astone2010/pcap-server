@@ -29,6 +29,7 @@ from backend.capture import (
     InterfaceAlreadyCapturing,
     CaptureManager,
     LiveStreamLimitExceeded,
+    LiveStreamNotTargeted,
 )
 from pydantic import ValidationError
 
@@ -153,6 +154,20 @@ class FakeCaptureDB:
 
 def make_server() -> ServerInfo:
     return ServerInfo(hostname="target.example", username="alice", ssh_key_name="alice-key")
+
+
+def live_request(**kw) -> CaptureRequest:
+    """A live-stream request that start() will accept.
+
+    start() refuses a live stream that narrows nothing (LiveStreamNotTargeted),
+    so every live request has to carry an interface or a filter. Defaulted here
+    rather than repeated at every call site -- and named, so that the tests
+    which are *about* the rule stand out by building their request by hand
+    instead of calling this.
+    """
+    kw.setdefault("server_id", "s")
+    kw.setdefault("interface", "eth0")
+    return CaptureRequest(live_stream=True, **kw)
 
 
 def make_settings(max_concurrent: int = 2, max_live: int = 2, buffer_mb: int = 16) -> dict:
@@ -963,7 +978,7 @@ def test_live_stream_asks_tcpdump_to_stop_buffering(manager):
     is indistinguishable from live streaming being broken.
     """
     mgr, _ssh, _settings = manager
-    live = mgr.build_command_args(CaptureRequest(server_id="s", live_stream=True))
+    live = mgr.build_command_args(live_request())
     assert "-U" in live
     # Before the expression separator, or tcpdump reads it as part of the filter.
     if "--" in live:
@@ -1015,6 +1030,92 @@ async def test_an_ordinary_capture_is_not_counted_as_a_live_stream(manager):
     assert mgr.active_count() == 1
 
 
+# --- a live stream has to be pointed at something -------------------------
+#
+# The preview buffer is live_stream_buffer_mb of this container's memory and it
+# does not refill: once full, the view is frozen for the rest of the capture.
+# `-i any` with no filter points it at every packet on every link the target
+# has, which on a host doing real work fills it in seconds. The remedy is to
+# narrow the capture, so the rule is that a live stream must arrive narrowed.
+
+
+async def test_a_live_stream_with_no_interface_and_no_filter_is_refused(manager):
+    mgr, ssh, _settings = manager
+    with pytest.raises(LiveStreamNotTargeted) as exc:
+        await mgr.start(
+            CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        )
+    # The message has to name both ways out, because either one is sufficient
+    # and an operator told only about filters will not think of the dropdown.
+    assert "interface" in str(exc.value)
+    assert "BPF filter" in str(exc.value)
+    assert ssh.run_tcpdump_calls == 0, "refused before any connection is opened"
+
+
+async def test_an_interface_alone_is_enough_to_live_stream(manager):
+    mgr, ssh, _settings = manager
+    info = await mgr.start(
+        CaptureRequest(server_id="s", interface="eth0", live_stream=True),
+        make_server(), "user-1",
+    )
+    assert info.status is CaptureStatus.RUNNING
+    assert ssh.run_tcpdump_calls == 1
+
+
+async def test_a_filter_alone_is_enough_to_live_stream(manager):
+    """Even on "any". A filter bounds the traffic wherever it is read from."""
+    mgr, ssh, _settings = manager
+    info = await mgr.start(
+        CaptureRequest(server_id="s", bpf_filter="tcp port 443", live_stream=True),
+        make_server(), "user-1",
+    )
+    assert info.interface == "any"
+    assert info.status is CaptureStatus.RUNNING
+    assert ssh.run_tcpdump_calls == 1
+
+
+async def test_a_whitespace_filter_does_not_count_as_a_target(manager):
+    """" " is not a filter. Accepting it would make the rule bypassable by
+    pressing the space bar, which is worse than not having the rule."""
+    mgr, ssh, _settings = manager
+    with pytest.raises(LiveStreamNotTargeted):
+        await mgr.start(
+            CaptureRequest(server_id="s", bpf_filter="   ", live_stream=True),
+            make_server(), "user-1",
+        )
+    assert ssh.run_tcpdump_calls == 0
+
+
+async def test_an_ordinary_capture_on_any_with_no_filter_is_still_allowed(manager):
+    """The rule is about the preview buffer, and a capture nobody is watching
+    does not have one. Capturing everything and reading it afterwards is the
+    normal thing to do and stays untouched."""
+    mgr, ssh, _settings = manager
+    info = await mgr.start(CaptureRequest(server_id="s"), make_server(), "user-1")
+    assert info.interface == "any"
+    assert info.status is CaptureStatus.RUNNING
+    assert ssh.run_tcpdump_calls == 1
+
+
+async def test_the_targeting_rule_is_checked_before_the_concurrency_limit(manager):
+    """Order matters for the message, not the outcome.
+
+    A full container answering an untargeted live request with "too many
+    captures" sends the operator to the Captures tab to stop something, when
+    the thing that is wrong is the form in front of them and would still be
+    wrong on an idle server.
+    """
+    mgr, ssh, settings = manager
+    settings["max_concurrent_captures"] = 1
+    seed_running_capture(mgr, CaptureStatus.RUNNING)
+
+    with pytest.raises(LiveStreamNotTargeted):
+        await mgr.start(
+            CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        )
+    assert ssh.run_tcpdump_calls == 0
+
+
 async def test_a_third_live_stream_is_refused(manager):
     mgr, ssh, settings = manager
     settings["max_concurrent_captures"] = 10  # not the limit under test
@@ -1023,7 +1124,7 @@ async def test_a_third_live_stream_is_refused(manager):
 
     with pytest.raises(LiveStreamLimitExceeded) as exc:
         await mgr.start(
-            CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+            live_request(), make_server(), "user-1"
         )
     assert "live stream" in str(exc.value)
     assert ssh.run_tcpdump_calls == 0, "refused before any connection is opened"
@@ -1050,7 +1151,7 @@ async def test_the_capture_records_that_it_was_live_streamed(manager):
     """And keeps the mark. A finished capture should still say how it was taken."""
     mgr, _ssh, _settings = manager
     info = await mgr.start(
-        CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        live_request(), make_server(), "user-1"
     )
     assert info.live_stream is True
     info.status = CaptureStatus.COMPLETED
@@ -1068,7 +1169,7 @@ async def test_live_poll_reads_only_what_is_new(manager):
 
     mgr, ssh, _settings = manager
     info = await mgr.start(
-        CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        live_request(), make_server(), "user-1"
     )
     process = ssh.processes[0]
 
@@ -1094,7 +1195,7 @@ async def test_a_failed_read_is_recorded_without_ending_the_stream(manager):
 
     mgr, ssh, _settings = manager
     info = await mgr.start(
-        CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        live_request(), make_server(), "user-1"
     )
     process = ssh.processes[0]
     process.remote_file = build_pcap(2)
@@ -1118,7 +1219,7 @@ async def test_polling_a_capture_whose_connection_is_gone_serves_what_it_has(man
 
     mgr, ssh, _settings = manager
     info = await mgr.start(
-        CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        live_request(), make_server(), "user-1"
     )
     ssh.processes[0].remote_file = build_pcap(4)
     await mgr.live_poll(info.id)
@@ -1140,7 +1241,7 @@ async def test_the_live_buffer_is_dropped_when_the_capture_is_deleted(manager):
 
     mgr, ssh, _settings = manager
     info = await mgr.start(
-        CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        live_request(), make_server(), "user-1"
     )
     ssh.processes[0].remote_file = build_pcap(3)
     await mgr.live_poll(info.id)
@@ -1154,7 +1255,7 @@ async def test_the_buffer_size_comes_from_the_setting(manager):
     mgr, _ssh, settings = manager
     settings["live_stream_buffer_mb"] = 3
     info = await mgr.start(
-        CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        live_request(), make_server(), "user-1"
     )
     buffer = await mgr.live_poll(info.id)
     assert buffer.capacity == 3 * 1024 * 1024
@@ -1169,7 +1270,7 @@ async def test_a_zero_buffer_setting_still_leaves_room_for_packets(manager):
     mgr, _ssh, settings = manager
     settings["live_stream_buffer_mb"] = 0
     info = await mgr.start(
-        CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        live_request(), make_server(), "user-1"
     )
     buffer = await mgr.live_poll(info.id)
     assert buffer.capacity == 1024 * 1024
@@ -1192,7 +1293,7 @@ async def test_a_display_filter_selects_packets_from_a_running_capture(manager):
 
     mgr, ssh, _settings = manager
     info = await mgr.start(
-        CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        live_request(), make_server(), "user-1"
     )
     ssh.processes[0].remote_file = build_pcap(6)
     buffer = await mgr.live_poll(info.id)
@@ -1224,7 +1325,7 @@ async def test_a_filter_is_not_blamed_for_the_capture_being_mid_write(manager):
 
     mgr, ssh, _settings = manager
     info = await mgr.start(
-        CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        live_request(), make_server(), "user-1"
     )
     # tcpdump caught mid-write: the last record is only half on disk.
     ssh.processes[0].remote_file = build_pcap(6)[:-12]
@@ -1248,7 +1349,7 @@ async def test_frame_numbers_keep_their_meaning_as_the_capture_grows(manager):
 
     mgr, ssh, _settings = manager
     info = await mgr.start(
-        CaptureRequest(server_id="s", live_stream=True), make_server(), "user-1"
+        live_request(), make_server(), "user-1"
     )
     process = ssh.processes[0]
 
