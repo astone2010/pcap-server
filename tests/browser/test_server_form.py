@@ -194,3 +194,67 @@ async def test_enter_in_the_stored_username_box_saves_it(app_page):
 
     await app_page.wait_for_selector("#username-list >> text=typed-and-entered")
     assert await app_page.input_value("#new-ssh-username") == ""
+
+
+# --- the Trust host button on a server ----------------------------------------
+
+
+async def test_a_new_server_says_its_host_is_not_trusted(app_page):
+    """A connection to an untrusted host is refused, so the list has to say so
+    -- otherwise the first sign is a capture that will not start."""
+    await _fill_add_form(app_page, HOST)
+    await app_page.press("#new-srv-host", "Enter")
+
+    await app_page.wait_for_selector("#server-list >> text=Host not trusted")
+
+
+async def test_the_trust_host_button_is_wired_to_something(app_page):
+    """The regression this test exists for.
+
+    The handler was registered on delegate("admin-known-hosts", ...) while the
+    button renders inside #server-list. delegate() bails on
+    !container.contains(el), so every click was dropped on the floor: a button
+    that looked right, sat in the right place, and did nothing. No request, no
+    error, no feedback -- invisible to every API test in the repo, and to a
+    browser test that only checked the button was present.
+
+    Asserting on the confirm() is deliberate. It fires on click, before any
+    network, so this pins the wiring itself rather than ssh-keyscan's behaviour
+    against an address that is guaranteed not to answer.
+    """
+    await _fill_add_form(app_page, HOST)
+    await app_page.press("#new-srv-host", "Enter")
+    await app_page.wait_for_selector('#server-list [data-action="trust-server-host"]')
+
+    asked: list[str] = []
+
+    async def on_dialog(dialog):
+        asked.append(dialog.message)
+        await dialog.dismiss()
+
+    app_page.on("dialog", on_dialog)
+    await app_page.click('#server-list [data-action="trust-server-host"]')
+
+    for _ in range(50):
+        if asked:
+            break
+        await app_page.wait_for_timeout(100)
+
+    assert asked, "clicking Trust host did nothing -- the handler is not wired to #server-list"
+    assert HOST in asked[0], "the prompt must name the host whose keys are about to be pinned"
+
+
+async def test_declining_the_trust_prompt_leaves_the_host_untrusted(app_page):
+    """Dismissing is a real answer: nothing is pinned and the warning stays."""
+    await _fill_add_form(app_page, HOST)
+    await app_page.press("#new-srv-host", "Enter")
+    await app_page.wait_for_selector('#server-list [data-action="trust-server-host"]')
+
+    async def decline(dialog):
+        await dialog.dismiss()
+
+    app_page.on("dialog", decline)
+    await app_page.click('#server-list [data-action="trust-server-host"]')
+    await app_page.wait_for_timeout(300)
+
+    assert "Host not trusted" in await app_page.text_content("#server-list")

@@ -3362,6 +3362,11 @@ function initStaticHandlers() {
 function initEventDelegation() {
     delegate("server-list", {
         "select-server": (id) => selectServer(id),
+        // Registered here, not on admin-known-hosts, because that is where the
+        // button renders. delegate() bails on !container.contains(el), so a
+        // handler on the wrong container is a button that looks right and does
+        // nothing at all -- no request, no error.
+        "trust-server-host": (id) => trustServerHost(id),
     });
     delegate("server-form-area", {
         "test-server": (id) => testServer(id),
@@ -3426,7 +3431,6 @@ function initEventDelegation() {
     });
     delegate("admin-known-hosts", {
         "trust-host": (id) => adminTrustHost(id),
-        "trust-server-host": (id) => trustServerHost(id),
         "forget-host": (id) => adminForgetHost(id),
     });
     $("packet-tbody")?.addEventListener("click", (e) => {

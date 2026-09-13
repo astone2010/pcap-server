@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The Trust host button on a server does something.** It was registered on
+  `delegate("admin-known-hosts", ...)` while the button renders inside
+  `#server-list`, and `delegate()` bails on `!container.contains(el)` -- so
+  every click was dropped on the floor. A button that looked right, sat in the
+  right place, and produced no request, no error and no feedback. Introduced
+  in dev.17 alongside the button itself. There are now browser tests for the
+  warning, for the button being wired at all, and for declining the prompt,
+  the first of which fails against the old wiring.
+
 ## 0.1.0-dev.17 — 2026-09-13
 
 ### Changed
