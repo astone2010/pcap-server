@@ -40,7 +40,7 @@ deployed dev.17 carries a dead button, and a fix nobody can run is not a fix.
 🚀 SHIP       ✅ tag pushed by the user and confirmed deployed —
                 pcap.nscriven.net shows v0.1.0-dev.18.
 
-## 0.1.0-dev.19 — version bumped, TAG PENDING
+## 0.1.0-dev.19 — RELEASED (tag pushed by the user, 2026-09-13)
 
 One fix: 4818f22, the caching and tab-refetch pair below. Cut immediately
 rather than held, because dev.18 structurally CANNOT deliver its own frontend
@@ -58,9 +58,7 @@ fix to a browser that has already loaded the page — that is the bug.
                 pip-audit unchanged: backend/requirements.txt clean.
 📄 DOCS       ✅ CHANGELOG dated.
 📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
-🚀 SHIP       ⏳ bump commit pushed from this container. The tag is the user's
-                own action, handed over as a block. Stays ⏳ until
-                `git ls-remote --tags origin v0.1.0-dev.19` answers.
+🚀 SHIP       ✅ tag v0.1.0-dev.19 -> 4b34837 confirmed on the remote.
 
 ## RESOLVED — the untrusted-host contradiction
 
@@ -121,6 +119,75 @@ decorative.
 Step 3 must store what was DISPLAYED, not re-scan. Re-scanning on confirm
 reopens the hole the review was meant to close: a swap between display and
 acceptance would be pinned without anyone seeing it.
+
+## Decided, do not re-open
+
+- **Non-admins cannot establish host trust, and there is no request queue.**
+  They see "Ask an admin to trust it under Admin > Known Hosts" where an admin
+  sees the Trust host button. The alternative considered and rejected was a
+  "this server needs its host trusted" flag an admin approves; it adds a queue
+  for a workflow that is rare and already has a clear human path. Decided by
+  the user on 2026-09-13. This is the behaviour already shipped — no code
+  change follows from it.
+- **The trust RECORD stays admin-owned and endpoint-scoped; only the state and
+  the action surface on the server page.** active_servers rows are per-user and
+  known_hosts rows are not; several servers share one endpoint's decision
+  (pinned by test_servers.py); and re-pinning a host decides what every user's
+  connections are checked against. The server page shows trust and offers an
+  admin the button — it does not own the data.
+
+## Asked by the user on 2026-09-13, answered, not yet built
+
+Three things raised at the end of the session. Each was investigated; none
+were started. Two are "the data already exists and the UI discards it".
+
+**1. Multiple BPF selectors.** Cannot be done from the UI today. Both insertion
+paths REPLACE the box rather than append:
+    useLibraryFilter(expr)    -> box.value = expr   (app.js:1149)
+    useFilterSuggestion(expr) -> box.value = expr   (app.js:2314)
+So a second pick wipes the first. Typing `tcp port 22 and host 10.0.0.5` by
+hand works fine — BPF has and/or/not and the backend passes the expression
+through untouched.
+
+The code change is small; the DESIGN question is not, and should be settled
+before building. Appending with " and " is right most of the time and silently
+wrong the rest: `port 80 and port 443` matches nothing, where the user meant
+`or`. Recommended shape — append with " and " when the box is non-empty, but
+surface the combined expression for editing before it runs, rather than
+quietly composing a filter that captures zero packets. The user has NOT
+decided this yet.
+
+**2. OS distro is detected and then thrown away.** prereq_check reads
+/etc/os-release on the target and the API returns it:
+    "os": result["facts"]["os_release"].get("PRETTY_NAME", "")
+    — main.py:932 (saved server) and main.py:1054 (add-form probe)
+renderPrereqs (app.js:536) never reads res.os. Zero hits for it in the
+frontend. It is not stored on the server record and not set at creation; it is
+discovered live per check.
+
+Two separate asks, worth keeping apart:
+  a. Show it in the prereq output. Free — the data is already in the response.
+  b. Store it on the server row and show it at a glance. A real feature: it is
+     a cache that goes stale when a host is upgraded, so it needs a "last
+     seen" qualifier rather than being presented as current fact.
+Recommended: do (a) now, treat (b) as its own piece of work.
+
+**3. App version on the login page.** The slot EXISTS and is deliberately left
+empty. index.html:92 has <span id="auth-version">, applyBuildLinks fills it
+from status.version, and the API refuses to supply it:
+    "version": APP_VERSION if user else ""            — main.py:510
+    "release_notes_url": ... if user else ""          — main.py:511
+That is an intentional choice, not an oversight: an unauthenticated visitor is
+not told the exact version, because a version plus a public changelog names
+precisely which fixes an instance does not have.
+
+Genuine trade-off both ways. For: diagnosing "did my deploy land?" from the
+login page is exactly what the user was doing repeatedly, it is a self-hosted
+tool usually on a private address, and a build can be fingerprinted from asset
+hashes regardless. Against: free reconnaissance on the most exposed page.
+Middle option worth considering: show it when authenticated OR when the
+deployment opts in via an env flag, so a private instance can show it and a
+public one need not. NOT decided.
 
 ## The plan for what is left before 1.0
 
