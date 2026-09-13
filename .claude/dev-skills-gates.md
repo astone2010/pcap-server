@@ -1,6 +1,6 @@
 # Dev Skills gate state
-Track: work commit (0.1.0-dev.17 is released; unreleased work on top)
-Version: 0.1.0-dev.17 (shipped)
+Track: release sequence — 0.1.0-dev.18
+Version: 0.1.0-dev.18
 Updated: 2026-09-13
 Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to.
         The harness assigns a fresh claude/* branch every session; that
@@ -18,6 +18,28 @@ Verified from the container on 2026-09-13:
 Contents: f148595 (capture delete), fc727c9 (host key ordering),
 60acfe7 (fail-closed host trust, BREAKING), 1bf079b (bump).
 All six gates closed for dev.17. Do not re-run them.
+
+## 0.1.0-dev.18 — version bumped, TAG PENDING
+
+One fix: f7d05b0, the Trust host button wiring. Cut on its own because the
+deployed dev.17 carries a dead button, and a fix nobody can run is not a fix.
+
+🔢 VERSION    ✅ APP_VERSION (backend/main.py) and the docker-compose image tag
+                both read 0.1.0-dev.18; CHANGELOG heading dated 2026-09-13. No
+                0.1.0-dev.17 left outside changelog history. v0.1.0-dev.17
+                confirmed tagged on the remote — no gap behind this release.
+🔨 BUILD      ✅ ./scripts/check.sh re-run AFTER the bump: 594 passed, 0
+                skipped, 2m48s. CI Check run #48 green on f7d05b0 before the
+                bump commit.
+🔒 SECURITY   ✅ dev.18 contains one event-handler registration change. No new
+                routes, no new input, no change to what is trusted or when.
+                pip-audit unchanged from dev.17: backend/requirements.txt
+                clean; the two findings are dev-toolchain only.
+📄 DOCS       ✅ CHANGELOG dated.
+📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
+🚀 SHIP       ⏳ bump commit pushed from this container. The tag is the user's
+                own action, handed over as a block. Stays ⏳ until
+                `git ls-remote --tags origin v0.1.0-dev.18` answers.
 
 ## 🚨 UNRESOLVED — start here
 
@@ -54,32 +76,6 @@ Resolve it with one query against the live database before writing any code:
 Whichever way it lands, it needs a test that pins the two answers together:
 host_trusted and the connect decision must be derived from ONE function, not
 from two call sites that can drift.
-
-## What is in the working tree now
-
-The Trust host button fix. Nothing committed yet — awaiting approval.
-
-- frontend/js/app.js: "trust-server-host" moved from
-  delegate("admin-known-hosts") to delegate("server-list"). The button renders
-  in #server-list; delegate() bails on !container.contains(el), so every click
-  was silently dropped. My regression, shipped in dev.17 with the button.
-- tests/browser/test_server_form.py: 3 new. The wiring test asserts on the
-  confirm() dialog, which fires on click before any network, so it pins the
-  wiring rather than ssh-keyscan's behaviour against an unroutable address.
-  Verified to fail (assert []) against the old wiring.
-- CHANGELOG.md: Unreleased / Fixed entry.
-
-## Gates
-
-🔢 VERSION    ⬜ not owed on a work commit
-🔨 BUILD      ✅ tests/browser/test_server_form.py 14 passed (was 11). FULL
-                ./scripts/check.sh NOT yet re-run for this change — do that
-                before the commit if it has not happened.
-🔒 SECURITY   ✅ event-handler registration only; no new routes, no new input,
-                no change to what is trusted or when.
-📄 DOCS       ✅ CHANGELOG Unreleased/Fixed.
-📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
-🚀 SHIP       ⬜ not owed on a work commit.
 
 ## Reported by the user, NOT yet designed or built
 
