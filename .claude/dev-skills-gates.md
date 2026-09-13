@@ -1,6 +1,6 @@
 # Dev Skills gate state
-Track: not yet named — new session, no work started.
-Version: 0.1.0-dev.23 (last released; next version not yet chosen)
+Track: release sequence — 0.1.0-dev.24 CLOSED. All six gates done.
+Version: 0.1.0-dev.24 (RELEASED 2026-09-13)
 Updated: 2026-09-13 (session: local CLI, Fedora, bash)
 Branch: claude/admiring-wright-k20ptf — canonical, in sync with origin at
         27287cd. Working tree clean.
@@ -78,10 +78,17 @@ Environment: LOCAL Claude Code CLI — Claude PRESENTS git commands, the user
                 clause in the preview-limit settings row;
                 docs/architecture.md gained a design section and a
                 known-limits entry.
-📦 RELEASE    ⏳ commit + push approved by the user 2026-09-13, twice
-                ("lets skip all that then and commit and push so we can tag").
-                No PR: default branch out of scope by standing decision.
-🚀 SHIP       ⬜
+📦 RELEASE    ✅ f659269 on the remote. No PR: default branch out of scope by
+                standing decision.
+🚀 SHIP       ✅ VERIFIED from the remote, not assumed: tag v0.1.0-dev.24 ->
+                f659269, matching the branch head exactly. Release run
+                34762829528 success; published as a prerelease
+                "v0.1.0-dev.24 (Dev)"; image pushed to
+                ghcr.io/darthrater78/pcap-server:0.1.0-dev.24 AND :dev moved
+                to it. 0 assets, same as dev.22/.23 -- this repo's norm.
+                Check run 34762586063 on the branch push also passed (4m45s),
+                so a clean checkout verified this commit independently.
+                NOT yet confirmed deployed.
 
 ### scripts/check.sh CANNOT RUN ON THIS HOST — read before trusting Gate 2
 
@@ -361,3 +368,31 @@ check.yml and release.yml are independent, so a tag push publishes an image to
 ghcr whether or not the suite ever passed -- and release.yml runs no tests of
 its own. Clean-checkout verification is therefore entirely absent from this
 project's CI by choice. Local runs are the only gate.
+
+
+### CI fires THREE runs per release — measured, not theorised
+
+Observed on the dev.24 tag push:
+
+  34762586063  Check    branch push  success  <- useful
+  34762829509  Check    TAG push     duplicate of the above, same commit
+  34762829528  Release  TAG push     the publish
+
+check.yml uses bare `on: push:` with no filter, and **a tag push is a push**,
+so every tag runs the suite a second time against a commit already tested.
+
+The duplicate is not even protective: it starts the same second as the Release
+run and RACES it. On dev.24 the Release finished first. It cannot gate a
+publish it runs alongside.
+
+An earlier diagnosis in this session was WRONG and is corrected here: the
+duplication is not `push` + `pull_request` overlapping. This repo uses no PRs
+at all, so `pull_request` never fires.
+
+One-line fix, OFFERED and not yet accepted (distinct from the larger
+workflow_call rewiring the user declined -- do not conflate them):
+
+    on:
+      push:
+        branches: ['**']   # '**' matches branches only, never tags
+      pull_request:
