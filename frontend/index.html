@@ -129,11 +129,16 @@
         <button id="theme-toggle" class="btn btn-sm btn-secondary"></button>
         <button id="btn-logout" class="btn btn-sm btn-secondary">Logout</button>
     </div>
+    <!-- The three fixed tabs, then one tab per capture open in the Viewer.
+         There is no standing "Viewer" tab: it spent most of a session leading
+         to an empty panel, and a tab that is usually empty teaches people not
+         to press it. Opening a capture creates its tab; closing the last one
+         takes the Viewer off the bar again. -->
     <div class="tab-bar">
         <div class="tab active" data-tab="servers">Servers</div>
         <div class="tab" data-tab="capture">Capture</div>
-        <div class="tab" data-tab="viewer">Viewer</div>
         <div class="tab" data-tab="admin" id="admin-tab" hidden>Admin</div>
+        <div id="capture-tab-strip" class="capture-tab-strip"></div>
     </div>
     <div class="main-content">
 
@@ -181,6 +186,20 @@
         <!-- capture panel -->
         <div id="panel-capture" class="panel">
             <div class="capture-config">
+                <!-- First field, and required, because it is the one thing
+                     about a capture that nothing else can supply. Everything
+                     else on this form is recoverable from the capture itself --
+                     the server, the interface and the filter are all stamped on
+                     the record -- but what you were looking for is not, and a
+                     list of captures identified by UUID is a list nobody can
+                     read a week later. Renaming afterwards still works; this
+                     just stops the list filling up with captures that need it. -->
+                <div class="form-group capture-name">
+                    <label for="cap-name">Name <span class="hint">&mdash; what are you looking for?</span></label>
+                    <input type="text" id="cap-name" maxlength="120" required
+                           placeholder="e.g. slow logons on the file server">
+                    <span id="cap-name-msg" class="hint" role="status" aria-live="polite"></span>
+                </div>
                 <div class="form-group">
                     <label>Server</label>
                     <select id="cap-server"></select>
@@ -220,6 +239,16 @@
                 <div class="form-group bpf-filter">
                     <label>BPF filter <span class="hint">&mdash; this is how you capture specific traffic</span></label>
                     <input type="text" id="cap-bpf" placeholder="e.g. tcp port 80 and host 10.0.0.1">
+                    <!-- Saving what is in the field, under a name. The filter
+                         library below is the same eighty-odd expressions for
+                         everyone; these are the operator's own, and private to
+                         their account -- a capture filter usually names the
+                         hosts and ports somebody is investigating. -->
+                    <div class="bpf-save-row">
+                        <button type="button" id="btn-save-filter" class="btn btn-sm btn-secondary"
+                                title="Save the expression above under a name of your own. It joins the filter library as Your filters, visible only to you.">Save this filter</button>
+                        <span id="save-filter-msg" class="hint" role="status" aria-live="polite"></span>
+                    </div>
                     <div id="bpf-suggestions" class="filter-suggestions"></div>
                 </div>
                 <!-- Shown while "Live stream" is ticked and neither the

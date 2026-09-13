@@ -377,6 +377,7 @@ function enterApp() {
     loadUsernameList();
     applyDrawerState();
     renderFilterLibrary();
+    loadCustomFilters();
     renderFilterSuggestions("bpf-suggestions", BPF_SUGGESTIONS);
     renderFilterSuggestions("display-filter-suggestions", DISPLAY_SUGGESTIONS);
     renderFilterPreview();
@@ -387,38 +388,137 @@ function enterApp() {
 
 // --- tabs ---
 
+// Captures open in the Viewer, in the order they were opened. Each is a tab of
+// its own on the bar, so two captures can be kept open and compared by clicking
+// between them rather than going back to the list each time.
+//
+// One panel still does the rendering. The tabs are a way IN to a capture, not N
+// independent viewers -- a second packet table, tshark poller and filter box
+// per open capture would cost real memory and real requests for a table nobody
+// is looking at, and the polling pause that already exists for the live view is
+// the same reasoning applied to leaving a tab.
+let openCaptures = [];
+
 function initTabs() {
-    document.querySelectorAll(".tab").forEach((tab) => {
-        tab.addEventListener("click", () => {
-            document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-            document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
-            tab.classList.add("active");
-            $("panel-" + tab.dataset.tab).classList.add("active");
-            if (tab.dataset.tab === "admin") {
-                loadEncryptionStatus();
-                loadAdminSettings();
-                loadAdminUsers();
-                loadAdminSSHKeys();
-                loadAdminKnownHosts();
-            }
-            // The server list carries host trust state, and host trust is
-            // changed on the Admin tab next door. Without this the list was
-            // only ever fetched at boot and after a server was added, edited
-            // or removed -- so trusting a host in Admin and coming back here
-            // showed it as still untrusted, from a copy of the data taken
-            // before the trust existed.
-            if (tab.dataset.tab === "servers") {
-                loadServers();
-            }
-            // A live view polls on a timer, so leaving the Viewer without this
-            // keeps a capture being read and rate-limited for a table nobody is
-            // looking at. Re-opening it from the Captures tab starts it again.
-            if (tab.dataset.tab !== "viewer" && inLiveView()) {
-                stopLiveView();
-                setLiveStatus("Live view paused \u2014 reopen the capture to resume.", "");
-            }
-        });
+    const bar = document.querySelector(".tab-bar");
+    if (!bar) return;
+    // Delegated rather than bound per tab: capture tabs come and go, and a
+    // listener attached at boot cannot reach one created later.
+    bar.addEventListener("click", (e) => {
+        const closer = e.target.closest("[data-action='close-capture-tab']");
+        if (closer && bar.contains(closer)) {
+            closeCaptureTab(closer.dataset.id);
+            return;
+        }
+        const tab = e.target.closest(".tab");
+        if (!tab || !bar.contains(tab)) return;
+        if (tab.dataset.captureId) {
+            viewCapture(tab.dataset.captureId);
+            return;
+        }
+        selectStaticTab(tab.dataset.tab);
     });
+}
+
+function selectStaticTab(name) {
+    if (!name) return;
+    activatePanel(name);
+    if (name === "admin") {
+        loadEncryptionStatus();
+        loadAdminSettings();
+        loadAdminUsers();
+        loadAdminSSHKeys();
+        loadAdminKnownHosts();
+    }
+    // The server list carries host trust state, and host trust is changed on
+    // the Admin tab next door. Without this the list was only ever fetched at
+    // boot and after a server was added, edited or removed -- so trusting a
+    // host in Admin and coming back here showed it as still untrusted, from a
+    // copy of the data taken before the trust existed.
+    if (name === "servers") {
+        loadServers();
+    }
+    // A live view polls on a timer, so leaving the Viewer without this keeps a
+    // capture being read and rate-limited for a table nobody is looking at.
+    // Re-opening its tab starts it again.
+    if (inLiveView()) {
+        stopLiveView();
+        setLiveStatus("Live view paused \u2014 reopen the capture to resume.", "");
+    }
+}
+
+// Shows one panel and marks one tab. Exported by nothing and called by
+// everything that changes what is on screen, so there is one place that knows
+// how a tab is made to look selected.
+function activatePanel(name) {
+    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+    const tab = document.querySelector(`.tab[data-tab="${name}"]`);
+    if (tab) tab.classList.add("active");
+    const panel = $("panel-" + name);
+    if (panel) panel.classList.add("active");
+}
+
+function renderCaptureTabs() {
+    const strip = $("capture-tab-strip");
+    if (!strip) return;
+    strip.innerHTML = openCaptures
+        .map((id) => {
+            const c = captures.find((x) => x.id === id);
+            // A capture always has an id and may not have a name. The short id
+            // is a tab label; the full one is in the title, and in the viewer
+            // label inside the panel.
+            const label = c && c.name ? c.name : id.slice(0, 8);
+            const full = c && c.name ? `${c.name} (${id})` : id;
+            return `
+            <div class="tab tab-capture${viewingCaptureId === id ? " active" : ""}"
+                 data-capture-id="${escHtml(id)}" title="${escHtml(full)}">
+                ${isLiveNow(c) ? '<span class="tab-live-dot" aria-hidden="true"></span>' : ""}
+                <span class="tab-capture-name">${escHtml(label)}</span>
+                <button type="button" class="tab-close" data-action="close-capture-tab"
+                        data-id="${escHtml(id)}" aria-label="Close this tab"
+                        title="Close this tab. The capture itself is not touched.">&times;</button>
+            </div>`;
+        })
+        .join("");
+}
+
+function closeCaptureTab(id) {
+    const i = openCaptures.indexOf(id);
+    if (i === -1) return;
+    openCaptures.splice(i, 1);
+    if (viewingCaptureId !== id) {
+        renderCaptureTabs();
+        return;
+    }
+    // The tab being closed is the one on screen, so something has to take its
+    // place: the capture that slid into its position, else the one before it,
+    // else nothing -- and nothing means the Viewer has no tabs left and should
+    // not be the visible panel.
+    stopLiveView();
+    viewingCaptureId = null;
+    const next = openCaptures[i] || openCaptures[i - 1];
+    if (next) {
+        viewCapture(next);
+        return;
+    }
+    renderCaptureTabs();
+    selectStaticTab("capture");
+}
+
+// Called whenever the capture list is refreshed: picks up renames, the live dot
+// going out, and captures deleted from under an open tab.
+function syncCaptureTabs() {
+    const before = openCaptures.length;
+    openCaptures = openCaptures.filter((id) => captures.some((c) => c.id === id));
+    if (openCaptures.length !== before && !openCaptures.includes(viewingCaptureId)) {
+        // The capture being viewed was deleted elsewhere. Leaving its packets
+        // on screen under a tab that no longer exists is worse than leaving.
+        stopLiveView();
+        viewingCaptureId = null;
+        selectStaticTab("capture");
+    }
+    renderCaptureTabs();
 }
 
 // --- servers ---
@@ -1118,12 +1218,115 @@ const FILTER_LIBRARY = [
     },
 ];
 
+
+// The library is written label -> expression. The capture list needs the
+// reverse: a stored filter, read back off a finished capture, turned into the
+// name an operator would recognise. Derived from the same constant rather than
+// written out a second time, so a filter can never be offered under one name
+// and then listed under another.
+//
+// First writer wins. A few expressions appear in two groups -- RDP is under
+// both Windows and Remote access -- and the earlier group is the one that
+// placed it deliberately.
+const FILTER_NAMES = (() => {
+    const names = new Map();
+    for (const group of FILTER_LIBRARY) {
+        for (const entry of group.filters) {
+            const key = entry[1].trim();
+            if (!names.has(key)) names.set(key, entry[0]);
+        }
+    }
+    return names;
+})();
+
+// What a capture's filter badge prints.
+//
+// An EXACT match against the library, and nothing cleverer. Recognising
+// `tcp port 443` inside `tcp port 443 and host 10.0.0.1` and calling the
+// capture "HTTPS" would name it after the broader half of its own filter, and
+// working out how much narrower it really is means a second BPF model living
+// in the frontend next to the one in bpfCheckExpression. An expression the
+// library does not know is shown verbatim instead, which is never wrong -- the
+// CSS truncates it and the title carries it in full.
+function filterDisplayName(expr) {
+    const trimmed = (expr || "").trim();
+    const name = FILTER_NAMES.get(trimmed);
+    // `named` decides the typeface, and the distinction is worth drawing: a
+    // library name is prose, a bare expression is code, and setting "Kerberos"
+    // in a monospace face beside a status badge reads as neither.
+    return name
+        ? { text: name, named: true }
+        : { text: trimmed, named: false };
+}
+
+
+function filterBadge(expr) {
+    const { text, named } = filterDisplayName(expr);
+    if (!text) return "";
+    const cls = named ? "badge-filter" : "badge-filter badge-filter-raw";
+    // The title carries the expression in full and unnamed, because that is
+    // what the capture actually ran with -- the badge may be truncated, and a
+    // library name is a description of the filter rather than the filter.
+    const title = `Capture filter \u2014 only packets matching this were recorded:\n${expr}`;
+    return `<span class="status-badge ${cls}" title="${escHtml(title)}">${escHtml(text)}</span>`;
+}
+
 let filterLibraryQuery = "";
+
+// The operator's own saved filters. Private to the account, fetched rather than
+// built in, and rendered as the first group of the library so that "the filter
+// I saved last week" is the first thing in the list rather than the last.
+let customFilters = [];
+
+async function loadCustomFilters() {
+    try {
+        customFilters = await api("/api/filters");
+    } catch (e) {
+        // A library that is eighty-odd built-in expressions and no saved ones
+        // is still a usable library, so this does not get an alert. It renders
+        // what it has.
+        customFilters = [];
+    }
+    renderFilterLibrary();
+}
+
+// Rendered apart from FILTER_LIBRARY rather than folded into it: these rows
+// carry a Delete the built-in ones cannot have, and giving every row an owner
+// flag to switch on would put the difference in eighty-odd places instead of
+// one.
+function renderCustomFilterGroup(q) {
+    const rows = customFilters.filter(
+        (f) => !q
+            || f.label.toLowerCase().includes(q)
+            || f.expression.toLowerCase().includes(q),
+    );
+    if (!rows.length) return "";
+    return `
+        <section class="filter-group filter-group-own">
+            <h4>Your filters</h4>
+            <p class="field-hint">Saved from the field above, and visible only to you.</p>
+            <table class="filter-table">
+                ${rows.map((f) => `
+                <tr>
+                    <td class="filter-label">${escHtml(f.label)}</td>
+                    <td class="filter-expr"><code>${escHtml(f.expression)}</code></td>
+                    <td class="filter-use">
+                        <button type="button" class="btn btn-sm btn-secondary"
+                                data-action="use-library-filter" data-id="${escHtml(f.expression)}">Use</button>
+                        <button type="button" class="btn btn-sm btn-danger"
+                                data-action="delete-custom-filter" data-id="${escHtml(f.id)}"
+                                title="Forget this saved filter. Captures already taken with it are untouched.">&times;</button>
+                    </td>
+                </tr>`).join("")}
+            </table>
+        </section>`;
+}
 
 function renderFilterLibrary() {
     const el = $("filter-library");
     if (!el) return;
     const q = filterLibraryQuery.trim().toLowerCase();
+    const own = renderCustomFilterGroup(q);
     const groups = FILTER_LIBRARY
         .map((g) => ({
             ...g,
@@ -1133,12 +1336,12 @@ function renderFilterLibrary() {
         }))
         .filter((g) => g.filters.length);
 
-    if (!groups.length) {
+    if (!groups.length && !own) {
         el.innerHTML = `<div class="empty-state" style="padding:24px">Nothing matches "${escHtml(filterLibraryQuery)}"</div>`;
         return;
     }
 
-    el.innerHTML = groups
+    el.innerHTML = own + groups
         .map((g) => `
         <section class="filter-group">
             <h4>${escHtml(g.group)}</h4>
@@ -1460,6 +1663,52 @@ function bpfMenuItems(expr) {
 
 // An empty box has nothing to combine with, so the menu would be four ways of
 // spelling the same outcome. It only opens when there is a choice to make.
+async function saveCurrentFilter() {
+    const expr = $("cap-bpf").value.trim();
+    const msg = $("save-filter-msg");
+    const say = (text, bad) => {
+        msg.textContent = text;
+        msg.className = bad ? "hint save-filter-bad" : "hint save-filter-ok";
+    };
+    if (!expr) {
+        say("There is nothing in the BPF field to save.", true);
+        return;
+    }
+    // prompt() rather than a dialog, matching renameCapture: one short string,
+    // and the field it names is on screen behind it.
+    const label = prompt("Name for this filter", "");
+    if (label === null) return;
+    try {
+        await api("/api/filters", {
+            method: "POST",
+            body: JSON.stringify({ label, expression: expr }),
+        });
+    } catch (e) {
+        say(e.message || "Could not save that filter.", true);
+        return;
+    }
+    await loadCustomFilters();
+    // Open the library on a successful save. The saved filter has just been
+    // added to a list that is collapsed by default, and a button that appears
+    // to do nothing is the same bug the filter preview bar was added to fix.
+    const details = $("filter-library-details");
+    if (details) details.open = true;
+    say(`Saved as \u201c${label.trim()}\u201d.`, false);
+}
+
+async function deleteCustomFilter(id) {
+    const f = customFilters.find((x) => x.id === id);
+    if (!confirm(`Forget the saved filter ${f ? `"${f.label}"` : "this"}?\n\n`
+        + "Captures already taken with it are not affected.")) return;
+    try {
+        await api(`/api/filters/${id}`, { method: "DELETE" });
+    } catch (e) {
+        alert("Could not delete that filter: " + e.message);
+        return;
+    }
+    await loadCustomFilters();
+}
+
 function useLibraryFilter(expr, el, ev) {
     const box = $("cap-bpf");
     if (!box) return;
@@ -1712,9 +1961,42 @@ function updateLiveTargetNotice() {
     notice.hidden = !($("cap-live").checked && !liveStreamIsTargeted());
 }
 
+// What the confirm dialog says, and the same facts the capture record will
+// carry afterwards. Built from the request body rather than from the form, so
+// what is described is exactly what is about to be sent -- a summary read off
+// the fields separately would be a second model of the request, free to drift
+// from it.
+function describeCapture(body, serverName) {
+    const lines = [
+        `Name:       ${body.name}`,
+        `Server:     ${serverName}`,
+        `Interface:  ${body.interface}`,
+        `Duration:   ${body.duration_seconds ? body.duration_seconds + "s" : "the server maximum"}`,
+        `Packets:    ${body.count ? body.count : "the server maximum"}`,
+        `Snap length: ${body.snap_len === undefined ? "full packets" : body.snap_len + " bytes"}`,
+        `Filter:     ${body.bpf_filter.trim() || "none \u2014 everything on that interface"}`,
+    ];
+    if (body.live_stream) lines.push("Live stream: yes \u2014 opens in the Viewer as it records");
+    return lines.join("\n");
+}
+
 async function startCapture() {
     const serverId = $("cap-server").value;
     if (!serverId) return alert("Add a server first");
+
+    // A name is required by this form and not by the API -- see CaptureRequest
+    // in models.py for why the two differ. Checked before anything that costs a
+    // round trip: it is answerable from the field itself.
+    const nameMsg = $("cap-name-msg");
+    const name = $("cap-name").value.trim();
+    if (!name) {
+        nameMsg.textContent = "Give this capture a name \u2014 you will be looking for it later.";
+        nameMsg.className = "hint save-filter-bad";
+        $("cap-name").focus();
+        return;
+    }
+    nameMsg.textContent = "";
+    nameMsg.className = "hint";
 
     // Refused here rather than sent and bounced: the answer is entirely in the
     // form, so the form is where it belongs. The notice is already the
@@ -1739,6 +2021,7 @@ async function startCapture() {
     }
 
     const body = {
+        name,
         server_id: serverId,
         interface: $("cap-interface").value || ANY_INTERFACE,
         bpf_filter: $("cap-bpf").value,
@@ -1751,6 +2034,22 @@ async function startCapture() {
     if (dur > 0) body.duration_seconds = dur;
     const snap = parseInt($("cap-snaplen").value);
     if (snap >= 0 && $("cap-snaplen").value) body.snap_len = snap;
+
+    // Last stop before tcpdump runs on somebody else's machine.
+    //
+    // The form has six fields and three of them default to "the server
+    // maximum" when left blank, so what is actually about to happen is not
+    // legible from the form -- an empty Duration box does not look like five
+    // minutes of capture. This is also where a stale field shows itself: the
+    // server select and the filter both persist between captures, and starting
+    // the right capture against the wrong host is the mistake that costs a
+    // capture window on a production box.
+    //
+    // After the BPF check, not before: this describes the capture that is
+    // going to run, and the check can still send the operator back to the
+    // filter field.
+    const serverName = $("cap-server").selectedOptions[0]?.textContent?.trim() || serverId;
+    if (!confirm("Start this capture?\n\n" + describeCapture(body, serverName))) return;
 
     try {
         const started = await api("/api/captures", { method: "POST", body: JSON.stringify(body) });
@@ -1769,6 +2068,11 @@ async function startCapture() {
         // pointing at a stream that is no longer being asked for.
         $("cap-live").checked = false;
         updateLiveTargetNotice();
+        // The name described one capture and is not a default for the next --
+        // two captures called the same thing is exactly the unreadable list the
+        // field exists to prevent. Cleared only on success, like the checkbox
+        // above: a failed start is about to be retried.
+        $("cap-name").value = "";
         await loadCaptures();
         // Straight into the Viewer. Ticking "Live stream" and then having to
         // find the capture in a list and press View is the same two clicks the
@@ -1789,6 +2093,7 @@ async function loadCaptures() {
 }
 
 function renderCaptures() {
+    syncCaptureTabs();
     const el = $("capture-list");
     if (!captures.length) {
         el.innerHTML = '<div class="empty-state">No captures yet</div>';
@@ -1840,6 +2145,7 @@ function renderCaptures() {
                         ${c.error ? ' | <span style="color:var(--danger)">' + escHtml(c.error) + "</span>" : ""}
                     </div>
                 </div>
+                ${c.bpf_filter ? filterBadge(c.bpf_filter) : ""}
                 ${c.live_stream ? '<span class="status-badge badge-live" title="Started with live streaming: the packets were watched in the Viewer as they were captured. The saved capture is complete either way.">live stream</span>' : ""}
                 <span class="status-badge ${statusClass}">${c.status}</span>
                 <div class="capture-actions">${actions}</div>
@@ -2005,9 +2311,37 @@ async function refreshRunningCaptures() {
 
 function setViewerLabel(id) {
     const c = captures.find((x) => x.id === id);
-    $("viewer-capture-label").textContent = c && c.name
-        ? `Capture: ${c.name} (${id})`
-        : "Capture: " + id;
+    const el = $("viewer-capture-label");
+    const heading = c && c.name ? `Capture: ${c.name} (${id})` : "Capture: " + id;
+    if (!c) {
+        el.textContent = heading;
+        return;
+    }
+
+    // Where this capture came from, and what it was selecting for.
+    //
+    // It earns its line on a live stream above all: the capture list is a tab
+    // away while the packets are arriving, so "which host am I watching, and
+    // what did I ask it for" is otherwise unanswerable from the screen you are
+    // actually looking at -- and a live stream is exactly when a filter that is
+    // narrower than you remember looks like a quiet network.
+    //
+    // Shown on a stored capture too. The same two facts are just as true of one
+    // that has finished, and a viewer that tells you less about a capture once
+    // it stops would be a strange thing to build on purpose.
+    const parts = [];
+    if (c.server_label) parts.push(escHtml(c.server_label));
+    if (c.interface) parts.push(escHtml(c.interface));
+    // Empty is not the same claim as "no filter": a capture taken before the
+    // column existed also reads empty, and the two are indistinguishable here.
+    // Saying nothing is the honest option -- see the migration in database.py.
+    if (c.bpf_filter) {
+        parts.push(`filter <code class="viewer-origin-filter">${escHtml(c.bpf_filter)}</code>`);
+    }
+    el.innerHTML = escHtml(heading)
+        + (parts.length
+            ? `<span class="viewer-capture-origin">${parts.join(" &middot; ")}</span>`
+            : "");
 }
 
 function isLiveNow(c) {
@@ -2020,10 +2354,12 @@ async function viewCapture(id) {
     stopLiveView();
     viewerAwaitingCapture = null;
     viewingCaptureId = id;
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    document.querySelector('.tab[data-tab="viewer"]').classList.add("active");
-    document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
-    $("panel-viewer").classList.add("active");
+    // Opening a capture is what creates its tab. Already-open captures keep the
+    // position they had rather than jumping to the end -- a strip that reorders
+    // itself under the pointer is one you cannot click twice in the same place.
+    if (!openCaptures.includes(id)) openCaptures.push(id);
+    activatePanel("viewer");
+    renderCaptureTabs();
 
     hide("viewer-empty");
     show("packet-viewer");
@@ -3811,13 +4147,61 @@ async function loadAdminUsers() {
                     <td>${u.is_admin ? "Yes" : "No"}</td>
                     <td>${u.totp_confirmed ? "Yes" : "No"}</td>
                     <td>${escHtml(u.created_at || "")}</td>
-                    <td>${!u.is_admin ? `<button class="btn btn-sm btn-danger" data-action="delete-user" data-id="${escHtml(u.id)}">Delete</button>` : ""}</td>
+                    <td class="admin-user-actions">
+                        ${adminUserActions(u)}
+                    </td>
                 </tr>`).join("")}
             </tbody>
         </table>`;
     } catch (e) {
         $("admin-user-list").innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
     }
+}
+
+// Matched on username rather than id, because the id is not in the auth status
+// payload and a username is unique anyway. The server refuses a self-reset in
+// any case (admin_reset_totp); this only avoids offering a button that cannot
+// work.
+function adminUserActions(u) {
+    const self = currentUser && u.username === currentUser.username;
+    const parts = [];
+    if (!self) {
+        parts.push(`<button class="btn btn-sm btn-secondary" data-action="reset-mfa"
+            data-id="${escHtml(u.id)}"
+            title="Clear this account's two-factor authentication. They enrol again with a NEW code at their next sign-in, and are signed out everywhere in the meantime.">Reset MFA</button>`);
+    }
+    if (!u.is_admin) {
+        parts.push(`<button class="btn btn-sm btn-danger" data-action="delete-user"
+            data-id="${escHtml(u.id)}">Delete</button>`);
+    }
+    return parts.join(" ");
+}
+
+async function adminResetMfa(userId) {
+    const row = document.querySelector(`[data-action="reset-mfa"][data-id="${CSS.escape(userId)}"]`);
+    const name = row ? row.closest("tr").firstElementChild.textContent.trim() : "this user";
+    // Spelled out rather than "Are you sure?": this revokes a second factor,
+    // and the three consequences are not all obvious from the button.
+    if (!confirm(
+        `Reset two-factor authentication for ${name}?\n\n`
+        + "\u2022 Their current authenticator stops working \u2014 a NEW enrolment "
+        + "code is issued at their next sign-in.\n"
+        + "\u2022 They are signed out of every session immediately.\n"
+        + "\u2022 Every device they marked as trusted is forgotten.\n\n"
+        + "Until they enrol again their account is protected by its password alone, "
+        + "so do this only when you know who is asking."
+    )) return;
+    const msgEl = $("admin-user-msg");
+    try {
+        await api(`/api/admin/users/${userId}/totp/reset`, { method: "POST" });
+    } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "error-msg";
+        return;
+    }
+    msgEl.textContent = `MFA reset for ${name}. They will enrol again at next sign-in.`;
+    msgEl.className = "success-msg";
+    loadAdminUsers();
 }
 
 async function adminCreateUser() {
@@ -4169,6 +4553,7 @@ function initStaticHandlers() {
     $("btn-logout")?.addEventListener("click", doLogout);
     $("btn-add-server")?.addEventListener("click", showAddServer);
     $("btn-start-capture")?.addEventListener("click", startCapture);
+    $("btn-save-filter")?.addEventListener("click", saveCurrentFilter);
     // Three fields decide whether a live stream is targeted, so all three
     // update the notice. Tying it to the checkbox alone left it stale the
     // moment the interface or the filter changed under it.
@@ -4225,6 +4610,7 @@ function initEventDelegation() {
     });
     delegate("admin-user-list", {
         "delete-user": (id) => adminDeleteUser(id),
+        "reset-mfa": (id) => adminResetMfa(id),
     });
     delegate("admin-ssh-keys", {
         "delete-key": (id) => adminDeleteKey(id),
@@ -4266,6 +4652,7 @@ function initEventDelegation() {
     });
     delegate("filter-library", {
         "use-library-filter": (expr, el, ev) => useLibraryFilter(expr, el, ev),
+        "delete-custom-filter": (id) => deleteCustomFilter(id),
     });
     delegate("bpf-suggestions", {
         "use-filter": (expr, el, ev) => useFilterSuggestion(expr, el, ev),

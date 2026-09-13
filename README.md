@@ -8,68 +8,71 @@ Built for the case where the machine you need to capture on is not the machine
 you want to analyse from: a firewall, a hypervisor, a container host, a box you
 only reach over SSH.
 
-**Contents**
+**Start here** — [What it does](#what-it-does) · [Requirements](#requirements) ·
+[Quick start](#quick-start) · [Your first capture](#your-first-capture)
 
-*Getting going* — [What it does](#what-it-does) ·
-[Requirements](#requirements) ·
-[Quick start](#quick-start) ·
-[Your first capture](#your-first-capture)
-
-*Using it* — [Preparing a target host](#preparing-a-target-host) ·
+**Using it** — [Preparing a target host](#preparing-a-target-host) ·
 [Taking a capture](#taking-a-capture) ·
+[Streaming a capture live](#streaming-a-capture-live) ·
 [Reading a capture](#reading-a-capture)
 
-*Running it* — [Security](#security) ·
-[Operating it](#operating-it) ·
-[Architecture](#architecture) ·
-[Development](#development) ·
+**Running it** — [Security](#security) · [Operating it](#operating-it) ·
+[Architecture](#architecture) · [Development](#development) ·
 [Roadmap](#roadmap)
+
+**The longer documents.** This page is the tour; each of these is one subject in
+full, for when you need it.
+
+| | |
+| --- | --- |
+| [Preparing a target host](docs/target-hosts.md) | SSH access, adding and checking a server, and the three ways to give tcpdump capture privilege |
+| [Filters](docs/filters.md) | The two filter languages in full, building one by clicking, and the ways a capture filter records nothing |
+| [Streaming a capture live](docs/live-streaming.md) | Why a live stream needs a target, what it costs, and the two limits on it |
+| [Security](docs/security.md) | Encryption at rest, transport policy, sign-in, what runs on the target, and what is *not* protected |
+| [Operating it](docs/operating.md) | Environment variables, admin settings, sessions, MFA recovery, TLS, rotating the master key |
+| [Architecture](docs/architecture.md) | How it is built: the envelope format, every validator, and why each exists |
 
 ## What it does
 
-**Capturing.** Add a host once and it stays on your list. Pick the interface
-from a list read off that host, set a duration, packet cap and snap length, and
-give it a BPF filter — typed, chosen from clickable examples, or picked out of
-the capture filter library that sits under the field itself, which groups common
-expressions by protocol (Kerberos, SMB, LDAP, DNS, database ports, TCP flag
-matching and so on). A running capture reports how many packets it has taken so
-far. Captures can be renamed, and each one remembers which server it came from
-even after that server is deleted.
+**Capture.** Add a host once and it stays on your list. Pick its interface from
+a list read off the machine itself, set a duration, a packet cap and a snap
+length, and give it a BPF filter. A running capture reports how many packets it
+has taken so far.
 
-**Watching it happen.** Tick **Live stream** on the capture form and the Viewer
-opens on the capture as it records, packets appearing as they are taken — with
-the same display filter, autocomplete and saved views as a finished capture,
-because it is the same viewer running the same tshark. Stop it when you have
-seen what you were waiting for and it is fetched, sealed and reopened as an
-ordinary stored capture, still marked as one that was streamed. See
-[Streaming a capture live](#streaming-a-capture-live).
+You do not have to know BPF. A filter library sits under the field, grouping
+common expressions by what you are hunting — Kerberos, SMB, LDAP, DNS, database
+ports, TCP flag matching — and you can save your own alongside it.
 
-**Reading.** A Wireshark-style packet list with protocol colouring, a decoded
+**Watch it happen.** Tick **Live stream** and the Viewer opens on the capture as
+it records, packets appearing as they arrive. Stop it when you have seen what
+you were waiting for, and it is fetched, sealed and reopened as an ordinary
+stored capture.
+
+**Read it.** A Wireshark-style packet list with protocol colouring, a decoded
 protocol tree and a hex dump. Full Wireshark display-filter syntax narrows the
-list, with autocomplete over protocol and field names as you type, its own
-cheatsheet and examples; a filter tshark cannot parse is reported with tshark's
-own message rather than shown as an empty list. A filter worth keeping can be
-**saved as a view** — a named tab on that capture that is still there when you
-come back to it, and that downloads as its own pcap containing only what it
-selects.
+list, with autocomplete as you type; a filter tshark cannot parse comes back
+with tshark's own message rather than an empty list.
 
-Timestamps can be relative, epoch, delta, the server's UTC, or **your own time
-zone**. Name resolution is off by default, because resolving addresses out of a
-capture tells a DNS server what you are investigating.
+A filter worth keeping can be **saved as a view** — a named tab on that capture,
+still there when you come back next week, and downloadable as its own pcap
+containing only what it selects. Timestamps can be relative, epoch, delta, the
+server's UTC, or your own time zone.
 
-**Security.** Captures are encrypted at rest under a key that never lives on the
-data volume, and decrypted in flight so no plaintext pcap ever touches disk.
-Passwords are scrypt-hashed, TOTP is required, and sessions are stored only as
-digests. Over plain HTTP the app refuses to change anything or hand a capture
-over. A target host must have its SSH host keys trusted before anything will
-connect to it. See [Security](#security).
+**Keep it safe.** Captures are encrypted at rest under a key that never lives on
+the data volume, and decrypted in flight, so no plaintext pcap ever touches
+disk. Passwords are scrypt-hashed, TOTP is required, sessions are stored only as
+digests, and a target host must have its SSH host keys trusted before anything
+connects. Over plain HTTP the app refuses to change anything or hand a capture
+over.
 
-**Operating.** Multi-user with an admin panel, per-account server lists and
-stored SSH usernames, SSH keys uploaded through the UI and sealed under the same
-master key, a read-only prerequisite probe that never installs anything,
-adjustable capture and session limits, a dark theme and a light one named
-Flashbang for reasons that become clear at 2am, and a layout that works down to
-phone width.
+**Run it for a team.** Multi-user with an admin panel, per-account server lists
+and stored SSH usernames, SSH keys uploaded through the UI and sealed under the
+same master key, a read-only prerequisite probe that never installs anything,
+and adjustable capture and session limits.
+
+There is a true-black dark theme that costs an OLED panel nothing to display,
+a light one named Flashbang for reasons that become clear at 2am, and a layout
+that works down to phone width.
 
 ## Requirements
 
@@ -91,14 +94,24 @@ the UI is plain HTML, CSS and JavaScript served by the app itself.
 
 **HTTPS is not required to start, but the app is read-only without it** — and
 read-only is enough to block a first capture. See
-[Traffic in transit](#traffic-in-transit) and
-[Running it without a reverse proxy](#running-it-without-a-reverse-proxy).
+[Traffic in transit](docs/security.md#traffic-in-transit) and
+[Running it without a reverse proxy](docs/operating.md#running-it-without-a-reverse-proxy).
 
 ## Quick start
 
 **There is nothing to clone and nothing to build.** The image is published, and
 `docker-compose.yml` is the entire install — one file, fetched straight from the
 release you intend to run.
+
+On the machine that will run pcap-server you need Docker with the Compose plugin
+(`docker compose`, v2 — not the older standalone `docker-compose`) and a user
+who can talk to the Docker socket. Nothing else: tshark, tcpdump and the SSH
+client are all inside the image.
+
+**Before you start, have an authenticator app on your phone.** TOTP is not
+optional here and it is enforced by the API, not just the login screen — the
+account you are about to create cannot finish being created without it. See
+step 6.
 
 ```bash
 # 1. Pick the install directory. This directory IS the install: it will hold
@@ -110,7 +123,7 @@ cd /opt/docker/pcap
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.25/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.26/docker-compose.yml
 
 # 3. Create the four bind-mounted directories. All four must exist before the
 #    first start: Docker would otherwise create them owned by root.
@@ -118,13 +131,25 @@ mkdir -p ssh-keys data captures secrets
 
 # 4. The master key. Generated once, before the first start -- the app refuses
 #    to start without it rather than storing captures in the clear.
+#
+#    Ownership inside the container is not your problem: the entrypoint hands
+#    the mounts to its own non-root user (appuser, UID 1000) on each start.
 openssl rand -base64 32 > secrets/master.key
 chmod 0400 secrets/master.key
 
-# 5. Start it.
+# 5. Start it, and check it actually came up.
 docker compose up -d
+docker compose ps                                      # State should read "running"
 docker compose logs pcap-server | grep -i encryption   # encryption enabled (key id ...)
 ```
+
+Two things are worth reading rather than skipping. `docker compose ps` should
+show the service **running**, not `restarting` — a container that is looping is
+one that failed and is being restarted for you, and `up -d` returns success
+either way. And the `grep` should print `encryption enabled (key id ...)`; if it
+prints nothing at all, the app did not get its key, and
+[If it does not come up](#if-it-does-not-come-up) below has the three things
+that cause that.
 
 **Back that key up somewhere else before you capture anything.** It is the only
 thing that can decrypt your captures, and there is no recovery path without it.
@@ -135,16 +160,47 @@ that file is in, so run later `docker compose` commands from this directory too.
 Absolute paths are supported and documented in the comments at the top of
 `docker-compose.yml`.
 
-Open `http://<host>:8080`. The first user to register becomes the admin — and
-expect the app to be **read-only** at this point, which is intended rather than
-broken. See [Running it without a reverse proxy](#running-it-without-a-reverse-proxy)
-for what that allows, what it refuses, and what to do about it.
+### 6. Open it and create the admin account
+
+Open `http://<host>:8080`. The first user to register becomes the admin, and
+registration runs straight into TOTP enrolment: you are shown a QR code and the
+secret behind it, and the account is not usable until you have entered a code
+back from your authenticator. The published compose file already sets
+`COOKIE_SECURE=false`, which is what lets that sign-in work over plain HTTP at
+all.
+
+Scan the QR into an app you will still have next month. If it does go missing,
+an admin can reset another account's MFA from **Admin → Users → Reset MFA**, and
+a locked-out *sole* admin has a host-side way back in — see
+[If you lose your authenticator](docs/operating.md#if-you-lose-your-authenticator).
+
+Once you are in, expect the app to be **read-only** — that is intended rather
+than broken, and it is enough to block a first capture. See
+[Running it without a reverse proxy](docs/operating.md#running-it-without-a-reverse-proxy) for
+what that allows, what it refuses, and what to do about it. Then
+[Your first capture](#your-first-capture).
+
+### If it does not come up
+
+Three failures account for almost all of them. All three are visible in
+`docker compose logs pcap-server`, which is worth reading in full before
+anything else — the app says what it is refusing and why.
+
+| What you see | What it is |
+|---|---|
+| `bind: address already in use` | Something else already has port 8080. Change the **left** half of the `ports:` mapping in `docker-compose.yml` — `"8081:8080"` publishes it on 8081 instead. The right half is the port inside the container and does not move |
+| The container restarts in a loop, logs mention the master key | Step 4 did not happen, or it produced an empty file. `secrets/master.key` must exist and be non-empty *before* the first start. Check with `wc -c secrets/master.key` — you want 45 bytes, not 0 |
+| `secrets/master.key` is a directory | The compose file was started before step 3 and 4 ran, so Docker created the bind-mount path itself. Remove the empty directory, then do step 4 properly |
+
+If you started it before creating the directories, the quickest fix is
+`docker compose down`, delete whatever Docker created in their place, and go
+back to step 3. Nothing is lost — there is no data yet.
 
 ### Choosing a version
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.25` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.26` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -160,7 +216,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcap
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.25/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.26/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -205,207 +261,36 @@ repo but that one file.
 5. **Sort out capture privilege** if the check says it is missing. It prints the
    exact command for the host in front of you — see
    [Preparing a target host](#preparing-a-target-host).
-6. **Capture.** Capture tab: pick the server and interface, set a duration, add
-   a filter. Watch the packet count climb while it runs.
+6. **Capture.** Capture tab: name it, pick the server and interface, set a
+   duration, add a filter. It shows you what it is about to do and asks; say
+   yes and the packet count starts climbing.
 7. **Read it.** View on a finished capture. Click a packet for its protocol tree
    and hex dump.
 
 ## Preparing a target host
 
-Everything in this section happens on the machine you want to capture
-*from*, not on the machine running pcap-server. It is a one-time job per host,
-and **Servers → Check prerequisites** prints the exact command for the host in
-front of you rather than a generic one.
+Everything a machine needs before you can capture from it — SSH access, a
+`tcpdump` binary, and the privilege to use it — is in
+**[docs/target-hosts.md](docs/target-hosts.md)**, along with how to add a
+server, how to check one before you rely on it, and the three ways to grant
+capture privilege.
 
-### Adding a server
-
-The SSH key field starts empty and has to be chosen. Add, Test connection and
-Check prerequisites all refuse until a hostname, a username and a key are
-present, so a server is never created with a key nobody picked.
-
-**Never add the machine pcap-server itself runs on.** Capturing from its own
-host records pcap-server's own traffic — your session cookie and TOTP code, and
-over plain HTTP your password — into a capture this UI then stores and serves
-back, and on a Docker host the `any` interface sweeps every other container too.
-The obvious cases are refused automatically: hostname aliases, loopback, the
-container's own addresses, and the default gateway, which on a Docker bridge is
-the host machine. The case that cannot be detected is the host's own LAN
-address, because a bridged container has no knowledge of it — which is why the
-form warns as well as checks. Capture this host from a different machine.
-
-### Checking a server before you capture
-
-**Servers → Check prerequisites** probes a host for what a capture needs and
-reports what it found. Every command it runs is a read; the one privileged call
-is `sudo -n true`, which answers "would sudo work" without doing anything. **It
-never installs or changes anything** — where something is missing it prints the
-command for you to run yourself.
-
-It checks the OS, whether tcpdump is installed and where, whether tcpdump is on
-the SSH session's PATH, whether capture privilege exists, whether `/tmp` is
-writable, and the SELinux mode.
-
-Two findings are worth knowing about in advance:
-
-- **tcpdump is usually in `/usr/sbin`, which a non-login SSH session often drops
-  from PATH for non-root users.** A bare `tcpdump` then fails with "command not
-  found" on a host where it is plainly installed. The check records the absolute
-  path and captures use it, so this resolves itself once you have run the check.
-- **`setcap` beats sudo.** `sudo setcap cap_net_raw,cap_net_admin+eip
-  /usr/sbin/tcpdump` lets an unprivileged user capture with no sudo at all, and
-  it works the same on every distribution. The check recommends this first.
-
-There are no per-distribution templates, and deliberately so: tcpdump is libpcap
-everywhere, so its flags and filter syntax are identical across distributions.
-What differs is PATH, whether sudo exists and which group grants it (`wheel` on
-RHEL-family, `sudo` on Debian-family), and SELinux — all of which the probe reads
-off the host rather than guessing from a distribution label. The detected distro
-is used for exactly one thing: printing the right install command.
-
-### Capture privilege: what tcpdump needs
-
-tcpdump needs a privilege to open a capture interface that a plain SSH user
-doesn't have by default. There are two ways to grant it — try the first one
-before reaching for sudo, since it grants far less.
-
-#### Preferred: a file capability, no sudo at all
-
-`cap_net_raw`/`cap_net_admin` on the tcpdump binary itself lets that one user
-capture without being root or touching sudo at all:
-
-```bash
-sudo setcap cap_net_raw,cap_net_admin+eip /usr/sbin/tcpdump   # use your host's real path
-```
-
-Run **Servers → Check prerequisites** in the UI first — it discovers the
-actual tcpdump path on that host (it's `/usr/sbin/tcpdump` on some distros,
-`/usr/bin/tcpdump` on others) and gives you the exact command to run, along
-with whether the capability is already set. This is a one-time step per host
-and survives a tcpdump package upgrade being reapplied by the package
-manager's postinst on most distros; verify with `getcap $(which tcpdump)`
-after a package update if you want to be sure.
-
-#### If setcap isn't available: passwordless sudo, scoped to tcpdump only
-
-Some hosts don't have `libcap2-bin`/`getcap` installed, or you'd rather use
-sudo.
-
-**Why it has to be passwordless.** pcap-server authenticates to your hosts with
-SSH keys and nothing else — it never asks you for, stores, or transmits a login
-password for a target host, and there is no prompt in a capture for one to be
-typed into. Captures run over a non-interactive SSH session, so when `sudo`
-asks for a password there is nobody there to answer and no password on hand to
-send. That is why the grant has to be `NOPASSWD` — and exactly why it should be
-scoped to one binary instead of the whole account. pcap-server invokes
-`sudo -n` ("never prompt") to keep this honest: a host that still wants a
-password fails immediately with a clear error rather than hanging until the
-capture times out.
-
-If you would rather not open a `NOPASSWD` grant at all, use the `setcap` route
-above — it needs no sudo and no password, and it grants less.
-
-**Scope the grant to tcpdump. Do not make the account blanket-passwordless.**
-Searching for "passwordless sudo" turns up this rule almost everywhere, and it
-is the wrong one here:
-
-```
-# DON'T: every command, as root, no password. Far more than capturing needs.
-pcapuser ALL=(ALL) NOPASSWD: ALL
-```
-
-That grants unrestricted root for every purpose, permanently, to an account
-whose private key is sitting in pcap-server's key store. What captures actually
-need is one binary:
-
-```
-# DO: this one binary, nothing else.
-pcapuser ALL=(root) NOPASSWD: /usr/sbin/tcpdump
-```
-
-Both let `sudo -n tcpdump` run unprompted, so pcap-server works either way —
-the difference is entirely in what *else* becomes possible if that account is
-ever compromised. Take the second one. The full steps:
-
-```bash
-# 1. Find the exact tcpdump path first -- use it below, not a bare "tcpdump".
-#    A bare command name in a sudoers NOPASSWD rule can be satisfied by
-#    anything earlier on $PATH, not just the real binary.
-which tcpdump
-#   e.g. /usr/sbin/tcpdump
-
-# 2. Write the rule with visudo -f, which validates syntax before saving --
-#    a malformed file dropped straight into /etc/sudoers.d/ with cat/tee can
-#    break sudo entirely for everyone on the host until it's fixed manually.
-sudo visudo -f /etc/sudoers.d/pcap-server
-```
-
-In the editor that opens, add one line (replace `pcapuser` with the actual
-SSH username this server config uses, and the path with what step 1 printed):
-
-```
-pcapuser ALL=(root) NOPASSWD: /usr/sbin/tcpdump
-```
-
-Save and exit; `visudo` will refuse to write the file at all if the syntax is
-wrong, rather than leaving a broken sudoers.d entry behind. Then lock down the
-permissions, since sudoers.d files are ignored if they're group- or
-world-writable:
-
-```bash
-sudo chmod 0440 /etc/sudoers.d/pcap-server
-sudo chown root:root /etc/sudoers.d/pcap-server
-```
-
-To do it in one line without an editor — piping through `visudo` rather than
-`tee`, so the file is still validated before it replaces anything:
-
-```bash
-echo 'pcapuser ALL=(root) NOPASSWD: /usr/sbin/tcpdump' \
-  | sudo EDITOR='tee' visudo -f /etc/sudoers.d/pcap-server
-```
-
-Then tick **Run tcpdump with sudo** on the server in the UI to actually use it.
-
-**Check prerequisites** prints this exact command for you, with the username and
-the discovered tcpdump path already filled in. To grant it to a group instead
-of a named account, create the group first — a rule naming a group that doesn't
-exist matches nobody and captures keep failing with the same error:
-
-```bash
-sudo groupadd -f pcap && sudo usermod -aG pcap pcapuser
-echo '%pcap ALL=(root) NOPASSWD: /usr/sbin/tcpdump' \
-  | sudo EDITOR='tee' visudo -f /etc/sudoers.d/pcap-server
-```
-
-**Understand what this grants, even scoped this way.** `tcpdump` can run
-arbitrary commands as root via its `-z` flag and read any file via `-r`, so
-anyone who can open a shell as that user on that host effectively has root
-there. pcap-server never sends those flags — `-z`, `-Z`, `-W`, `-G`, `-C`,
-`-r`, `-F` and `-V` are rejected by a server-side allowlist that refuses to
-start if one is ever added to it, and every argument is shell-quoted — but the
-sudoers grant itself is still a privilege boundary you are choosing to open.
-Use a dedicated, unprivileged account for this and nothing else — don't reuse
-a login you use for other purposes on that host.
+The short version: **prefer a file capability** —
+`sudo setcap cap_net_raw,cap_net_admin+eip $(command -v tcpdump)` — over
+passwordless sudo. It grants one binary the two capabilities it needs, rather
+than granting a user the right to run a program as root. pcap-server's
+prerequisite check prints the exact command for the host in front of you, and
+never installs or changes anything itself.
 
 ## Taking a capture
 
-A capture always runs as `tcpdump -w <file>`, so that a pcap comes back for
-analysis. `-w` turns tcpdump from a printer into a writer: it stops formatting
-text and writes raw packet records. tcpdump's display flags — `-vv`, `-vvv`,
-`-q`, `-A`, `-X`, `-XX`, `-e`, `-n`, `-nn`, `-t`/`-tt`/`-ttt`/`-tttt` — format
-text that is never emitted under `-w`, so they cannot affect the capture and are
-not accepted. The ones that describe how to *read* a capture live in the Viewer
-instead, where they change the packet list.
+**Give it a name.** It is the first field and the form will not start without
+one. Everything else about a capture is on the record afterwards — the server,
+the interface, the filter — but what you were looking for is not, and a list of
+captures identified by UUID is a list nobody can read a week later. Renaming
+afterwards still works.
 
-`-v` is the exception, and pcap-server adds it to every capture itself, which is
-why it appears in the command shown against each one. It still changes nothing
-in the file. Under `-w` it makes tcpdump report its running packet total on
-stderr once a second, which is what the live count on a running capture reads —
-the pcap is on the remote host until the capture ends, so there is nothing else
-to count.
-
-Four things decide what a capture contains, and each is a field on the capture
-form:
+Four fields decide what the capture *contains*:
 
 | Field | tcpdump | Effect |
 | --- | --- | --- |
@@ -414,152 +299,104 @@ form:
 | Snap length | `-s` | bytes kept per packet — lower it for headers only |
 | BPF filter | expression | which packets are captured at all |
 
-A fifth control, **Live stream**, does not change what the capture contains —
-it adds `-U` so tcpdump writes packet by packet, and opens the capture in the
-Viewer while it runs. It does constrain the two above it: a live stream needs
-an interface other than `any`, or a BPF filter, or both. See
-[Streaming a capture live](#streaming-a-capture-live).
+Leave the numbers blank and each falls back to the server maximum, which an
+admin sets. **Live stream** is the fifth control and changes nothing about the
+contents — see [Streaming a capture live](#streaming-a-capture-live).
 
-Capturing *specific* traffic is the filter's job, not a flag's, and the filter
-takes full BPF syntax: `host 10.0.0.230`, `tcp port 443`,
-`port 53 and not host 8.8.8.8`, `net 192.168.1.0/24`, `vlan 100`, `icmp or arp`,
-`tcp[tcpflags] & tcp-syn != 0`, `less 128`.
+Capturing *specific* traffic is the filter's job, and it takes full BPF syntax:
+`host 10.0.0.230`, `tcp port 443`, `port 53 and not host 8.8.8.8`,
+`net 192.168.1.0/24`, `vlan 100`, `icmp or arp`,
+`tcp[tcpflags] & tcp-syn != 0`, `less 128`. If that is not a language you
+think in, the filter library under the field has eighty-odd expressions grouped
+by what you are hunting.
 
-### Filters that would capture nothing
+**Start capture asks first.** It spells out the name, server, interface,
+duration, packet cap, snap length and filter before anything runs on the target.
+Three of those fields read as blank when they mean "the server maximum", and
+both the server and the filter persist between captures — which is how the right
+capture ends up run against the wrong host.
 
-Combining two library picks with **…and this** is the easy way to build a
-filter that matches nothing. A packet carries one source port and one
-destination port, so requiring two services is one condition more than there
-are slots for it, and requiring three is hopeless. The filter compiles,
-tcpdump runs for the full duration, and the capture comes back empty — which
-looks exactly like there having been no such traffic.
+### Your own saved filters
 
-pcap-server checks for this in two places. In the filter library the
-**…and this** option carries a warning the moment you open the menu, saying
-what is wrong and that `or` is probably what you want. And a capture whose
-filter cannot match anything asks for confirmation before it starts.
+**Save this filter** puts whatever is in the BPF box into a list of your own,
+under a name you choose. It appears at the top of the library as **Your
+filters** the next time you open it.
 
-Both are warnings, not refusals. An odd-looking filter you mean is still yours
-to run — press on and the capture starts.
+These are **private to your account** — a capture filter usually names the hosts
+and ports you are investigating, so they are treated the way your servers and
+stored usernames are. Deleting one does not touch any capture already taken with
+it.
 
-One case is worth knowing about because nothing else will ever flag it:
-`tcp port 80 and tcp port 443` is a perfectly valid filter. It matches a packet
-travelling from port 80 to port 443, so tcpdump accepts it without complaint.
-Traffic like that essentially does not exist, which is why pcap-server says so
-even though the compiler will not.
+### What a capture says it captured afterwards
 
-Shell metacharacters are rejected in the filter, which is passed to tcpdump as a
-single quoted argument after `--`. `-z`, `-W`, `-G`, `-C`, `-r`, `-F`, `-V` and
-`-Z` are permanently refused: tcpdump may be running under `sudo`, and those turn
-a capture into code execution or file reads as root.
+Each capture in the list carries a badge naming its filter: the library's own
+name where there is one, so `tcp port 443` shows as **HTTPS**, and the
+expression itself where there is not. The exact text is on hover either way.
+
+This matters more than it sounds. An empty packet list from a filtered capture
+and an empty packet list from a quiet network look identical, and they lead to
+opposite conclusions. Captures taken before this existed carry no badge: their
+filter was never recorded, and it is not guessed at from the command.
+
+### Filters that capture nothing
+
+Joining two library picks with **…and this** is the easy way to build one. A
+packet has one source port and one destination port, so asking for two services
+is one condition more than there are slots for it. The filter compiles, tcpdump
+runs for the full duration, and the capture comes back empty — which looks
+exactly like there having been no such traffic.
+
+pcap-server warns in two places: in the library, the moment you open the
+**…and this** menu, and again before a capture whose filter cannot match
+anything starts. Both are warnings rather than refusals — an odd-looking filter
+you mean is still yours to run.
+
+**[docs/filters.md](docs/filters.md)** has the rest: why `tcp port 80 and tcp
+port 443` is valid and still wrong, how filters are composed for you, and where
+the tcpdump flags went.
 
 ## Streaming a capture live
 
-Normally a capture is written on the remote host and comes back only when it
-ends: `tcpdump -w` writes there, and nothing but a running packet count crosses
-the wire until the transfer. Tick **Live stream** on the capture form and you
-can watch it instead — the Viewer opens on the capture as it records, and rows
-appear as packets are taken.
+Tick **Live stream** on the capture form and the Viewer opens on the capture as
+it records, packets appearing as they arrive — the same display filter,
+autocomplete and saved views as a finished capture, because it is the same
+viewer running the same tshark. Stop it when you have seen what you were waiting
+for and it is fetched, sealed and reopened as an ordinary stored capture.
 
-It is the same viewer. The display filter, its autocomplete, the view flags,
-name resolution and saved views all work exactly as they do on a stored
-capture, because the live view runs the same tshark over the same code path;
-there is no second, cut-down filter language for live captures. A filter
-narrows what you are watching as it arrives, and can be saved as a view while
-the capture is still running.
+It needs to be pointed at something: an interface other than `any`, or a BPF
+filter, or both. The preview is a fixed-size buffer held in memory, and
+everything on every link fills it in seconds.
 
-**A live stream is still an ordinary capture.** Nothing about storage changes.
-The authoritative pcap still accumulates on the remote host and is still
-fetched and sealed into the vault when the capture ends, so a live-streamed
-capture and an ordinary one are the same file by the time either is saved.
-Closing the browser does not lose it. This is also why a dropped SSH connection
-mid-capture costs nothing: the packets are on the target, not in the browser.
-
-### A live stream has to be pointed at something
-
-**Live streaming needs an interface or a BPF filter — either one will do.**
-Ticking **Live stream** with the interface left on `any` and no filter is
-refused, and the capture form says so before the Start button does.
-
-The reason is the preview buffer below: it is a fixed number of megabytes held
-in the server's memory, and it does not refill. `any` with no filter points it
-at every packet on every link the target host has, which on a host doing real
-work fills it within seconds — the preview then freezes for the rest of the
-capture and there is nothing to do but start again. Narrowing the capture is
-the fix, so the narrowing is required up front rather than suggested afterwards.
-
-Which one to reach for depends on the question. `-i eth0` when it is about one
-link; a filter such as `host 10.0.0.5` or `tcp port 443` when it is about one
-conversation. Both together narrow it further still, and the
-[capture filter library](#building-a-filter-by-clicking) on the same screen is
-there to build the expression from.
-
-**Capturing without live streaming has no such requirement.** `any` with no
-filter remains the default and is the normal thing to run — there is no preview
-buffer to fill when nobody is watching, and the pcap comes back complete either
-way. Untick **Live stream** and the restriction is gone.
-
-### Stopping and keeping it
-
-**Stop capture**, from the live bar or the capture list, ends it. The capture
-then goes through exactly the states it always does — stopping, transferring,
-completed — and the Viewer waits and reopens it from the saved file, keeping
-whatever display filter you were watching through. From that point it is a
-stored capture like any other: downloadable, filterable, saved views and all.
-It stays marked **live stream** in the capture list afterwards, because how a
-capture was taken is worth knowing later.
-
-### What it costs, and the two limits
-
-A live stream is more expensive than an ordinary capture while it runs, so two
-limits apply.
-
-**At most two live streams at once** (Max simultaneous live streams). Each one
-holds an SFTP channel open on the target and costs a tshark run over the whole
-accumulated buffer on every poll. Starting a third is refused with a message
-saying so; an ordinary capture can still start, since that limit is separate.
-
-**The preview stops at 16 MB** (Live stream preview limit). At the cap the live
-view freezes and says so plainly — *"the capture is still running and will be
-saved in full"* — because the capture does keep going, and its final pcap is
-complete. The running packet count continues to climb next to the frozen
-preview so it is obvious which of the two stopped. The message also names the
-remedy, because by then the only one left is for next time: a narrower filter
-or a more specific interface keeps a live view going for longer. Raising the
-limit is the wrong lever — it buys seconds and spends the server's memory.
-
-Freezing was chosen over the alternative, dropping the oldest packets to keep a
-rolling window. A rolling window renumbers frames underneath the detail pane,
-so a packet you just watched scroll past can no longer be opened — and a frame
-number that means something different on each poll would quietly break the
-saved views taken during the capture.
-
-### Why it is read the way it is
-
-Two things rule out the obvious designs, and both were measured rather than
-assumed:
-
-- **The partially written stored file cannot be read.** Captures are sealed as
-  they land, and the truncation check refuses an incomplete sealed file
-  outright rather than yielding the chunks it holds. That is an anti-tamper
-  property worth more than a live view, so nothing here weakens it — the live
-  bytes are a pass-through, and no plaintext partial capture is ever written to
-  the data volume.
-- **tshark objects to a capture cut mid-packet.** Fed a torn record it emits
-  every complete packet, warns, and exits non-zero — which is the same signal
-  that means "tshark refused your display filter". So pcap-server walks the
-  pcap record headers itself and only ever hands tshark whole records; a filter
-  is never blamed for the capture being mid-write.
-
-A live capture is also given `-U`, so tcpdump writes each packet as it arrives
-rather than a buffer at a time. It changes when bytes reach the file, not which
-bytes, so the saved capture is identical either way.
+**[docs/live-streaming.md](docs/live-streaming.md)** covers why that rule
+exists, what a live stream costs, the two limits that bound it, and what
+happens when the preview fills up. (The capture itself is never affected — it
+keeps running and is saved in full.)
 
 ## Reading a capture
 
 **View** on a finished capture opens it in the packet viewer: a Wireshark-style
 list on top, the decoded protocol tree and hex dump below, and a display-filter
 box across the top.
+
+### Captures open as tabs
+
+Each capture you open gets its own tab on the bar at the top, next to Servers,
+Capture and Admin. Open two and you can click between them — comparing a
+capture taken before a change with one taken after is what the packet list is
+usually for, and it should not mean going back to the list each time. Close a
+tab with the **×** on it; the capture itself is untouched, and it opens again
+from the Capture tab.
+
+There is no standing **Viewer** tab. It led to an empty panel for most of a
+session, and a tab that is usually empty is one people learn not to press. The
+Viewer exists while something is open in it and not otherwise.
+
+Each tab says which capture it holds, and a capture still recording carries a
+pulsing dot so one left running in a background tab still says so. Inside the
+panel, the line above the filter box names the **server, the interface and the
+capture filter** the packets are coming from — which is the question a packet
+table cannot answer, and matters most during a live stream, when a filter
+narrower than you remember looks exactly like a quiet network.
 
 ### The two filters
 
@@ -574,53 +411,16 @@ The capture filter decides **what is recorded**, and anything it excludes is
 gone for good. The display filter decides **what you see** out of what was
 already recorded, so it costs nothing to change your mind.
 
-Display filters name a protocol field with a dot and compare it with an
-operator — `ip.addr == 10.0.0.1`, `frame.len > 1000`,
-`http.request.method == "GET"` — or use a bare protocol name on its own, like
-`dns`. Combine with `and`, `or`, `not`, or with `&&`, `||`, `!`.
-
-Both boxes offer clickable examples. **Browse the capture filter library** sits
-under the BPF field on the Capture tab — a searchable list grouped by protocol,
-which fills the field above it when you choose one. The Viewer has a full
-display-filter cheatsheet behind **Filter help**.
-
-The library stays open while you choose, and shows the expression as it is
-being built, so several filters can be picked in a row without reopening the
-list or looking away from it. **Clear** on that bar starts over.
-
-Choosing a second capture filter while the field already holds one asks how to
-combine them — **…and this**, **…or this**, or replace — rather than guessing.
-Neither guess is safe: two protocol rows almost always mean `or`, since
-`tcp port 80 and tcp port 443` matches nothing, while a host row plus a
-protocol row means `and`. Both sides are parenthesised, because `a and b or c`
-parses as `(a and b) or c` and would quietly rebind a filter you already had.
-A capture filter that matches nothing does not announce itself — the capture
-simply runs and comes back empty — so it is never composed for you silently.
-
-A display filter tshark cannot parse is reported back with tshark's own message
-and the position it objected to. An empty packet list therefore always means the
-filter was valid and nothing matched it.
-
-### Building a filter by clicking
-
 Most display filters do not need to be typed. **Right-click** anything in the
-viewer and the Wireshark menu appears:
+viewer — a field in the detail tree at any depth, a column in the packet list,
+a single TCP flag bit — and the Wireshark menu appears, including a
+**Conversation filter** for both endpoints of an exchange and nothing else.
 
-- **In the detail tree** — any field, at any depth, including a single TCP flag
-  bit. Right-clicking `.... .... ..1. = Syn: Set` gives `tcp.flags.syn == 1`.
-- **In the packet list** — the menu builds from the column under the cursor: an
-  address, a protocol, a length, a frame number. It also offers a
-  **Conversation filter**, which is both endpoints of that exchange and nothing
-  else.
+A filter tshark cannot parse comes back with tshark's own message and the
+position it objected to, so an empty packet list always means the filter was
+valid and nothing matched it.
 
-Each menu offers the same four combinators as Wireshark — apply the expression
-on its own, negate it, or join it to whatever is already in the box with `&&`
-or `||` — plus **Prepare as filter**, which fills the box without running it.
-
-Addresses go into the filter bare and text values are quoted, because Wireshark
-treats `192.168.1.50` as an address literal and rejects it in quotes. A value
-containing a character the display filter does not accept falls back to testing
-that the field is simply present.
+**[docs/filters.md](docs/filters.md)** covers both languages properly.
 
 ### Field and byte selection
 
@@ -656,436 +456,39 @@ plain HTTP for the same reason the full download is.
 ## Security
 
 A packet capture is one of the most sensitive files a machine can produce: it
-contains whatever crossed the wire, credentials included. Every design decision
-below follows from that.
-
-**[docs/architecture.md](docs/architecture.md) is the full account.** This is
-the summary.
-
-### Captures at rest
-
-Envelope encryption. A master key wraps a per-file data key, and the capture is
-sealed in 64 KiB chunks with AES-256-GCM. Each chunk is bound to its position,
-so chunks cannot be reordered within a file or spliced between files, and an
-explicit terminator makes truncation detectable rather than looking like a short
-capture.
-
-The master key comes from outside the data volume — a Docker secret, an
-environment variable, or derived from an admin passphrase with scrypt and held
-only in RAM. Encrypting with a key stored beside the data would protect nothing.
-
-**Startup fails closed.** A missing key with encrypted captures present, or a
-key that does not open the captures already stored, stops the app rather than
-silently writing new captures under a different key or in the clear. Running
-unencrypted is possible but has to be asked for explicitly with
-`ALLOW_UNENCRYPTED_CAPTURES=true`.
-
-**No plaintext pcap ever reaches disk.** A capture is sealed as it arrives over
-SFTP, not written and then encrypted. To read one, it is decrypted in flight and
-streamed to tshark, so the only plaintext that exists is the few kilobytes in
-transit between two processes.
-
-Uploaded SSH private keys are sealed the same way, and a key uploaded before
-encryption was switched on is sealed in place at the next start.
-
-### Traffic in transit
-
-**Browser to pcap-server** is yours to terminate, because a LAN appliance cannot
-obtain its own certificates. Rather than pretend, the app degrades explicitly:
-**over plain HTTP it runs read-only.** Anything that changes state, and anything
-that exports a capture in bulk, is refused with an explanation rather than a
-bare 403. Viewing is allowed. Sign-in, sign-out and enrolment stay open, because
-refusing those would leave no way in at all rather than a degraded one.
-
-Loopback counts as secure — a connection that never leaves the machine has no
-wire to read. `X-Forwarded-Proto` is honoured only when `TRUST_PROXY_HEADERS` is
-set, because any client can send it. See
-[Behind a reverse proxy](#behind-a-reverse-proxy) for the three settings that
-matter, including why proxy buffering must be off, and
-[Running it without a reverse proxy](#running-it-without-a-reverse-proxy) for
-what the degraded mode actually allows — including why loopback does not rescue
-a containerised install.
-
-**pcap-server to the target** is SSH with keys only. `asyncssh.connect` is
-called with `password=None` and `passphrase=None` explicitly, so there is no
-path by which a password could be used.
-
-Host keys are verified per host, and verification is not optional: a host with
-no trusted keys is refused outright rather than connected to unverified. That
-matters more than it sounds, because asyncssh reads "no known-hosts file" as
-*skip validation*, not as *use the default one* — so the alternative to
-refusing is offering the SSH key to whatever answers on that address.
-
-A host answers with one key per algorithm and whichever the two ends negotiate
-is the one checked, so all of a host's keys are trusted or forgotten as a set.
-They are offered strongest first, so a host with both an ed25519 and an RSA key
-is verified against the ed25519 one regardless of the order they were scanned
-in. The negotiated algorithm is reported, and a negotiation weaker than what
-the host offered is flagged.
-
-Trust is stored per endpoint, not per server: several server entries can point
-at one host and they share a single trust decision. Establishing it is
-admin-only, since re-pinning a host decides what every user's connections to it
-are checked against.
-
-Establishing it is also a two-step review. Scanning a host asks it for its keys
-and stores nothing; the fingerprints are displayed, and only the keys the
-admin accepts are pinned — the ones that were on screen, not the result of a
-second scan, so a key cannot change between being read and being accepted.
-
-### Signing in
+contains whatever crossed the wire, credentials included.
 
 | | |
 | --- | --- |
-| Passwords | scrypt, N = 2^17, r = 8, p = 1. Parameters stored in the hash, so cost can be raised later without invalidating anyone |
-| Comparison | constant-time |
-| Sessions | 48 random bytes; the database stores **only the SHA-256 digest**, so a leaked database hands over no live sessions |
-| Cookie | `HttpOnly`, `SameSite=Strict`, `Secure` by default |
-| Expiry | absolute and idle, both adjustable; an idle session is deleted, not merely rejected |
-| Second factor | TOTP, enforced by the API and not only by the UI |
-| Trusted devices | separate token, also stored as a digest, with its own expiry |
-| Login throttling | per client IP, adjustable, default five attempts then fifteen minutes |
+| Captures at rest | AES-256-GCM envelope encryption. No plaintext pcap ever touches disk, and the master key lives outside the data volume |
+| In transit | Over plain HTTP the app is read-only and refuses to hand a capture over at all |
+| Sign-in | scrypt passwords, mandatory TOTP, sessions stored only as digests, per-IP login throttling |
+| Target hosts | SSH keys only — never a password — and a host must have its keys trusted before anything connects |
+| On the target | One `tcpdump -w` per capture, no shell, and the privilege-escalating flags are refused on the built argument list |
 
-### What runs on the target host
-
-One command: `tcpdump -w <file> -v` plus the interface, packet cap, snap length
-and your filter, wrapped in `timeout`. Nothing is installed and nothing is
-changed. The prerequisite probe is read-only; its one privileged call is
-`sudo -n true`, which asks whether sudo would work without doing anything.
-
-`-z`, `-Z`, `-W`, `-G`, `-C`, `-r`, `-F` and `-V` are refused on the fully built
-argument list immediately before execution. Under sudo those turn a capture into
-command execution or arbitrary file reads as root. Nothing user-supplied reaches
-tcpdump as a flag, which is precisely why this is checked rather than assumed.
-
-Filters are validated before they travel. The capture filter rejects `;`, `$`,
-a backtick and a backslash — none of which mean anything in BPF — and is passed
-after `--` as a single shell-quoted argument, so a filter can never become part
-of the command. `&` and `|` are allowed, because they are BPF's own bitwise
-operators and every `tcpflags` or byte-offset filter needs them; the quoting is
-what makes them safe, and the character check is the second line under it
-rather than the only one. SSH usernames are constrained to characters
-sudoers gives no meaning to, so a username can never widen the sudoers rule the
-prerequisite check prints for you to paste as root.
-
-**pcap-server refuses to capture from the machine it runs on.** Capturing an
-interface carrying its own traffic would record your sign-in — over plain HTTP
-that is your password verbatim, and on any connection your session cookie and
-TOTP code — into a capture then stored and browsable in this UI. On a Docker
-host, capturing `any` also sweeps the bridge interfaces and records every other
-container.
-
-### In the browser
-
-Content-Security-Policy blocks script running on this origin from reaching any
-other host, by fetch, image URL or form submission; `script-src` needs no
-`unsafe-inline`. Also set: `nosniff`, `X-Frame-Options: DENY`,
-`Referrer-Policy: no-referrer`, a restrictive `Permissions-Policy`, and
-same-origin COOP and CORP. HSTS is sent only where TLS is genuinely in use.
-
-### What this does not protect against
-
-- Anyone who can execute code inside the running container, or read its memory.
-  The key has to be present for the app to run unattended. That is the honest
-  limit of any at-rest scheme.
-- The pcap exists in the clear in `/tmp` on the **target** host for the duration
-  of the capture. Inherent to running `tcpdump -w` on a remote machine; it is
-  deleted after transfer.
-- A live stream holds up to the preview limit (16 MB by default) of unencrypted
-  packet data in the server's memory while the capture runs, discarded when it
-  ends. Packets already pass through memory on their way to tshark; what a live
-  stream changes is how much and for how long. It is never written to the data
-  volume.
-- Self-capture detection cannot see the host's LAN address from inside a bridged
-  container, so it guards against the common mistakes rather than proving
-  non-locality.
-- Passwordless sudo on the target is a privilege boundary you are choosing to
-  open. The `setcap` route avoids it entirely and is preferred.
+**[docs/security.md](docs/security.md)** is the operator's account of all of
+that, including
+[what it does not protect against](docs/security.md#what-this-does-not-protect-against).
+**[docs/architecture.md](docs/architecture.md)** is the implementation detail —
+the envelope format, every validator, and why each one exists.
 
 ## Operating it
 
-Day-to-day running: what to set, what the admin can change, and how to put it
-behind TLS — or what you give up by not.
+Day-to-day running lives in **[docs/operating.md](docs/operating.md)**:
+environment variables, the settings an admin can change, session lifetime,
+SSH key management, [recovering an account whose authenticator is
+gone](docs/operating.md#if-you-lose-your-authenticator), putting it behind TLS
+— and what you give up by not — and rotating the master key.
 
-### Environment variables
+Two things are worth knowing before you read any of it:
 
-| Variable | Default | Description |
-|---|---|---|
-| `SSH_KEYS_DIR` | `/app/ssh-keys` | Directory for SSH private keys |
-| `CAPTURES_DIR` | `/app/captures` | Directory for downloaded pcap files |
-| `DATA_DIR` | `/app/data` | Directory for the SQLite database. Users, servers, known hosts, settings and capture history all live here, so keep it on a persistent volume. |
-| `COOKIE_SECURE` | `true` | Require HTTPS for the session cookie. Set to `false` for plain-HTTP/LAN use, or sign-in will not work. |
-
-### Settings in the Admin tab
-
-These are configurable from the Admin tab by the admin user:
-
-| Setting | Default | Description |
-|---|---|---|
-| Max capture seconds | 300 | Maximum duration for a single capture |
-| Max capture packets | 100000 | Maximum packets per capture |
-| Max concurrent captures | 5 | Captures running or finishing up at once, across all users — each holds an SSH connection to a target host plus a local file. Separately, and not configurable: one capture at a time per interface per server, so `eth0` and `eth1` on the same host can run together but a second capture on either is refused |
-| Max simultaneous live streams | 2 | Live-streamed captures at once, across all users. Far lower than the limit above because a live stream costs more than an ordinary capture: an SFTP channel held open on the target, and a tshark run over the whole buffer on every poll. An ordinary capture can still start when this is full |
-| Live stream preview limit (MB) | 16 | How much of a live capture the preview holds and re-reads. Past it the preview stops updating and says so; **the capture itself keeps running and is saved in full**. Raising it costs CPU as well as memory, because every poll re-parses the whole buffer — narrowing the capture with an interface or a filter is the lever that actually helps, and is why a live stream [requires one](#a-live-stream-has-to-be-pointed-at-something) |
-| Session duration (hours) | 8 | Login session lifetime |
-| Session idle timeout (minutes) | 60 | Idle window before a session is deleted, independent of the absolute duration above. `0` disables idle expiry |
-| Device trust (days) | 30 | How long a trusted device skips MFA |
-| Rate limit attempts | 5 | Failed login attempts before lockout |
-| Rate limit lockout (minutes) | 15 | Lockout duration after too many failures |
-| Packet list requests per minute | 30 | Per-user cap on `/api/captures/{id}/packets` calls, which spawn tshark |
-| Capture start requests per minute | 10 | Per-user cap on `/api/captures` (POST), which opens an SSH connection |
-| Live stream requests per minute | 90 | Per-user cap on the live streaming routes. Separate from the packet list cap above because a live view polls on a timer rather than when someone clicks — sharing one budget would leave two streams unable to open a packet |
-
-### Sessions
-
-Sessions are bearer tokens in an `HttpOnly` cookie, stored only as a SHA-256
-digest so the database never holds anything replayable. Three things end a
-session:
-
-| Limit | Where | Default |
-| --- | --- | --- |
-| Absolute lifetime | Admin → Settings, `Session duration (hours)` | 8 hours |
-| Idle timeout | Admin → Settings, `Session idle timeout (minutes)` | 60 minutes (0 disables) |
-| Restart | automatic | every session is invalidated when the container starts |
-
-Because sessions are cleared at startup, restarting the container signs everyone
-out — including you. Trusted devices are separate and survive a restart; they
-skip the TOTP prompt, not the sign-in.
-
-Run pcap-server as a single process. Starting uvicorn with `--workers` would
-clear sessions once per worker as each boots, signing users out repeatedly.
-
-### SSH keys
-
-Upload private keys from the **Admin** tab. They are stored in the `ssh-keys/`
-directory (mounted at `/app/ssh-keys`) and offered as options when connecting to
-a remote server. Keys can be uploaded and deleted from the GUI; no manual file
-placement is needed. When a master key is configured (`MASTER_KEY_FILE` in
-`docker-compose.yml`), uploaded keys are sealed under it the same way
-captures are — a key never exists as a plaintext file on disk, and one
-uploaded before encryption was enabled is sealed in place automatically the
-next time the container starts.
-
-### Running it without a reverse proxy
-
-You can run pcap-server with no proxy in front of it, and for a quick look at a
-capture that is a perfectly reasonable thing to do. Be clear about what you get,
-because it is a **degraded mode, not a normal one**, and the app will not
-pretend otherwise.
-
-**What still works over plain HTTP:** signing in, browsing the capture list,
-opening a capture in the Viewer, the protocol tree and hex dump, display
-filters, and saved views you already have.
-
-**What is refused:** everything that changes state or exports in bulk. Starting
-a capture. Adding or editing a server. Trusting a host's SSH keys. Uploading an
-SSH key. Saving a view. Every admin setting. Downloading a capture. Each refusal
-comes back as an explanation rather than a bare 403, and the app shows a banner
-saying why.
-
-In practice this means **a fresh plain-HTTP install cannot take its first
-capture**: step 3 of [Your first capture](#your-first-capture) is trusting the
-host's keys, and that is a state change. You can register the admin account and
-then go no further.
-
-**There is no flag to turn this off.** That is deliberate. A capture routinely
-contains credentials in cleartext, so handing one over an unencrypted connection
-puts the whole thing on the wire; and an SSH private key uploaded over plain
-HTTP is simply given away. Neither is a risk the app will let you accept by
-setting a variable.
-
-#### The one exception: a genuinely local connection
-
-Loopback counts as secure, because a connection that never leaves the machine
-has no wire to read. **This almost never fires for a containerised install**,
-and the reason catches people out: with a published port (`8080:8080`), the
-connection reaches the container from the Docker bridge gateway, not from
-`127.0.0.1`. As far as the app can tell — correctly — that packet crossed a
-network. Browsing `http://localhost:8080` **on the Docker host itself is still
-read-only.**
-
-Two ways to get a genuinely local connection, both without a proxy:
-
-**1. An SSH tunnel.** The honest answer, and the one to reach for. It is real
-encryption, not a bypass:
-
-```bash
-ssh -N -L 8080:localhost:8080 you@the-docker-host
-```
-
-Then browse `http://localhost:8080` on your own machine. Note this only helps if
-the app sees loopback at the other end — pair it with host networking below, or
-accept read-only.
-
-**2. Host networking.** Drop `ports:` from the compose file and add
-`network_mode: host`. The container then shares the host's network stack, a
-connection from the host arrives as real loopback, and the app is fully
-functional to anyone on that host. This also removes the container's network
-isolation, so it is a trade, not a free win — and it means anyone who can reach
-the host's port 8080 from elsewhere on the LAN still gets the read-only version,
-which is the correct outcome.
-
-#### What you are risking if you expose it anyway
-
-Putting a plain-HTTP pcap-server on a LAN and living with read-only is not
-harmless, even though the destructive operations are blocked:
-
-- **Session cookies cross the wire in the clear.** `COOKIE_SECURE=false` is
-  required for sign-in to work at all over HTTP, and it does what it says.
-  Anyone on the path can lift a session and read every capture you can read.
-- **Your password crosses in the clear at sign-in.** Sign-in is deliberately
-  allowed over HTTP, because refusing it would leave no way in at all rather
-  than a degraded one. That is a trade the app makes knowingly and tells you
-  about; it does not make the password any safer.
-- **Capture contents are readable to anyone watching.** The Viewer works, so
-  packet data — including whatever credentials the capture caught — is being
-  served unencrypted.
-- **TOTP does not save you here.** It authenticates the sign-in; it does nothing
-  about the session cookie that is then sent in the clear on every request.
-
-The short version: read-only over HTTP protects your *configuration and your
-keys*, not your *captures* and not your *session*. If the captures matter, put
-it behind TLS.
-
-#### What not to do
-
-Do not set `TRUST_PROXY_HEADERS=true` to unlock the app without an actual proxy.
-That variable does not mean "pretend this is secure" — it means "believe the
-`X-Forwarded-Proto` header", and **any client can send that header**. Setting it
-with the port published to a network hands full write access, key upload and
-capture download to anyone who can reach the port and type one extra header. It
-is strictly worse than the read-only mode it appears to fix, and it is why the
-variable exists as an opt-in at all rather than being on by default.
-
-If you want the app fully functional, the supported route is TLS in front of
-it. Caddy, Nginx Proxy Manager and Traefik each obtain and renew certificates
-themselves and need very little configuration — see below.
-
-### Behind a reverse proxy
-
-Over plain HTTP pcap-server is read-only — see
-[Traffic in transit](#traffic-in-transit),
-[Running it without a reverse proxy](#running-it-without-a-reverse-proxy), and
-the banner the app shows. Putting it behind TLS restores full access. A worked nginx
-config is in [`docs/nginx.conf.example`](docs/nginx.conf.example), and there is a
-separate guide for **[Nginx Proxy Manager](docs/nginx-proxy-manager.md)**, which
-generates its own config and needs different steps. Three settings are
-load-bearing and easy to miss.
-
-**1. Tell the app that TLS terminated at the proxy.**
-
-```nginx
-proxy_set_header X-Forwarded-Proto $scheme;
-```
-
-and set `TRUST_PROXY_HEADERS=true` in the container. Without both, pcap-server
-sees a plain-HTTP request and stays read-only. The header is only trusted when
-that variable is set, because anyone can send it.
-
-**2. Do not publish the app port once you trust that header.**
-
-Trusting `X-Forwarded-Proto` means anyone who can reach the app directly can
-claim to be the proxy. Bind it to loopback, or drop `ports:` entirely and put
-nginx on the same Docker network:
-
-```yaml
-    ports:
-      - "127.0.0.1:8080:8080"   # not "8080:8080"
-```
-
-**3. Turn proxy buffering off.**
-
-```nginx
-proxy_buffering off;
-```
-
-A capture download is decrypted on the fly. With buffering on, nginx spools
-large responses to `proxy_temp_path`, which writes an unencrypted copy of the
-pcap onto the proxy's disk — undoing the point of encrypting captures at rest.
-
-One more worth setting: `proxy_set_header X-Forwarded-For $remote_addr;` rather
-than the usual `$proxy_add_x_forwarded_for`. The latter appends the real peer to
-whatever the client sent, leaving attacker-supplied text in the header.
-pcap-server reads the rightmost entry for exactly that reason, but sending only
-the address nginx saw removes the ambiguity.
-
-Caddy is an alternative worth knowing about: it obtains and renews Let's Encrypt
-certificates itself, and needs about five lines. nginx is fine — it just needs
-certbot alongside it.
-
-### SSH connection lifetime
-
-A capture uses two SSH connections, and both are released deterministically:
-
-| Connection | Lifetime |
-| --- | --- |
-| The capture | Bound to the tcpdump process and closed with it — on success, failure, timeout, delete and shutdown alike |
-| The pcap download | Its own short-lived connection, closed by its context manager, bounded at 300s |
-
-Connection test, interface discovery, the prerequisite check and remote cleanup
-each open and close their own connection for the single command they run.
-
-Connections use a 15 second login timeout, so a host that accepts TCP without
-completing the SSH handshake cannot hang a request, and keepalives every 30
-seconds (three missed before the connection is dropped) so a peer that
-disappears mid-capture is noticed rather than waited on. The capture monitor
-gives up at the capture's duration plus 60 seconds regardless.
-
-### Rotating the master key
-
-If the master key is disclosed — pasted into a chat, caught in a screenshot,
-committed by accident — it has to be replaced, and swapping the key file alone
-will not do it: the app refuses to start against captures the new key cannot
-open, which is the fail-closed behaviour above doing its job.
-
-Rotate it properly instead. Because the master key only ever wraps per-file data
-keys and never touches a capture's contents, a rotation rewrites 84 bytes per
-file rather than re-encrypting anything — a 40 GB capture rotates as fast as a
-40 KB one.
-
-**Stop the app first.** A capture being written while its header is swapped is
-the one way this can corrupt one; the tool refuses to touch a file modified in
-the last 10 seconds, but a stopped app is the real guarantee.
-
-```bash
-docker compose stop pcap-server
-
-docker compose run --rm --entrypoint python pcap-server -m backend.rekey \
-    --captures-dir /app/captures \
-    --ssh-keys-dir /app/ssh-keys \
-    --old-key-file /run/secrets/pcap_master_key \
-    --generate-new-key /app/data/master.key.new
-```
-
-That is a **dry run**: it reports what it would move and writes nothing, key
-file included. Add `--apply` to commit it. Then put the new key where the old
-one was and start up again:
-
-```bash
-cp /opt/docker/pcap/data/master.key.new /opt/docker/pcap/secrets/master.key
-docker compose start pcap-server
-docker compose logs pcap-server | grep -i encryption
-```
-
-The log will report `encryption enabled (key id ...)` with the new id.
-
-**Keep the old key until that line appears and a capture opens in the viewer.**
-Until then it is the only thing that can read your captures.
-
-Notes on how it behaves, which matter if something goes wrong mid-run:
-
-- It covers captures **and** stored SSH keys. Moving only one would leave the
-  other unopenable, and startup refuses to continue past that.
-- It is safe to re-run. A file already under the new key is recognised and
-  skipped, so an interrupted run finishes on the second pass.
-- Any file it cannot move is left untouched under the old key and the run exits
-  non-zero. There is no partial success reported as success.
-- A file sealed under some third key is named and skipped, never guessed at.
-- It never deletes a capture. The worst case is a file still on the old key,
-  named in the output.
-
-There is no supported way to rotate while the app runs, and no way to recover
-captures whose key is lost — that is the point of the design, not a gap in it.
+- **Over plain HTTP the app is read-only.** It will not start a capture, hand a
+  capture over, or change any setting. This is intended, and it is enough to
+  block your first capture — see
+  [Running it without a reverse proxy](docs/operating.md#running-it-without-a-reverse-proxy).
+- **`COOKIE_SECURE=false` is already set** in the published compose file, which
+  is what lets sign-in work over plain HTTP at all. Set it back to `true` once
+  you are behind TLS.
 
 ## Architecture
 
@@ -1158,9 +561,11 @@ so read the skip list.
 | `backend/capture.py` | a capture's life from start to a terminal status |
 | `backend/ssh_manager.py` | connections, the prerequisite probe, key handling |
 | `backend/crypto.py`, `vault.py`, `pcapsource.py`, `rekey.py` | encryption at rest, and reading it back without a plaintext file |
+| `backend/resetmfa.py` | host-side second-factor reset, for when nobody can sign in to press the button |
 | `backend/packet_parser.py` | everything that shells out to tshark or capinfos |
 | `backend/database.py` | the SQLite schema and every query |
 | `frontend/` | `index.html`, `css/style.css`, `js/app.js`. No build step |
+| `docs/` | one document per subject; the README links them all from the top |
 | `tests/` | API and unit suites |
 | `tests/browser/` | playwright suites driving the real UI |
 

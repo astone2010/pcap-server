@@ -1,0 +1,150 @@
+# Security
+
+*Part of the [pcap-server](../README.md) documentation.*
+
+A packet capture is one of the most sensitive files a machine can produce: it
+contains whatever crossed the wire, credentials included. Every design decision
+below follows from that.
+
+**[architecture.md](architecture.md) is the full account.** This is
+the summary.
+
+## Captures at rest
+
+Envelope encryption. A master key wraps a per-file data key, and the capture is
+sealed in 64 KiB chunks with AES-256-GCM. Each chunk is bound to its position,
+so chunks cannot be reordered within a file or spliced between files, and an
+explicit terminator makes truncation detectable rather than looking like a short
+capture.
+
+The master key comes from outside the data volume — a Docker secret, an
+environment variable, or derived from an admin passphrase with scrypt and held
+only in RAM. Encrypting with a key stored beside the data would protect nothing.
+
+**Startup fails closed.** A missing key with encrypted captures present, or a
+key that does not open the captures already stored, stops the app rather than
+silently writing new captures under a different key or in the clear. Running
+unencrypted is possible but has to be asked for explicitly with
+`ALLOW_UNENCRYPTED_CAPTURES=true`.
+
+**No plaintext pcap ever reaches disk.** A capture is sealed as it arrives over
+SFTP, not written and then encrypted. To read one, it is decrypted in flight and
+streamed to tshark, so the only plaintext that exists is the few kilobytes in
+transit between two processes.
+
+Uploaded SSH private keys are sealed the same way, and a key uploaded before
+encryption was switched on is sealed in place at the next start.
+
+## Traffic in transit
+
+**Browser to pcap-server** is yours to terminate, because a LAN appliance cannot
+obtain its own certificates. Rather than pretend, the app degrades explicitly:
+**over plain HTTP it runs read-only.** Anything that changes state, and anything
+that exports a capture in bulk, is refused with an explanation rather than a
+bare 403. Viewing is allowed. Sign-in, sign-out and enrolment stay open, because
+refusing those would leave no way in at all rather than a degraded one.
+
+Loopback counts as secure — a connection that never leaves the machine has no
+wire to read. `X-Forwarded-Proto` is honoured only when `TRUST_PROXY_HEADERS` is
+set, because any client can send it. See
+[Behind a reverse proxy](operating.md#behind-a-reverse-proxy) for the three settings that
+matter, including why proxy buffering must be off, and
+[Running it without a reverse proxy](operating.md#running-it-without-a-reverse-proxy) for
+what the degraded mode actually allows — including why loopback does not rescue
+a containerised install.
+
+**pcap-server to the target** is SSH with keys only. `asyncssh.connect` is
+called with `password=None` and `passphrase=None` explicitly, so there is no
+path by which a password could be used.
+
+Host keys are verified per host, and verification is not optional: a host with
+no trusted keys is refused outright rather than connected to unverified. That
+matters more than it sounds, because asyncssh reads "no known-hosts file" as
+*skip validation*, not as *use the default one* — so the alternative to
+refusing is offering the SSH key to whatever answers on that address.
+
+A host answers with one key per algorithm and whichever the two ends negotiate
+is the one checked, so all of a host's keys are trusted or forgotten as a set.
+They are offered strongest first, so a host with both an ed25519 and an RSA key
+is verified against the ed25519 one regardless of the order they were scanned
+in. The negotiated algorithm is reported, and a negotiation weaker than what
+the host offered is flagged.
+
+Trust is stored per endpoint, not per server: several server entries can point
+at one host and they share a single trust decision. Establishing it is
+admin-only, since re-pinning a host decides what every user's connections to it
+are checked against.
+
+Establishing it is also a two-step review. Scanning a host asks it for its keys
+and stores nothing; the fingerprints are displayed, and only the keys the
+admin accepts are pinned — the ones that were on screen, not the result of a
+second scan, so a key cannot change between being read and being accepted.
+
+## Signing in
+
+| | |
+| --- | --- |
+| Passwords | scrypt, N = 2^17, r = 8, p = 1. Parameters stored in the hash, so cost can be raised later without invalidating anyone |
+| Comparison | constant-time |
+| Sessions | 48 random bytes; the database stores **only the SHA-256 digest**, so a leaked database hands over no live sessions |
+| Cookie | `HttpOnly`, `SameSite=Strict`, `Secure` by default |
+| Expiry | absolute and idle, both adjustable; an idle session is deleted, not merely rejected |
+| Second factor | TOTP, enforced by the API and not only by the UI |
+| Trusted devices | separate token, also stored as a digest, with its own expiry |
+| Login throttling | per client IP, adjustable, default five attempts then fifteen minutes |
+
+## What runs on the target host
+
+One command: `tcpdump -w <file> -v` plus the interface, packet cap, snap length
+and your filter, wrapped in `timeout`. Nothing is installed and nothing is
+changed. The prerequisite probe is read-only; its one privileged call is
+`sudo -n true`, which asks whether sudo would work without doing anything.
+
+`-z`, `-Z`, `-W`, `-G`, `-C`, `-r`, `-F` and `-V` are refused on the fully built
+argument list immediately before execution. Under sudo those turn a capture into
+command execution or arbitrary file reads as root. Nothing user-supplied reaches
+tcpdump as a flag, which is precisely why this is checked rather than assumed.
+
+Filters are validated before they travel. The capture filter rejects `;`, `$`,
+a backtick and a backslash — none of which mean anything in BPF — and is passed
+after `--` as a single shell-quoted argument, so a filter can never become part
+of the command. `&` and `|` are allowed, because they are BPF's own bitwise
+operators and every `tcpflags` or byte-offset filter needs them; the quoting is
+what makes them safe, and the character check is the second line under it
+rather than the only one. SSH usernames are constrained to characters
+sudoers gives no meaning to, so a username can never widen the sudoers rule the
+prerequisite check prints for you to paste as root.
+
+**pcap-server refuses to capture from the machine it runs on.** Capturing an
+interface carrying its own traffic would record your sign-in — over plain HTTP
+that is your password verbatim, and on any connection your session cookie and
+TOTP code — into a capture then stored and browsable in this UI. On a Docker
+host, capturing `any` also sweeps the bridge interfaces and records every other
+container.
+
+## In the browser
+
+Content-Security-Policy blocks script running on this origin from reaching any
+other host, by fetch, image URL or form submission; `script-src` needs no
+`unsafe-inline`. Also set: `nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer`, a restrictive `Permissions-Policy`, and
+same-origin COOP and CORP. HSTS is sent only where TLS is genuinely in use.
+
+## What this does not protect against
+
+- Anyone who can execute code inside the running container, or read its memory.
+  The key has to be present for the app to run unattended. That is the honest
+  limit of any at-rest scheme.
+- The pcap exists in the clear in `/tmp` on the **target** host for the duration
+  of the capture. Inherent to running `tcpdump -w` on a remote machine; it is
+  deleted after transfer.
+- A live stream holds up to the preview limit (16 MB by default) of unencrypted
+  packet data in the server's memory while the capture runs, discarded when it
+  ends. Packets already pass through memory on their way to tshark; what a live
+  stream changes is how much and for how long. It is never written to the data
+  volume.
+- Self-capture detection cannot see the host's LAN address from inside a bridged
+  container, so it guards against the common mistakes rather than proving
+  non-locality.
+- Passwordless sudo on the target is a privilege boundary you are choosing to
+  open. The `setcap` route avoids it entirely and is preferred.

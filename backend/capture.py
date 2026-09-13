@@ -418,11 +418,13 @@ class CaptureManager:
 
         info = CaptureInfo(
             id=capture_id,
+            name=req.name,
             server_id=server.id,
             server_label=server_label(server),
             interface=req.interface,
             user_id=user_id,
             live_stream=req.live_stream,
+            bpf_filter=req.bpf_filter,
             status=CaptureStatus.RUNNING,
             started_at=datetime.now(timezone.utc),
             command=cmd_str,

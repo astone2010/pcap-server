@@ -47,6 +47,7 @@ over an unencrypted connection.
 | `vault.py` | Key resolution, startup policy, plaintext migration |
 | `localnet.py` | Detecting that a capture target is the machine pcap-server runs on |
 | `bpf.py` | Deciding whether a capture filter can match anything, before the capture runs |
+| `resetmfa.py` | Host-side second-factor reset, for when nobody can sign in to press the button |
 
 There is no ORM, no service layer and no dependency-injection container. Routes
 call the managers directly, and `database.py` is the only module that writes
@@ -298,6 +299,7 @@ required on the target: there is no password to give it.
 | Cookie | `HttpOnly`, `SameSite=Strict`, `Secure` by default (`COOKIE_SECURE=false` for plain-HTTP deployments) |
 | Expiry | Absolute expiry enforced in SQL, idle expiry enforced on read. An idle session is *deleted*, not merely rejected, so a later request inside the window cannot revive it |
 | Second factor | TOTP with `pyotp`, one-step validation window either side of the current code |
+| Second-factor reset | An admin may reset **another** account (`POST /api/admin/users/{id}/totp/reset`), which NULLs the secret, deletes every session that account holds and forgets its trusted devices. Self-reset is refused: reaching a route means already being past the second factor, so it cannot help a locked-out admin, and it would let a stolen session strip MFA and enrol the thief's own authenticator. The locked-out sole admin is answered out of band by `python -m backend.resetmfa`, at the bar of host access |
 | Trusted devices | Separate 48-byte token, also stored as a digest, with its own expiry |
 | Login throttling | Per-client-IP, five attempts then a fifteen-minute lockout, both adjustable at runtime |
 
@@ -342,7 +344,21 @@ fails here instead of quietly handing root a `-z`.
 
 **BPF filters** reject shell metacharacters and are passed as a single argument
 after `--`, so a filter beginning with a dash is read as an expression rather
-than an option, and a filter can never become part of the command.
+than an option, and a filter can never become part of the command. The same
+validator guards `/api/filters`, where an operator saves a filter under a name
+of their own: a saved filter is replayed into a real capture later, so an
+expression refused at the Capture form must not become runnable by arriving
+through a different box. `&` and `|` are deliberately allowed — they are BPF's
+own bitwise operators and every `tcpflags` expression needs them.
+
+**A capture's filter is stored on its record**, in `captures.bpf_filter`, and
+not recovered from the command string. Both are true of `interface` for the
+same reason: re-parsing a shell command that also carries `-i`, `-w` and `-s`
+would mean a second BPF parser in the codebase, and a rule that depends on
+re-parsing a command breaks the first time the command changes shape. Captures
+written before the column existed read as empty, and the UI treats empty as
+"says nothing" rather than as "no filter" — guessing unfiltered loses a label,
+guessing a filter would be a claim about what is inside the file.
 
 **Display filters** reject `;`, `$`, backtick and backslash, and are capped in
 length. `&` and `|` are deliberately allowed: a display filter reaches tshark
@@ -525,7 +541,17 @@ cannot do TLS would lock operators out of their own tool.
 | `/run/secrets/…` | Master key | Deliberately **not** on a data volume |
 
 Tables: `users`, `sessions`, `trusted_devices`, `active_servers`, `known_hosts`,
-`known_usernames`, `captures`, `settings`.
+`known_usernames`, `captures`, `capture_views`, `custom_filters`, `settings`.
+
+Four of those are **scoped to one account** and hold what an operator was
+looking at rather than how the app is configured: `active_servers`,
+`known_usernames`, `capture_views` and `custom_filters`. Each carries a
+`user_id` foreign key onto `users`, each is removed with its owner by
+`ON DELETE CASCADE` rather than by anything remembering to, and every statement
+that reads or writes one names the `user_id` in its own `WHERE` clause rather
+than checking ownership beside the query. A saved capture filter is in that
+group for the same reason a server is: `host 10.0.0.7 and tcp port 445` says
+what is being investigated and where.
 
 Schema changes are applied in place at startup by `_migrate()`, guarded by
 `PRAGMA table_info` checks so they are idempotent. One-shot data migrations are

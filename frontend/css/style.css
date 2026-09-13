@@ -5,23 +5,41 @@
 }
 
 /* Dark is the default: it applies to :root so the page is themed before the
-   stored preference is read, avoiding a flash of the wrong theme. */
+   stored preference is read, avoiding a flash of the wrong theme.
+
+   TRUE BLACK, not near-black. On an OLED panel a black pixel is an unlit pixel,
+   so the page ground costs no light at all and the surfaces above it read as
+   genuinely raised rather than as one dark grey against a slightly darker one.
+   It is also the case this app is most often used in -- a packet list read at
+   2am is why the light theme is called Flashbang.
+
+   The ladder still has four rungs, because contrast between surfaces is what
+   makes a dense table legible. #000 is the ground; everything that sits on it
+   steps up from there rather than the whole page floating in mid-grey.
+
+   The accent is a periwinkle blue, replacing the teal it used to be. Teal sat
+   almost exactly on --pkt-udp, so the one colour meaning "this is interactive"
+   and the one meaning "this row is UDP" were the same colour in two places.
+   Blue is clear of every packet hue: --pkt-dns is a cyan and --pkt-tls a
+   violet, and neither is mistakable for this at a glance. Deliberately not a
+   fully saturated blue either -- at OLED's contrast a saturated hue on true
+   black fringes, and this is a face people read for an hour at a time. */
 :root,
 :root[data-theme="dark"] {
-    --bg-primary: #16181d;
-    --bg-secondary: #0f1115;
-    --bg-surface: #22262e;
-    --bg-hover: #2c313b;
-    --text-primary: #e3e6ea;
-    --text-secondary: #a4acb9;
-    --text-muted: #6d7684;
-    --accent: #2dd4bf;
-    --accent-hover: #5eead4;
-    --accent-fg: #0b0f10;
+    --bg-primary: #000000;
+    --bg-secondary: #08090c;
+    --bg-surface: #14161c;
+    --bg-hover: #1e222a;
+    --text-primary: #e6e9ee;
+    --text-secondary: #a2abb9;
+    --text-muted: #6b7481;
+    --accent: #6d9eff;
+    --accent-hover: #9cbcff;
+    --accent-fg: #05070d;
     --success: #4ade80;
     --warning: #fbbf24;
     --danger: #f87171;
-    --border: #2c313b;
+    --border: #23272f;
 
     --pkt-bad: #f87171;
     --pkt-reset: #fb923c;
@@ -44,8 +62,8 @@
     --text-primary: #171a1f;
     --text-secondary: #4a5462;
     --text-muted: #7c8694;
-    --accent: #0d9488;
-    --accent-hover: #0f766e;
+    --accent: #2b5fd9;
+    --accent-hover: #1e47a8;
     --accent-fg: #ffffff;
     --success: #15803d;
     --warning: #b45309;
@@ -320,6 +338,78 @@ body {
     border-bottom-color: var(--accent);
 }
 
+/* One tab per capture open in the Viewer, growing to the right of the fixed
+   tabs. It scrolls rather than wrapping: the bar is a fixed-height strip above
+   a full-height panel, and a second row of tabs would push the packet list
+   down every time another capture was opened. */
+.capture-tab-strip {
+    display: flex;
+    gap: 2px;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
+/* Separated from the fixed tabs by a rule rather than a gap, so it is clear
+   which of these are places in the app and which are things you have open. */
+.capture-tab-strip:not(:empty) {
+    margin-left: 8px;
+    padding-left: 8px;
+    border-left: 1px solid var(--border);
+}
+
+.tab-capture {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-right: 6px;
+    max-width: 200px;
+    flex-shrink: 0;
+}
+
+.tab-capture-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Still recording. The same signal the live bar inside the panel carries, on
+   the tab, so a capture left running in a background tab still says so. */
+.tab-live-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+    animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tab-live-dot { animation: none; }
+}
+
+.tab-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0 2px;
+    cursor: pointer;
+    border-radius: 3px;
+}
+
+.tab-close:hover {
+    color: var(--danger);
+    background: var(--bg-hover);
+}
+
+/* Two buttons in one cell on a narrow admin table. */
+.admin-user-actions {
+    white-space: nowrap;
+    text-align: right;
+}
+
 .main-content {
     flex: 1;
     overflow: hidden;
@@ -435,6 +525,15 @@ body {
     min-width: 200px;
 }
 
+/* The name takes its own full-width row above the rest: it is a sentence, not
+   a setting, and sharing a row with three number boxes sized it like one. */
+.capture-config .form-group.capture-name {
+    flex: 1 1 100%;
+    min-width: 200px;
+}
+
+.capture-config .form-group.capture-name input { width: 100%; }
+
 /* The capture tab is a form, two expandable explainers and a list stacked
    top to bottom -- not a fixed-height split like the viewer -- so it scrolls
    as one document. .panel is overflow:hidden, and without this the filter
@@ -549,6 +648,23 @@ body {
     white-space: normal;
     font-size: 0.8125rem;
     color: var(--text-secondary);
+}
+
+/* The second line of the viewer label: which host, which interface, which
+   capture filter. Its own line rather than appended to the first, because on a
+   named capture with a composed filter the pair runs well past the width of the
+   toolbar and wrapping mid-expression is unreadable. */
+.viewer-capture-origin {
+    display: block;
+    margin-top: 2px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.viewer-origin-filter {
+    font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
 }
 
 .packet-toolbar input {
@@ -2028,6 +2144,23 @@ body {
 
 .filter-use { text-align: right; white-space: nowrap; width: 1%; }
 
+/* The operator's own saved filters, first in the list. Marked with the accent
+   border rather than a different background: it sits among eighty-odd built-in
+   groups and needs to be findable at a glance, not to look like a different
+   kind of thing. */
+.filter-group-own { border-left: 3px solid var(--accent); }
+
+.bpf-save-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+}
+
+.save-filter-ok { color: var(--success); }
+.save-filter-bad { color: var(--danger); }
+
 
 /* --- live streaming ----------------------------------------------------- */
 /* A capture you can watch while it records. The bar only exists in the Viewer
@@ -2150,4 +2283,33 @@ body {
 .badge-live {
     background: color-mix(in srgb, var(--accent) 18%, transparent);
     color: var(--accent);
+}
+
+/* The capture filter: the library's name for it where the library knows one,
+   and the expression verbatim where it does not.
+   Deliberately NOT uppercased like the status badges beside it. Those are
+   states, and a state is a label; this is content read back off the capture,
+   and `HOST 10.0.0.1` does not read as a BPF expression. Muted rather than
+   coloured for the same reason -- it reports what was asked for, not whether
+   anything is wrong.
+   Truncated rather than allowed to wrap: a composed filter can run to a couple
+   of hundred characters and would push the buttons off the row. The title
+   carries the whole of it. */
+.badge-filter {
+    background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
+    color: var(--text-secondary);
+    text-transform: none;
+    font-weight: 500;
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* An expression the library has no name for, so the badge is showing the filter
+   itself rather than a description of it. Monospace says which of the two you
+   are looking at. */
+.badge-filter-raw {
+    font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 0.625rem;
 }

@@ -51,6 +51,8 @@ from backend.models import (
     CaptureStatus,
     CaptureView,
     CaptureViewRequest,
+    CustomFilter,
+    CustomFilterRequest,
     KnownHostConfirm,
     KnownHostEndpoint,
     ServerAuth,
@@ -75,7 +77,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.25"
+APP_VERSION = "0.1.0-dev.26"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -685,6 +687,62 @@ async def admin_delete_user(target_user_id: str, user: dict = Depends(require_ad
     return {"ok": True}
 
 
+@app.post("/api/admin/users/{target_user_id}/totp/reset")
+async def admin_reset_totp(target_user_id: str, user: dict = Depends(require_admin)):
+    """Clear another account's second factor so it enrols again at next login.
+
+    The alternative was deleting the user and making them again, which also
+    discards their servers, their stored usernames, their saved filters and
+    every capture they own -- a punishment for losing a phone.
+
+    AN ADMIN MAY NOT RESET THEIR OWN, and the refusal is the security property
+    here rather than an inconvenience:
+
+      * It would not help. Reaching this route means holding a session, and
+        holding a session means already being past the second factor. The
+        admin who is actually locked out cannot call it. Their way back in is
+        `python -m backend.resetmfa`, run against the container by someone with
+        access to the host -- which is the right bar for the one operation that
+        can strip MFA from the top account.
+      * It would hurt. A stolen session cookie on an admin account could strip
+        that account's second factor and enrol the thief's own authenticator,
+        turning a session that expires in hours into a login that does not.
+        Self-service MFA removal from inside a session is exactly the
+        persistence step to refuse.
+
+    Both halves of the revocation are here, and neither is optional. A live
+    session carries both factors already, so leaving one alive would let the
+    old authenticator's holder keep working for up to session_hours after the
+    reset. A trusted device is a second factor in its own right -- the whole
+    point of it is skipping TOTP -- so it goes too, or the reset is skipped on
+    exactly the devices that already had the most access.
+    """
+    if target_user_id == user["id"]:
+        raise HTTPException(400, {
+            "code": "cannot_reset_own_totp",
+            "reason": (
+                "An admin cannot reset their own two-factor authentication from "
+                "inside a signed-in session. It would not help if you were locked "
+                "out -- you could not sign in to reach it -- and it would let "
+                "anyone holding a stolen session replace your second factor with "
+                "their own."
+            ),
+            "remedy": (
+                "Ask another admin to reset it, or run "
+                "`docker compose run --rm --entrypoint python pcap-server "
+                "-m backend.resetmfa <username> --apply` on the host."
+            ),
+        })
+    if not db.reset_totp(target_user_id):
+        raise HTTPException(404, "user not found")
+    db.delete_sessions_for_user(target_user_id)
+    db.delete_trusted_devices(target_user_id)
+    logger.warning(
+        "MFA reset for user %s by admin %s", target_user_id, user["id"]
+    )
+    return {"ok": True}
+
+
 # --- admin: settings ---
 
 @app.get("/api/admin/settings")
@@ -1229,6 +1287,44 @@ async def check_bpf_filter(
         "message": warning.message,
         "detail": warning.detail,
     }}
+
+
+# --- the operator's own saved capture filters ---
+#
+# The built-in library is a constant in app.js and is the same for everyone.
+# These sit alongside it and belong to one account: a capture filter routinely
+# names the hosts and ports somebody is investigating, so it is treated the way
+# this app treats servers and usernames rather than as shared reference
+# material. Every query below is scoped by user_id in the statement itself.
+
+
+@app.get("/api/filters")
+async def list_custom_filters(user: dict = Depends(get_current_user)):
+    return [CustomFilter(**row) for row in db.list_custom_filters(user["id"])]
+
+
+@app.post("/api/filters")
+async def create_custom_filter(
+    body: CustomFilterRequest,
+    user: dict = Depends(get_current_user),
+):
+    try:
+        row = db.add_custom_filter(user["id"], body.label, body.expression)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return CustomFilter(**row)
+
+
+@app.delete("/api/filters/{filter_id}")
+async def delete_custom_filter(
+    filter_id: str,
+    user: dict = Depends(get_current_user),
+):
+    # 404 on someone else's id for the same reason _require_own_capture gives
+    # it: a 403 would confirm the id exists.
+    if not db.delete_custom_filter(user["id"], filter_id):
+        raise HTTPException(404, "filter not found")
+    return {"ok": True}
 
 
 # --- captures ---

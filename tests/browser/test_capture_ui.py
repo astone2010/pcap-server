@@ -27,6 +27,10 @@ KEY_NAME = "browser-test-key"
 def clean_slate(api_client):
     for server in api_client.get("/api/servers").json():
         api_client.delete(f"/api/servers/{server['id']}")
+    # Saved filters are per-user and this suite shares one account, so a filter
+    # left behind by one test is a row in another test's library.
+    for f in api_client.get("/api/filters").json():
+        api_client.delete(f"/api/filters/{f['id']}")
     yield
 
 
@@ -42,11 +46,16 @@ async def _open_library(page):
 
 
 async def test_the_tab_bar_no_longer_has_a_filters_tab(app_page):
-    """One fewer place to go. The library is not a destination any more."""
+    """One fewer place to go. The library is not a destination any more.
+
+    Nor is the Viewer: it has no standing tab either, because it led to an
+    empty panel for most of a session. Captures open as tabs of their own --
+    see the capture-tab section at the end of this file.
+    """
     labels = await app_page.eval_on_selector_all(
         ".tab:not([hidden])", "els => els.map(e => e.textContent.trim())"
     )
-    assert labels == ["Servers", "Capture", "Viewer", "Admin"]
+    assert labels == ["Servers", "Capture", "Admin"]
 
 
 async def test_switching_tabs_shows_exactly_one_panel(app_page):
@@ -559,3 +568,429 @@ async def test_the_browser_check_agrees_with_the_python_one(app_page):
 
     mismatches = [(e, js, py) for e, js, py in zip(corpus, in_browser, in_python) if js != py]
     assert not mismatches, f"browser and server models disagree: {mismatches}"
+
+
+# --- the capture filter on the capture list ----------------------------------
+#
+# A capture used to say where it ran and what it was called, and nothing about
+# what it was selecting for -- so an empty packet list gave no way to tell "the
+# network was quiet" from "the filter excluded it". Those are opposite
+# conclusions from the same screen.
+#
+# The list is driven directly here rather than by taking real captures: what is
+# under test is the badge, and a real capture needs a target host, a real
+# tcpdump and a pcap coming back.
+
+
+async def _list(page, *captures):
+    await _capture_tab(page)
+    await page.evaluate(
+        """(rows) => {
+            captures = rows;
+            activeServers = [];
+            renderCaptures();
+        }""",
+        list(captures),
+    )
+    await page.wait_for_selector(".capture-item")
+
+
+def _capture(**over):
+    base = {
+        "id": "11111111-2222-3333-4444-555555555555",
+        "name": "a capture",
+        "server_id": "s1",
+        "server_label": "web-01 (root@10.0.0.5)",
+        "status": "completed",
+        "interface": "eth0",
+        "live_stream": False,
+        "bpf_filter": "",
+        "packet_count": 12,
+        "file_size": 2048,
+        "error": "",
+        "command": "tcpdump -w /tmp/x.pcap -i eth0",
+    }
+    return {**base, **over}
+
+
+async def test_a_filter_the_library_knows_is_shown_by_its_name(app_page):
+    """`tcp port 443` is HTTPS in the library, and the library is where the
+    name comes from -- one list, so a filter cannot be offered under one name
+    and listed under another."""
+    await _list(app_page, _capture(bpf_filter="tcp port 443"))
+    assert (await app_page.inner_text(".badge-filter")).strip() == "HTTPS"
+
+
+async def test_the_badge_carries_the_expression_itself_in_its_title(app_page):
+    """The name describes the filter; the title is the filter. A capture was
+    run with an expression, not with a description of one."""
+    await _list(app_page, _capture(bpf_filter="tcp port 443"))
+    title = await app_page.get_attribute(".badge-filter", "title")
+    assert "tcp port 443" in title
+
+
+async def test_an_expression_the_library_does_not_know_is_shown_verbatim(app_page):
+    """No partial matching. Naming `tcp port 443 and host 10.0.0.1` "HTTPS"
+    would name the capture after the broader half of its own filter."""
+    composed = "tcp port 443 and host 10.0.0.1"
+    await _list(app_page, _capture(bpf_filter=composed))
+    assert (await app_page.inner_text(".badge-filter")).strip() == composed
+    # And it is marked as a raw expression rather than a name, which is what
+    # sets it in a monospace face.
+    assert await app_page.locator(".badge-filter-raw").count() == 1
+
+
+async def test_an_unfiltered_capture_carries_no_badge_at_all(app_page):
+    """Empty means "no filter" OR "taken before the column existed", and the
+    two are indistinguishable. A badge either way would be a claim; silence is
+    not."""
+    await _list(app_page, _capture(bpf_filter=""))
+    assert await app_page.locator(".badge-filter").count() == 0
+
+
+async def test_the_badge_is_not_uppercased_like_the_status_badges(app_page):
+    """`HOST 10.0.0.1` does not read as a BPF expression. The status badges
+    beside it are labels for states; this is content read off the capture."""
+    await _list(app_page, _capture(bpf_filter="host 10.0.0.1"))
+    transform = await app_page.eval_on_selector(
+        ".badge-filter", "el => getComputedStyle(el).textTransform"
+    )
+    assert transform == "none"
+
+
+# --- requiring a name --------------------------------------------------------
+
+
+async def test_the_capture_form_refuses_to_start_without_a_name(app_page):
+    """Required by the form and not by the API -- see CaptureRequest. What is
+    asserted is that nothing is sent, not that a 4xx comes back."""
+    await _capture_tab(app_page)
+    await app_page.evaluate(
+        """() => {
+            window.__posted = false;
+            window.__origFetch = window.fetch;
+            window.fetch = (url, opts) => {
+                if (String(url).endsWith('/api/captures') && opts && opts.method === 'POST') {
+                    window.__posted = true;
+                }
+                return window.__origFetch(url, opts);
+            };
+            const sel = document.getElementById('cap-server');
+            sel.innerHTML = '<option value="s1">s1</option>';
+            sel.value = 's1';
+            document.getElementById('cap-name').value = '';
+        }"""
+    )
+    await app_page.click("#btn-start-capture")
+    await app_page.wait_for_selector("#cap-name-msg.save-filter-bad")
+    assert await app_page.evaluate("window.__posted") is False
+
+
+async def test_the_name_field_is_the_one_focused_when_it_is_missing(app_page):
+    """Saying no is half of it; the other half is putting the cursor where the
+    answer goes."""
+    await _capture_tab(app_page)
+    await app_page.evaluate(
+        """() => {
+            const sel = document.getElementById('cap-server');
+            sel.innerHTML = '<option value="s1">s1</option>';
+            sel.value = 's1';
+            document.getElementById('cap-name').value = '';
+        }"""
+    )
+    await app_page.click("#btn-start-capture")
+    assert await app_page.evaluate("() => document.activeElement.id") == "cap-name"
+
+
+# --- the pre-capture summary -------------------------------------------------
+
+
+async def test_starting_a_capture_asks_first_and_says_what_it_will_do(app_page):
+    """Three of the six fields mean "the server maximum" when left blank, so
+    what is about to happen is not legible from the form itself."""
+    await _capture_tab(app_page)
+    await app_page.evaluate(
+        """() => {
+            window.__posted = false;
+            window.__origFetch = window.fetch;
+            window.fetch = (url, opts) => {
+                if (String(url).endsWith('/api/captures') && opts && opts.method === 'POST') {
+                    window.__posted = true;
+                    return Promise.resolve(new Response('{"id":"x"}', {
+                        status: 200, headers: { 'Content-Type': 'application/json' },
+                    }));
+                }
+                return window.__origFetch(url, opts);
+            };
+            const sel = document.getElementById('cap-server');
+            sel.innerHTML = '<option value="s1">web-01</option>';
+            sel.value = 's1';
+        }"""
+    )
+    await app_page.fill("#cap-name", "slow logons")
+    await app_page.fill("#cap-bpf", "tcp port 445")
+
+    # expect_event rather than a handler plus a poll: the click blocks in the
+    # page until the dialog is answered, so there is nothing to wait for
+    # afterwards that would not already have happened.
+    async with app_page.expect_event("dialog") as info:
+        await app_page.click("#btn-start-capture")
+    dialog = await info.value
+    summary = dialog.message
+    await dialog.dismiss()
+
+    assert "slow logons" in summary
+    assert "web-01" in summary
+    assert "tcp port 445" in summary
+    # Dismissed, so nothing was sent.
+    assert await app_page.evaluate("window.__posted") is False
+
+
+async def test_a_blank_duration_is_described_rather_than_shown_as_blank(app_page):
+    """An empty Duration box does not look like five minutes of capture."""
+    await _capture_tab(app_page)
+    summary = await app_page.evaluate(
+        """() => describeCapture({
+            name: 'x', interface: 'any', bpf_filter: '', live_stream: false,
+        }, 'web-01')"""
+    )
+    assert "the server maximum" in summary
+    assert "none" in summary
+
+
+# --- captures open as tabs of their own --------------------------------------
+
+
+async def test_there_is_no_viewer_tab_until_a_capture_is_open(app_page):
+    assert await app_page.locator(".tab-capture").count() == 0
+    assert await app_page.locator("#capture-tab-strip").inner_html() == ""
+
+
+async def test_an_open_capture_gets_a_tab_labelled_with_its_name(app_page):
+    await app_page.evaluate(
+        """() => {
+            captures = [{ id: 'cap-1', name: 'slow logons', status: 'completed',
+                          server_id: 's1', live_stream: false, bpf_filter: '' }];
+            openCaptures = ['cap-1'];
+            viewingCaptureId = 'cap-1';
+            renderCaptureTabs();
+        }"""
+    )
+    await app_page.wait_for_selector(".tab-capture")
+    assert (await app_page.inner_text(".tab-capture-name")).strip() == "slow logons"
+    assert await app_page.locator(".tab-capture.active").count() == 1
+
+
+async def test_two_captures_open_at_once_are_two_tabs(app_page):
+    """The point of the change: comparing two captures is clicking between
+    them, not going back to the list each time."""
+    await app_page.evaluate(
+        """() => {
+            captures = [
+                { id: 'a', name: 'before', status: 'completed', server_id: 's', live_stream: false, bpf_filter: '' },
+                { id: 'b', name: 'after', status: 'completed', server_id: 's', live_stream: false, bpf_filter: '' },
+            ];
+            openCaptures = ['a', 'b'];
+            viewingCaptureId = 'b';
+            renderCaptureTabs();
+        }"""
+    )
+    await app_page.wait_for_selector(".tab-capture")
+    names = await app_page.eval_on_selector_all(
+        ".tab-capture-name", "els => els.map(e => e.textContent.trim())"
+    )
+    assert names == ["before", "after"]
+    active = await app_page.eval_on_selector(
+        ".tab-capture.active", "el => el.dataset.captureId"
+    )
+    assert active == "b"
+
+
+async def test_a_capture_with_no_name_falls_back_to_a_short_id(app_page):
+    await app_page.evaluate(
+        """() => {
+            captures = [{ id: 'abcdef0123456789', name: '', status: 'completed',
+                          server_id: 's', live_stream: false, bpf_filter: '' }];
+            openCaptures = ['abcdef0123456789'];
+            viewingCaptureId = 'abcdef0123456789';
+            renderCaptureTabs();
+        }"""
+    )
+    await app_page.wait_for_selector(".tab-capture")
+    assert (await app_page.inner_text(".tab-capture-name")).strip() == "abcdef01"
+    # The whole id is still reachable, on the tab's title.
+    assert await app_page.get_attribute(".tab-capture", "title") == "abcdef0123456789"
+
+
+async def test_closing_the_last_tab_leaves_the_viewer_altogether(app_page):
+    """Not an empty Viewer panel with no tab pointing at it."""
+    await app_page.evaluate(
+        """() => {
+            captures = [{ id: 'only', name: 'only', status: 'completed',
+                          server_id: 's', live_stream: false, bpf_filter: '' }];
+            openCaptures = ['only'];
+            viewingCaptureId = 'only';
+            renderCaptureTabs();
+            activatePanel('viewer');
+        }"""
+    )
+    await app_page.wait_for_selector("#panel-viewer.active")
+    await app_page.click(".tab-close")
+    await app_page.wait_for_selector("#panel-capture.active")
+    assert await app_page.locator(".tab-capture").count() == 0
+    assert await app_page.evaluate("viewingCaptureId") is None
+
+
+async def test_closing_a_background_tab_leaves_the_open_one_alone(app_page):
+    await app_page.evaluate(
+        """() => {
+            captures = [
+                { id: 'a', name: 'before', status: 'completed', server_id: 's', live_stream: false, bpf_filter: '' },
+                { id: 'b', name: 'after', status: 'completed', server_id: 's', live_stream: false, bpf_filter: '' },
+            ];
+            openCaptures = ['a', 'b'];
+            viewingCaptureId = 'b';
+            renderCaptureTabs();
+            activatePanel('viewer');
+        }"""
+    )
+    await app_page.wait_for_selector(".tab-capture")
+    await app_page.click('.tab-capture[data-capture-id="a"] .tab-close')
+    await app_page.wait_for_function("() => openCaptures.length === 1")
+    assert await app_page.evaluate("viewingCaptureId") == "b"
+    assert await app_page.is_visible("#panel-viewer")
+
+
+async def test_a_capture_deleted_elsewhere_loses_its_tab(app_page):
+    """syncCaptureTabs runs on every capture-list refresh. A tab pointing at a
+    capture that no longer exists is a tab that opens an error."""
+    await app_page.evaluate(
+        """() => {
+            captures = [{ id: 'gone', name: 'gone', status: 'completed',
+                          server_id: 's', live_stream: false, bpf_filter: '' }];
+            openCaptures = ['gone'];
+            viewingCaptureId = 'gone';
+            renderCaptureTabs();
+            activatePanel('viewer');
+            captures = [];
+            syncCaptureTabs();
+        }"""
+    )
+    await app_page.wait_for_selector("#panel-capture.active")
+    assert await app_page.locator(".tab-capture").count() == 0
+
+
+# --- the operator's own saved filters ----------------------------------------
+#
+# These go through the real API rather than driving the render directly: the
+# feature is a round trip -- type an expression, name it, come back and find it
+# -- and a test that only rendered a list would not exercise the half that
+# persists.
+
+
+async def _reload_library(page):
+    await page.evaluate("() => loadCustomFilters()")
+    await page.wait_for_function("() => customFilters !== undefined")
+
+
+async def test_a_saved_filter_appears_in_its_own_group_at_the_top(app_page, api_client):
+    api_client.post(
+        "/api/filters", json={"label": "my kerberos", "expression": "port 88 or port 464"}
+    ).raise_for_status()
+    await _capture_tab(app_page)
+    await _reload_library(app_page)
+    await _open_library(app_page)
+
+    await app_page.wait_for_selector(".filter-group-own")
+    groups = await app_page.eval_on_selector_all(
+        "#filter-library .filter-group h4", "els => els.map(e => e.textContent.trim())"
+    )
+    assert groups[0] == "Your filters", "saved filters should not be below eighty built-ins"
+    assert "my kerberos" in await app_page.inner_text(".filter-group-own")
+
+
+async def test_using_a_saved_filter_fills_in_the_field_above(app_page, api_client):
+    """The same thing a built-in row does. A saved filter that could not be
+    used would be a list of strings."""
+    api_client.post(
+        "/api/filters", json={"label": "mine", "expression": "udp port 5353"}
+    ).raise_for_status()
+    await _capture_tab(app_page)
+    await _reload_library(app_page)
+    await _open_library(app_page)
+    await app_page.click('.filter-group-own [data-action="use-library-filter"]')
+    assert await app_page.input_value("#cap-bpf") == "udp port 5353"
+
+
+async def test_saving_with_an_empty_field_says_so_and_asks_nothing(app_page):
+    """No point prompting for a name for nothing."""
+    await _capture_tab(app_page)
+    await app_page.fill("#cap-bpf", "")
+    asked = []
+    app_page.on("dialog", lambda d: asked.append(d.message))
+    await app_page.click("#btn-save-filter")
+    await app_page.wait_for_selector("#save-filter-msg.save-filter-bad")
+    assert not asked, "it prompted for a name with nothing to save"
+
+
+async def test_saving_a_filter_puts_it_in_the_library_and_opens_it(app_page, api_client):
+    await _capture_tab(app_page)
+    await app_page.fill("#cap-bpf", "tcp port 8443")
+
+    async def name_it(dialog):
+        await dialog.accept("odd https")
+
+    app_page.on("dialog", name_it)
+    await app_page.click("#btn-save-filter")
+    await app_page.wait_for_selector(".filter-group-own")
+
+    # It really persisted, not just rendered.
+    saved = api_client.get("/api/filters").json()
+    assert [(f["label"], f["expression"]) for f in saved] == [("odd https", "tcp port 8443")]
+    # And the list it landed in was opened, so the click visibly did something.
+    assert await app_page.evaluate(
+        "() => document.getElementById('filter-library-details').open"
+    ) is True
+
+
+async def test_a_duplicate_name_is_reported_rather_than_silently_dropped(app_page, api_client):
+    api_client.post(
+        "/api/filters", json={"label": "taken", "expression": "tcp port 80"}
+    ).raise_for_status()
+    await _capture_tab(app_page)
+    await _reload_library(app_page)
+    await app_page.fill("#cap-bpf", "tcp port 81")
+
+    async def name_it(dialog):
+        await dialog.accept("taken")
+
+    app_page.on("dialog", name_it)
+    await app_page.click("#btn-save-filter")
+    await app_page.wait_for_selector("#save-filter-msg.save-filter-bad")
+    assert len(api_client.get("/api/filters").json()) == 1
+
+
+async def test_deleting_a_saved_filter_removes_it(app_page, api_client):
+    api_client.post(
+        "/api/filters", json={"label": "temporary", "expression": "arp"}
+    ).raise_for_status()
+    await _capture_tab(app_page)
+    await _reload_library(app_page)
+    await _open_library(app_page)
+    await app_page.wait_for_selector(".filter-group-own")
+
+    app_page.on("dialog", lambda d: d.accept())
+    await app_page.click('[data-action="delete-custom-filter"]')
+    await app_page.wait_for_function("() => customFilters.length === 0")
+    assert api_client.get("/api/filters").json() == []
+
+
+async def test_the_built_in_library_has_no_delete_button(app_page):
+    """They are not the operator's to remove, and a delete that did nothing
+    would be worse than none."""
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    owned = await app_page.locator(
+        '.filter-group:not(.filter-group-own) [data-action="delete-custom-filter"]'
+    ).count()
+    assert owned == 0

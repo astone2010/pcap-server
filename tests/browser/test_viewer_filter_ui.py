@@ -21,7 +21,9 @@ pytestmark = needs_browser
 
 
 async def _viewer(page):
-    await page.click(".tab[data-tab='viewer']")
+    # No standing Viewer tab: it exists only while a capture is open in it.
+    # These drive the panel directly, as the module docstring explains.
+    await page.evaluate("() => activatePanel('viewer')")
     await page.wait_for_selector("#panel-viewer.active")
     # The viewer is empty until a capture is chosen; the filter box and its
     # handlers exist regardless.
@@ -217,7 +219,9 @@ async def test_the_library_actually_scrolls_when_asked(app_page):
 
 
 async def _render_tabs(page, views, active=""):
-    await page.click(".tab[data-tab='viewer']")
+    # No standing Viewer tab: it exists only while a capture is open in it.
+    # These drive the panel directly, as the module docstring explains.
+    await page.evaluate("() => activatePanel('viewer')")
     await page.wait_for_selector("#panel-viewer.active")
     await page.evaluate(
         """([views, active]) => {

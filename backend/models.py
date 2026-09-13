@@ -90,6 +90,15 @@ def validate_display_filter(f: str) -> str:
 
 VIEW_NAME_MAX = 60
 
+# A saved filter's label. Shorter than a view's name because it is read in a
+# list beside eighty-odd built-in labels, the longest of which is well under
+# this -- a label that dwarfs the library it sits in stops being a label.
+FILTER_LABEL_MAX = 48
+
+# The expression itself. Matches the max_length already on the /api/bpf/check
+# query parameter, so an expression that can be checked can be saved.
+FILTER_EXPRESSION_MAX = 2000
+
 
 class CaptureViewRequest(BaseModel):
     """A saved filtered view of one capture: a name and the filter behind it.
@@ -329,6 +338,19 @@ ANY_INTERFACE = "any"
 
 
 class CaptureRequest(BaseModel):
+    # What this capture is for, in the operator's words.
+    #
+    # OPTIONAL HERE, REQUIRED BY THE FORM, and the asymmetry is deliberate.
+    # The rule is a working convention -- a list of captures called "3f2a..."
+    # is a list nobody can read a week later -- not a safety property, and the
+    # live-stream targeting rule is the shape safety properties take in this
+    # file: refused on both sides. Refusing a name-less capture at the API
+    # would break a scripted capture for a cosmetic reason, which is a worse
+    # trade than an unnamed row.
+    #
+    # Captures taken before the form asked for one keep the empty name they
+    # have, and can still be renamed afterwards.
+    name: str = ""
     server_id: str
     interface: str = ANY_INTERFACE
     count: int | None = Field(default=None, ge=1, le=1_000_000)
@@ -345,6 +367,20 @@ class CaptureRequest(BaseModel):
     # at the end, so a live-streamed capture and an ordinary one are the same
     # file by the time either is saved.
     live_stream: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Same treatment CaptureRename gives it: strip, not reject.
+
+        Both write the same column and both are the same act -- naming a
+        capture -- so a name accepted at the start must be one that can still be
+        set later, and the other way round.
+        """
+        cleaned = "".join(ch for ch in v if ch.isprintable()).strip()
+        if len(cleaned) > CAPTURE_NAME_MAX:
+            raise ValueError(f"name must be at most {CAPTURE_NAME_MAX} characters")
+        return cleaned
 
     @field_validator("interface")
     @classmethod
@@ -379,6 +415,51 @@ class CaptureRequest(BaseModel):
         return v
 
 
+class CustomFilterRequest(BaseModel):
+    """One of the operator's own capture filters: a label and the expression.
+
+    The expression goes through the same validator a capture request's does.
+    A saved filter is replayed into a real capture later, so an expression that
+    would be refused when typed into the Capture form must not become runnable
+    by being typed into this box instead -- the same reasoning CaptureViewRequest
+    applies to display filters.
+    """
+
+    label: str
+    expression: str
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, v: str) -> str:
+        cleaned = "".join(ch for ch in v if ch.isprintable()).strip()
+        if not cleaned:
+            raise ValueError("a saved filter needs a name")
+        if len(cleaned) > FILTER_LABEL_MAX:
+            raise ValueError(f"name must be at most {FILTER_LABEL_MAX} characters")
+        return cleaned
+
+    @field_validator("expression")
+    @classmethod
+    def validate_expression(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("a saved filter needs an expression")
+        if len(cleaned) > FILTER_EXPRESSION_MAX:
+            raise ValueError(
+                f"expression must be at most {FILTER_EXPRESSION_MAX} characters"
+            )
+        if any(c in cleaned for c in BPF_FORBIDDEN_CHARS):
+            raise ValueError("BPF filter contains disallowed characters")
+        return cleaned
+
+
+class CustomFilter(BaseModel):
+    id: str
+    label: str
+    expression: str
+    created_at: str = ""
+
+
 class CaptureInfo(BaseModel):
     id: str
     # Operator-chosen label. Empty until someone renames the capture, at which
@@ -402,6 +483,17 @@ class CaptureInfo(BaseModel):
     # it is still running -- without the flag there is no way to tell a capture
     # that can be watched from one that merely happens to be RUNNING.
     live_stream: bool = False
+    # The capture filter this ran with, kept so a finished capture can still say
+    # what it was selecting for. Stored in its own right rather than read back
+    # out of `command` for the same reason `interface` is: a rule that depends
+    # on re-parsing a shell command breaks the first time the command changes
+    # shape, and here it would mean a second BPF parser living next to bpf.py.
+    #
+    # Empty means one of two things and the UI does not try to tell them apart:
+    # no filter was given, or the capture predates the column. Both read as
+    # unfiltered, which is the safe direction -- see the migration in
+    # database.py.
+    bpf_filter: str = ""
     status: CaptureStatus
     started_at: datetime | None = None
     stopped_at: datetime | None = None

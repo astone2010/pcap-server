@@ -7,6 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+# Ceilings on the two per-user tables an authenticated caller can grow without
+# limit. Both are far above hand-curated use: they exist so a script cannot
+# fill the volume a capture database shares, not to ration a feature.
+MAX_CUSTOM_FILTERS_PER_USER = 200
+MAX_VIEWS_PER_CAPTURE = 50
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -104,7 +111,8 @@ class Database:
                 error TEXT NOT NULL DEFAULT '',
                 server_label TEXT NOT NULL DEFAULT '',
                 interface TEXT NOT NULL DEFAULT '',
-                live_stream INTEGER NOT NULL DEFAULT 0
+                live_stream INTEGER NOT NULL DEFAULT 0,
+                bpf_filter TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS known_usernames (
@@ -131,10 +139,26 @@ class Database:
                 UNIQUE(capture_id, user_id, name)
             );
 
+            -- An operator's own capture filters, alongside the built-in
+            -- library. Private to the user who saved them, like servers,
+            -- usernames and capture views: a capture filter frequently names
+            -- the hosts and ports someone is investigating, which is not a
+            -- thing to broadcast to every other account on the box.
+            CREATE TABLE IF NOT EXISTS custom_filters (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                label TEXT NOT NULL,
+                expression TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, label)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_captures_user_id ON captures(user_id);
             CREATE INDEX IF NOT EXISTS idx_active_servers_user_id ON active_servers(user_id);
             CREATE INDEX IF NOT EXISTS idx_capture_views_owner
                 ON capture_views(capture_id, user_id, position);
+            CREATE INDEX IF NOT EXISTS idx_custom_filters_owner
+                ON custom_filters(user_id, label);
         """)
         active_columns = {r["name"] for r in conn.execute("PRAGMA table_info(active_servers)")}
         if "tcpdump_path" not in active_columns:
@@ -176,6 +200,19 @@ class Database:
             # 0 for every capture taken before live streaming existed, which is
             # the truth: none of them was watched as it was recorded.
             conn.execute("ALTER TABLE captures ADD COLUMN live_stream INTEGER NOT NULL DEFAULT 0")
+        if "bpf_filter" not in capture_columns:
+            # '' for every capture taken before the filter was persisted, which
+            # reads in the UI as "no filter". That is a guess, and it is the
+            # only one available: the expression was never stored, and the
+            # command string is not a safe place to recover it from -- a filter
+            # is the trailing argv of a shell command that also carries -i, -c
+            # and -s, and re-parsing it would be a second, worse BPF model.
+            #
+            # Guessing "unfiltered" is the conservative direction. A capture
+            # that was filtered and now shows no badge is a missing label; a
+            # capture that was not filtered and shows a filter would be a lie
+            # about what is in the file.
+            conn.execute("ALTER TABLE captures ADD COLUMN bpf_filter TEXT NOT NULL DEFAULT ''")
         self._fold_saved_servers(conn)
         conn.commit()
 
@@ -231,6 +268,45 @@ class Database:
     def confirm_totp(self, user_id: str) -> None:
         self._conn().execute("UPDATE users SET totp_confirmed = 1 WHERE id = ?", (user_id,))
         self._conn().commit()
+
+    def reset_totp(self, user_id: str) -> bool:
+        """Clears the second factor so the account enrols again at next login.
+
+        The secret is NULLed as well as unconfirmed. Leaving the old secret in
+        place and merely clearing the flag would let whoever still holds that
+        authenticator confirm the account back to where it was -- which is the
+        opposite of what a reset is for, since the usual reason for one is that
+        the authenticator is gone or is no longer trusted.
+
+        Returns False for an id that is not there, so the caller can answer 404
+        rather than reporting success for a user that does not exist.
+        """
+        cur = self._conn().execute(
+            "UPDATE users SET totp_secret = NULL, totp_confirmed = 0 WHERE id = ?",
+            (user_id,),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
+    def count_sessions_for_user(self, user_id: str) -> int:
+        """How many live sessions one account has. Read-only, for reporting a
+        reset's blast radius before it is applied."""
+        return self._conn().execute(
+            "SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?", (user_id,)
+        ).fetchone()["n"]
+
+    def delete_sessions_for_user(self, user_id: str) -> int:
+        """Signs one account out everywhere, now.
+
+        Paired with reset_totp and not optional there. A live session already
+        carries both factors, so an account whose second factor has just been
+        revoked would go on using the API behind the old one until the session
+        expired on its own -- up to session_hours later. The reset has to reach
+        the sessions or it does not mean anything yet.
+        """
+        cur = self._conn().execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        self._conn().commit()
+        return cur.rowcount
 
     def user_count(self) -> int:
         row = self._conn().execute("SELECT COUNT(*) as cnt FROM users").fetchone()
@@ -438,9 +514,11 @@ class Database:
         self._conn().execute(
             """INSERT OR REPLACE INTO captures
                (id, name, user_id, server_id, server_label, status, started_at, stopped_at, command,
-                remote_path, local_path, packet_count, file_size, error, interface, live_stream)
+                remote_path, local_path, packet_count, file_size, error, interface, live_stream,
+                bpf_filter)
                VALUES (:id, :name, :user_id, :server_id, :server_label, :status, :started_at, :stopped_at, :command,
-                       :remote_path, :local_path, :packet_count, :file_size, :error, :interface, :live_stream)""",
+                       :remote_path, :local_path, :packet_count, :file_size, :error, :interface, :live_stream,
+                       :bpf_filter)""",
             row,
         )
         self._conn().commit()
@@ -452,6 +530,66 @@ class Database:
     def delete_capture(self, capture_id: str) -> None:
         self._conn().execute("DELETE FROM captures WHERE id = ?", (capture_id,))
         self._conn().commit()
+
+    # --- custom capture filters ---
+
+    def list_custom_filters(self, user_id: str) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT id, label, expression, created_at FROM custom_filters "
+            "WHERE user_id = ? ORDER BY label COLLATE NOCASE",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_custom_filter(self, user_id: str, label: str, expression: str) -> dict:
+        """Saves one, or raises ValueError if the user already has that label.
+
+        Surfaced as a 409 rather than letting the UNIQUE constraint arrive as a
+        500 -- two of your own filters called the same thing is a mistake worth
+        naming, and the same treatment add_capture_view gives it.
+
+        Capped per user. A saved filter is a row an authenticated caller can
+        create in a loop, and nothing else here bounds it. The number is far
+        above what anyone curates by hand -- the built-in library is eighty-odd
+        expressions and is meant to be the big one -- so the ceiling is a stop
+        on a script, not a limit anybody will meet by using the feature.
+        """
+        conn = self._conn()
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM custom_filters WHERE user_id = ?", (user_id,)
+        ).fetchone()["n"]
+        if count >= MAX_CUSTOM_FILTERS_PER_USER:
+            raise ValueError(
+                f"you already have {MAX_CUSTOM_FILTERS_PER_USER} saved filters, "
+                "which is the limit -- delete one to save another"
+            )
+        filter_id = str(uuid.uuid4())
+        try:
+            conn.execute(
+                "INSERT INTO custom_filters (id, user_id, label, expression, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (filter_id, user_id, label, expression, _utcnow().isoformat()),
+            )
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise ValueError(f"you already have a filter called {label!r}") from exc
+        conn.commit()
+        return dict(
+            conn.execute(
+                "SELECT id, label, expression, created_at FROM custom_filters WHERE id = ?",
+                (filter_id,),
+            ).fetchone()
+        )
+
+    def delete_custom_filter(self, user_id: str, filter_id: str) -> bool:
+        # user_id is in the WHERE clause, not checked beforehand: one statement
+        # that cannot delete another account's row beats two that could race.
+        cur = self._conn().execute(
+            "DELETE FROM custom_filters WHERE id = ? AND user_id = ?",
+            (filter_id, user_id),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
 
     # --- known hosts ---
 
@@ -544,8 +682,22 @@ class Database:
         Raises ValueError on a duplicate name rather than letting the UNIQUE
         constraint surface as a 500: two tabs with the same label on the same
         capture is a mistake worth naming, not an internal error.
+
+        Capped per capture per user, for the same reason add_custom_filter is
+        capped: it is a row an authenticated caller can create in a loop. The
+        two moved together deliberately -- capping one unbounded per-user table
+        and not the other beside it is the real inconsistency.
         """
         conn = self._conn()
+        views = conn.execute(
+            "SELECT COUNT(*) AS n FROM capture_views WHERE capture_id = ? AND user_id = ?",
+            (capture_id, user_id),
+        ).fetchone()["n"]
+        if views >= MAX_VIEWS_PER_CAPTURE:
+            raise ValueError(
+                f"this capture already has {MAX_VIEWS_PER_CAPTURE} saved views, "
+                "which is the limit -- delete one to save another"
+            )
         row = conn.execute(
             "SELECT COALESCE(MAX(position), -1) AS top FROM capture_views "
             "WHERE capture_id = ? AND user_id = ?",

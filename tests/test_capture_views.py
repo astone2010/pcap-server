@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from backend import main
 from backend.auth import create_session_token
+from backend.database import MAX_VIEWS_PER_CAPTURE
 from backend.models import CaptureInfo, CaptureStatus
 
 
@@ -303,3 +304,34 @@ def test_view_download_filename_cannot_break_the_header(secure_client):
 
 def test_view_download_filename_survives_a_name_with_nothing_usable_in_it(secure_client):
     assert main._view_download_name("abc", "///") == "abc-view.pcap"
+
+
+# --- the ceiling -------------------------------------------------------------
+
+
+def test_there_is_a_cap_on_views_per_capture(secure_client, enrolled, capture):
+    """Moved with the saved-filter cap, and for the same reason: it is a row an
+    authenticated caller can create in a loop, and capping one unbounded
+    per-user table while leaving the one beside it is the real inconsistency."""
+    for i in range(MAX_VIEWS_PER_CAPTURE):
+        main.db.add_capture_view(capture, enrolled, f"v{i}", "")
+
+    over = secure_client.post(
+        f"/api/captures/{capture}/views", json={"name": "one too many", "display_filter": ""}
+    )
+    assert over.status_code == 409
+    assert "limit" in over.text
+    assert len(main.db.list_capture_views(capture, enrolled)) == MAX_VIEWS_PER_CAPTURE
+
+
+def test_deleting_a_view_makes_room_again(secure_client, enrolled, capture):
+    for i in range(MAX_VIEWS_PER_CAPTURE):
+        main.db.add_capture_view(capture, enrolled, f"v{i}", "")
+    first = main.db.list_capture_views(capture, enrolled)[0]
+
+    assert secure_client.delete(
+        f"/api/captures/{capture}/views/{first['id']}"
+    ).status_code == 200
+    assert secure_client.post(
+        f"/api/captures/{capture}/views", json={"name": "room now", "display_filter": ""}
+    ).status_code == 200

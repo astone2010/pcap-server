@@ -107,6 +107,11 @@ async def test_starting_a_capture_sends_the_live_flag(app_page):
     # it at all, so this one carries a filter. What is under test is the flag
     # reaching the body, not the rule.
     await app_page.fill("#cap-bpf", "tcp port 443")
+    # The form requires a name, and summarises the capture in a confirm before
+    # anything is sent. Neither is what this test is about, so both are simply
+    # satisfied -- but if either stops happening, the ones below say so.
+    await app_page.fill("#cap-name", "live flag check")
+    app_page.on("dialog", lambda dialog: dialog.accept())
     await app_page.click("#btn-start-capture")
     # An arrow function, not a bare expression. Playwright can only evaluate
     # a bare expression string by building it into a function INSIDE the page,
@@ -406,7 +411,10 @@ async def test_a_saved_view_chip_is_large_enough_to_read(app_page):
     them and, as reported, close to unreadable. The floor is the app's own body
     size, so a future tidy-up cannot quietly shrink them again.
     """
-    await app_page.click(".tab[data-tab='viewer']")
+    # There is no standing Viewer tab any more -- one exists per capture open
+    # in the viewer, and this test has no capture. The panel is shown directly:
+    # what is under test is the chip strip, not how the panel is reached.
+    await app_page.evaluate("() => activatePanel('viewer')")
     await app_page.wait_for_selector("#panel-viewer.active")
     await app_page.evaluate(
         """() => {
@@ -449,7 +457,10 @@ async def test_a_saved_view_chip_is_large_enough_to_read(app_page):
 
 async def test_the_chip_action_buttons_are_a_real_click_target(app_page):
     """Three glyphs a few pixels apart is a row of buttons you cannot hit."""
-    await app_page.click(".tab[data-tab='viewer']")
+    # There is no standing Viewer tab any more -- one exists per capture open
+    # in the viewer, and this test has no capture. The panel is shown directly:
+    # what is under test is the chip strip, not how the panel is reached.
+    await app_page.evaluate("() => activatePanel('viewer')")
     await app_page.wait_for_selector("#panel-viewer.active")
     await app_page.evaluate(
         """() => {
@@ -462,3 +473,57 @@ async def test_the_chip_action_buttons_are_a_real_click_target(app_page):
     await app_page.wait_for_selector(".view-tab-action")
     box = await app_page.locator(".view-tab-action").first.bounding_box()
     assert box["width"] >= 12 and box["height"] >= 12, f"action button is {box}"
+
+
+# --- what the viewer says about the capture it is showing ---------------------
+#
+# While a live stream runs, the capture list is a tab away and the packet table
+# cannot answer "which host am I watching, and what did I ask it for". A filter
+# narrower than you remember looks exactly like a quiet network.
+
+
+async def _label_for(page, capture):
+    await page.evaluate(
+        """(c) => {
+            captures = [c];
+            setViewerLabel(c.id);
+        }""",
+        capture,
+    )
+    return await page.inner_text("#viewer-capture-label")
+
+
+def _viewed(**over):
+    base = {
+        "id": "cap-1", "name": "slow logons", "server_id": "s1",
+        "server_label": "web-01 (root@10.0.0.5)", "interface": "eth0",
+        "status": "running", "live_stream": True, "bpf_filter": "tcp port 445",
+    }
+    return {**base, **over}
+
+
+async def test_the_viewer_names_the_server_it_is_reading(app_page):
+    text = await _label_for(app_page, _viewed())
+    assert "web-01 (root@10.0.0.5)" in text
+
+
+async def test_the_viewer_shows_the_capture_filter(app_page):
+    text = await _label_for(app_page, _viewed())
+    assert "tcp port 445" in text
+
+
+async def test_the_viewer_shows_the_interface(app_page):
+    assert "eth0" in await _label_for(app_page, _viewed())
+
+
+async def test_an_unfiltered_capture_claims_nothing_about_its_filter(app_page):
+    """Empty is "no filter" OR "taken before the column existed". Saying "no
+    capture filter" would assert the first and be wrong about the second."""
+    text = await _label_for(app_page, _viewed(bpf_filter=""))
+    assert "filter" not in text.lower()
+    assert "web-01 (root@10.0.0.5)" in text, "the rest of the line still renders"
+
+
+async def test_the_capture_name_is_still_the_heading(app_page):
+    text = await _label_for(app_page, _viewed())
+    assert text.startswith("Capture: slow logons (cap-1)")

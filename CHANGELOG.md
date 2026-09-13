@@ -1,5 +1,108 @@
 # Changelog
 
+## 0.1.0-dev.26 — 2026-09-13
+
+### Added
+
+- **A capture now says what it was capturing.** The BPF filter is stored on the
+  capture record rather than handed to tcpdump and forgotten, and the capture
+  list badges it — under the filter library's own name where the library knows
+  one, so `tcp port 443` reads as **HTTPS**, and as the expression itself where
+  it does not. The exact expression is on hover either way.
+
+  The reason is that an empty packet list from a filtered capture and an empty
+  packet list from a quiet network look identical on screen, and they lead to
+  opposite conclusions. Captures taken before this release carry no badge:
+  their filter was never recorded, and it is not reconstructed from the
+  command string — guessing wrong would be a claim about what is inside the
+  file.
+
+- **Your own saved capture filters.** **Save this filter** puts whatever is in
+  the BPF field into a named list of your own, which appears at the top of the
+  filter library as **Your filters**. They are private to your account, the way
+  your servers and stored usernames are: a capture filter usually names the
+  hosts and ports you are investigating. The expression goes through the same
+  validator the Capture form uses, because a saved filter is replayed into a
+  real capture later.
+
+- **Captures open as tabs.** Each capture opened in the Viewer gets its own tab
+  on the bar, so two can be kept open and compared by clicking between them
+  rather than returning to the list each time. A capture still recording shows
+  a pulsing dot on its tab. Closing a tab leaves the capture alone.
+
+- **The server, interface and capture filter are shown in the Viewer**, on the
+  line above the filter box. It matters most during a live stream, where the
+  capture list is a tab away and a filter narrower than you remember looks
+  exactly like a quiet network.
+
+- **A capture is summarised before it starts.** Pressing **Start capture** now
+  shows what is about to run on the target host — name, server, interface,
+  duration, packet cap, snap length and filter — and asks. Three of those
+  fields mean "the server maximum" when left blank, so an empty Duration box
+  does not look like five minutes of capture; and the server and the filter
+  both persist between captures, which is how the right capture ends up run
+  against the wrong host.
+
+- **An admin can reset another account's two-factor authentication.**
+  Admin → Users → **Reset MFA**. Previously a lost authenticator meant deleting
+  the user and making them again, which also discarded their servers, their
+  stored usernames, their saved filters and every capture they owned — a
+  punishment for losing a phone.
+
+  The reset destroys the old secret rather than merely unconfirming it, ends
+  every session that account holds, and forgets its trusted devices. All three
+  matter: a live session already carries both factors, and a trusted device is
+  a second factor in its own right.
+
+  **An admin cannot reset their own.** It would not help — reaching any route
+  means already being past the second factor — and it would let a stolen
+  session cookie replace an admin's second factor with the thief's own. The
+  locked-out sole admin is answered from the host instead, by
+  `docker compose run --rm --entrypoint python pcap-server -m backend.resetmfa
+  <username> --apply`, which is dry-run by default and never touches a
+  password.
+
+### Changed
+
+- **Captures are named when they are taken.** Name is the first field on the
+  capture form and the form will not start without one. It is the only thing
+  about a capture that nothing else can supply — the server, the interface and
+  the filter are all on the record afterwards, but what you were looking for is
+  not. Renaming afterwards still works. The rule is the form's, not the API's:
+  a scripted capture is not refused for a cosmetic reason.
+
+- **The dark theme is true black**, so an unlit pixel costs an OLED panel
+  nothing, and the surfaces above it read as genuinely raised rather than as
+  one dark grey on a slightly darker one.
+
+- **The accent colour is a periwinkle blue instead of teal.** The old teal sat
+  almost exactly on the packet list's UDP colour, so the colour meaning "this
+  is interactive" and the colour meaning "this row is UDP" were the same
+  colour. Blue is clear of every packet hue.
+
+- **There is no standing Viewer tab.** It led to an empty panel for most of a
+  session. The Viewer exists while a capture is open in it, and not otherwise.
+
+- **Saved filters and saved views are capped per user** — 200 filters, and 50
+  views per capture. Both are rows an authenticated caller could create in a
+  loop with nothing else bounding them. The numbers are far above hand-curated
+  use; they are a stop on a script, not a ration.
+
+- **The README is a tour again, not a manual.** It was 1360 lines and every
+  subject was in it at full depth. It is now ~600, and five subjects moved to
+  one document each — [target hosts](docs/target-hosts.md),
+  [filters](docs/filters.md), [live streaming](docs/live-streaming.md),
+  [security](docs/security.md) and [operating it](docs/operating.md) — each
+  linked from a table at the top. Nothing was deleted; the README keeps the
+  short version of each and points at the long one.
+
+- **The Quick start is less quick.** It now names what the host needs, says to
+  have an authenticator app ready before you begin — TOTP enrolment is part of
+  creating the first account, and there is no TOTP reset in the app — checks
+  that the container actually came up rather than only that `up -d` returned,
+  and carries an **If it does not come up** table for the three failures that
+  account for almost all of them.
+
 ## 0.1.0-dev.25 — 2026-09-13
 
 ### Added
