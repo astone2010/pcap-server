@@ -1,10 +1,10 @@
 # Dev Skills gate state
-Track: release sequence — 0.1.0-dev.22
+Track: release sequence — 0.1.0-dev.22 CLOSED. All six gates done.
 Version: 0.1.0-dev.22
 Updated: 2026-09-13 (session: dev-skills-loading-yow48d)
 Branch: claude/admiring-wright-k20ptf — CANONICAL, confirmed by the user.
 
-## 0.1.0-dev.22 — COMMITTED, awaiting the tag
+## 0.1.0-dev.22 — RELEASED (tag pushed by the user, 2026-09-13)
 
 Three commits: eaeb7ce (validator), 4cdbe11 (frontend), 0637263 (bump).
 
@@ -36,7 +36,10 @@ And the bug that fell out of (2) — see THE VALIDATOR, below.
 📄 DOCS       ✅ CHANGELOG dated; README's filter-library passage covers the
                 stay-open behaviour and Clear.
 📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
-🚀 SHIP       ⏳ committed and pushed; tag block handed to the user.
+🚀 SHIP       ✅ verified from the container: tag v0.1.0-dev.22 -> a0e91d7 on
+                the remote; Check #59 green on that commit BEFORE the tag went
+                up; Release run #22 success; release published, prerelease,
+                body compares dev.21...dev.22. NOT yet confirmed deployed.
 
 ### THE VALIDATOR — a control was deliberately narrowed
 
