@@ -177,3 +177,142 @@ async def test_the_capture_tab_reports_no_console_errors(app_page):
     await _capture_tab(app_page)
     await _open_library(app_page)
     assert app_page.console_errors == []
+
+
+# --- composing a second filter ------------------------------------------------
+#
+# Both insertion paths used to assign to the box, so a second pick wiped the
+# first and a filter like "this host, and only its SMB traffic" could not be
+# built from the library at all -- only typed by hand.
+#
+# Which combinator is wanted cannot be read off the click, and neither default
+# is safe. The library is mostly port and protocol rows, where a second pick
+# means `or` (`tcp port 80 and tcp port 443` matches nothing); a host row
+# combined with a protocol row means `and`. So the pick offers the same four
+# modes the display filter's right-click menu already does, and a BPF filter
+# that matches nothing is never composed silently.
+
+
+async def _menu_labels(page):
+    return await page.eval_on_selector_all(
+        "#filter-menu .filter-menu-item", "els => els.map(e => e.textContent)"
+    )
+
+
+async def _pick_library_row(page, index: int = 0) -> str:
+    row = page.locator("#filter-library tr").nth(index)
+    expression = (await row.locator(".filter-expr code").text_content()).strip()
+    await row.locator("button[data-action='use-library-filter']").click()
+    return expression
+
+
+async def test_a_pick_into_an_empty_box_does_not_ask_which_combinator(app_page):
+    """There is nothing to combine with, so the menu would be four ways of
+    spelling one outcome."""
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+
+    expression = await _pick_library_row(app_page)
+
+    assert await app_page.input_value("#cap-bpf") == expression
+    assert await app_page.locator("#filter-menu").count() == 0
+
+
+async def test_a_second_pick_asks_rather_than_overwriting(app_page):
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    first = await _pick_library_row(app_page)
+
+    await _open_library(app_page)
+    await _pick_library_row(app_page, 1)
+
+    await app_page.wait_for_selector("#filter-menu")
+    assert await app_page.input_value("#cap-bpf") == first, \
+        "the box must not change until a combinator is chosen"
+    labels = await _menu_labels(app_page)
+    assert any("and this" in label for label in labels)
+    assert any("or this" in label for label in labels)
+
+
+async def test_or_composes_both_sides_in_parentheses(app_page):
+    """`a and b or c` parses as `(a and b) or c`, so an unparenthesised append
+    rebinds an expression the operator already had in the box."""
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    first = await _pick_library_row(app_page)
+
+    await _open_library(app_page)
+    second = await _pick_library_row(app_page, 1)
+    await app_page.wait_for_selector("#filter-menu")
+    await app_page.click("#filter-menu .filter-menu-item:has-text('or this')")
+
+    assert await app_page.input_value("#cap-bpf") == f"({first}) or ({second})"
+
+
+async def test_and_composes_both_sides_in_parentheses(app_page):
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    first = await _pick_library_row(app_page)
+
+    await _open_library(app_page)
+    second = await _pick_library_row(app_page, 1)
+    await app_page.wait_for_selector("#filter-menu")
+    await app_page.click("#filter-menu .filter-menu-item:has-text('and this')")
+
+    assert await app_page.input_value("#cap-bpf") == f"({first}) and ({second})"
+
+
+async def test_replace_is_still_available_from_the_menu(app_page):
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    await _pick_library_row(app_page)
+
+    await _open_library(app_page)
+    second = await _pick_library_row(app_page, 1)
+    await app_page.wait_for_selector("#filter-menu")
+    await app_page.click("#filter-menu .filter-menu-item:has-text('Replace with:')")
+
+    assert await app_page.input_value("#cap-bpf") == second
+
+
+async def test_the_composed_filter_never_uses_the_c_operators(app_page):
+    """`&` and `|` are refused by the capture request validator, because the
+    command is assembled as a string and those are shell metacharacters.
+    libpcap spells the same thing `and` and `or`."""
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    await _pick_library_row(app_page)
+
+    await _open_library(app_page)
+    await _pick_library_row(app_page, 1)
+    await app_page.wait_for_selector("#filter-menu")
+    await app_page.click("#filter-menu .filter-menu-item:has-text('and this')")
+
+    composed = await app_page.input_value("#cap-bpf")
+    assert "&&" not in composed and "||" not in composed
+
+
+async def test_a_suggestion_chip_composes_like_a_library_row(app_page):
+    """A chip and a library row are the same gesture; picking a second chip
+    should not wipe the first either."""
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    first = await _pick_library_row(app_page)
+
+    await app_page.click("#bpf-suggestions .filter-chip")
+    await app_page.wait_for_selector("#filter-menu")
+    await app_page.click("#filter-menu .filter-menu-item:has-text('or this')")
+
+    composed = await app_page.input_value("#cap-bpf")
+    assert composed.startswith(f"({first}) or (")
+
+
+async def test_the_display_filter_chips_are_left_alone(app_page):
+    """The display filter already has composition, on the right-click menu over
+    a packet field. Its chips are worked examples -- a starting point rather
+    than something to build onto -- and they still replace."""
+    await _capture_tab(app_page)
+    labels = await app_page.eval_on_selector_all(
+        "#display-filter-suggestions .filter-chip", "els => els.map(e => e.textContent)"
+    )
+    assert labels, "the display filter should still offer its chips"

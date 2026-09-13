@@ -30,6 +30,8 @@ from backend.capture import (
 )
 from pydantic import ValidationError
 
+from backend.ssh_manager import _shell_quote
+
 from backend.models import (
     CAPTURE_NAME_MAX,
     CaptureInfo,
@@ -858,3 +860,49 @@ async def test_delete_survives_a_process_that_has_already_exited(manager):
     assert result["terminated"] is True
     assert ssh.processes[0].closed is True
     assert mgr._db.rows == {}
+
+
+# --- why the composed BPF filter uses the keywords ----------------------------
+
+
+def test_the_bpf_validator_refuses_the_c_operators_but_takes_the_keywords():
+    """The reason combineBpf() in the frontend composes with `and`/`or`.
+
+    The capture command is assembled as a string and run through the remote
+    shell, so `&` and `|` are refused outright by the request model. libpcap
+    accepts both spellings for the same expression, so composing with the
+    words costs nothing and composing with the operators would produce a
+    filter the API rejects -- which the operator would meet as a validation
+    error on a filter the UI had just built for them.
+    """
+    composed = "(tcp port 80) or (tcp port 443)"
+    assert CaptureRequest(server_id="s1", interface="eth0", bpf_filter=composed)
+
+    with pytest.raises(ValidationError):
+        CaptureRequest(
+            server_id="s1", interface="eth0",
+            bpf_filter="(tcp port 80) || (tcp port 443)",
+        )
+
+
+def test_parentheses_survive_the_trip_to_tcpdump(manager):
+    """Composition parenthesises both sides, so the parens have to reach the
+    command intact.
+
+    They are shell metacharacters, and the executed command is one string --
+    but every argument is quoted on the way out, so the filter arrives as a
+    single word. The library already shipped parenthesised filters before
+    anything composed them.
+    """
+    mgr, _, _ = manager
+    args = mgr.build_command_args(
+        CaptureRequest(
+            server_id="s1", interface="eth0",
+            bpf_filter="(tcp port 80) or (tcp port 443)",
+        )
+    )
+    assert args[-1] == "(tcp port 80) or (tcp port 443)"
+    assert args[-2] == "--"
+
+    quoted = " ".join(_shell_quote(a) for a in ["tcpdump"] + args)
+    assert "'(tcp port 80) or (tcp port 443)'" in quoted

@@ -391,6 +391,15 @@ under the BPF field on the Capture tab — a searchable list grouped by protocol
 which fills the field above it when you choose one. The Viewer has a full
 display-filter cheatsheet behind **Filter help**.
 
+Choosing a second capture filter while the field already holds one asks how to
+combine them — **…and this**, **…or this**, or replace — rather than guessing.
+Neither guess is safe: two protocol rows almost always mean `or`, since
+`tcp port 80 and tcp port 443` matches nothing, while a host row plus a
+protocol row means `and`. Both sides are parenthesised, because `a and b or c`
+parses as `(a and b) or c` and would quietly rebind a filter you already had.
+A capture filter that matches nothing does not announce itself — the capture
+simply runs and comes back empty — so it is never composed for you silently.
+
 A display filter tshark cannot parse is reported back with tshark's own message
 and the position it objected to. An empty packet list therefore always means the
 filter was valid and nothing matched it.

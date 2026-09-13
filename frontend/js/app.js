@@ -1140,14 +1140,67 @@ function renderFilterLibrary() {
 // had just filled in. It now sits under that field, so there is no journey to
 // make: collapse the list and the answer is on screen above it, which is also
 // the only feedback that the click did anything.
-function useLibraryFilter(expr) {
+// BPF's combinators are the words, not the C operators: the capture request
+// validator rejects & and | outright (models.py, validate_bpf), because those
+// characters are shell metacharacters in a command that is assembled as a
+// string. libpcap accepts `and`/`or`/`not` for exactly the same expressions.
+//
+// Both sides are parenthesised. Without that, adding "or port 53" to
+// "tcp port 80 and host 10.0.0.1" silently rebinds the whole expression:
+// `a and b or c` is `(a and b) or c`, which is not what anyone picking a
+// second filter off a list is asking for.
+function combineBpf(current, expr, mode) {
+    current = (current || "").trim();
+    if (mode === "replace" || !current) return expr;
+    if (mode === "not") return `not (${expr})`;
+    return `(${current}) ${mode} (${expr})`;
+}
+
+function applyBpfFilter(expr, mode) {
     const box = $("cap-bpf");
     if (!box) return;
-    box.value = expr;
+    box.value = combineBpf(box.value, expr, mode);
     const details = $("filter-library-details");
     if (details) details.open = false;
     box.focus();
     box.scrollIntoView({ block: "nearest" });
+}
+
+// The same four modes the display filter's right-click menu offers, for the
+// same reason: which combinator is wanted cannot be read off the click.
+//
+// It matters more here than it looks. The library is mostly port and protocol
+// rows, where a second pick almost always means `or` -- `tcp port 80 and
+// tcp port 443` matches nothing at all -- while a host row combined with a
+// protocol row means `and`. A fixed default would be silently wrong for one
+// of the two commonest pairings, and a BPF filter that matches nothing does
+// not announce itself: the capture just runs and comes back empty.
+function bpfMenuItems(expr) {
+    const show = expr.length > 46 ? expr.slice(0, 45) + "\u2026" : expr;
+    return [
+        { label: `Replace with: ${show}`, run: () => applyBpfFilter(expr, "replace") },
+        { label: "  \u2026and this", hint: "and", run: () => applyBpfFilter(expr, "and") },
+        { label: "  \u2026or this", hint: "or", run: () => applyBpfFilter(expr, "or") },
+        { label: "  Replace with NOT this", hint: "not", run: () => applyBpfFilter(expr, "not") },
+    ];
+}
+
+// An empty box has nothing to combine with, so the menu would be four ways of
+// spelling the same outcome. It only opens when there is a choice to make.
+function useLibraryFilter(expr, el, ev) {
+    const box = $("cap-bpf");
+    if (!box) return;
+    if (!box.value.trim()) {
+        applyBpfFilter(expr, "replace");
+        return;
+    }
+    // Without this the menu opens and shuts on the same click. The document
+    // handler that dismisses it fires on any click outside #filter-menu, and
+    // this click is outside it -- the menu does not exist yet. The display
+    // filter's menu never hit this because it opens from a contextmenu event,
+    // which fires no click at all.
+    if (ev) ev.stopPropagation();
+    openFilterMenu(ev ? ev.clientX : 0, ev ? ev.clientY : 0, bpfMenuItems(expr));
 }
 
 // --- capture ---
@@ -2305,14 +2358,23 @@ async function loadPackets(captureId, filter = "") {
     }
 }
 
-function useFilterSuggestion(expr, el) {
+function useFilterSuggestion(expr, el, ev) {
     // Which box the chip belongs to is decided by where it sits, so one handler
     // serves both filters.
     const inBpf = el.closest("#bpf-suggestions") !== null;
-    const box = $(inBpf ? "cap-bpf" : "display-filter");
+    if (inBpf) {
+        // Same composition the library rows get: a chip and a library row are
+        // the same gesture, and picking a second one should not wipe the first.
+        useLibraryFilter(expr, el, ev);
+        return;
+    }
+    // The display filter is left alone. It already has composition, on the
+    // right-click menu over a packet field, and these chips are its worked
+    // examples -- a starting point rather than something to build onto.
+    const box = $("display-filter");
     box.value = expr;
     box.focus();
-    if (!inBpf) applyDisplayFilter();
+    applyDisplayFilter();
 }
 
 function applyDisplayFilter() {
@@ -2656,7 +2718,12 @@ function filterMenuItems(expr, label) {
     const show = expr.length > 46 ? expr.slice(0, 45) + "…" : expr;
     return [
         { label: `Apply as filter: ${show}`, run: () => applyBuiltFilter(expr, "selected") },
-        { label: "  …and not selected", hint: "!( )", run: () => applyBuiltFilter(expr, "not") },
+        // Labelled for what it does. combineFilter's "not" mode ignores the
+        // current expression and replaces it with the negation, which is
+        // Wireshark's "Not Selected"; the old label promised "…and not
+        // selected", which would have kept the current filter and ANDed the
+        // negation onto it.
+        { label: "  Not selected", hint: "!( )", run: () => applyBuiltFilter(expr, "not") },
         { label: "  …and selected", hint: "&&", run: () => applyBuiltFilter(expr, "and") },
         { label: "  …or selected", hint: "||", run: () => applyBuiltFilter(expr, "or") },
         { separator: true },
@@ -3482,13 +3549,13 @@ function initEventDelegation() {
         renderFilterLibrary();
     });
     delegate("filter-library", {
-        "use-library-filter": (expr) => useLibraryFilter(expr),
+        "use-library-filter": (expr, el, ev) => useLibraryFilter(expr, el, ev),
     });
     delegate("bpf-suggestions", {
-        "use-filter": (expr, el) => useFilterSuggestion(expr, el),
+        "use-filter": (expr, el, ev) => useFilterSuggestion(expr, el, ev),
     });
     delegate("display-filter-suggestions", {
-        "use-filter": (expr, el) => useFilterSuggestion(expr, el),
+        "use-filter": (expr, el, ev) => useFilterSuggestion(expr, el, ev),
     });
     delegate("username-list", {
         "rename-username": (id) => renameStoredUsername(id),
