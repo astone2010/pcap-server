@@ -112,5 +112,17 @@ def test_unknown_provider_is_refused():
 
 def test_ui_catalog_carries_no_values():
     ui = providers.catalog_for_ui()
-    assert {"code", "name", "docs", "variables"} == set(ui[0])
+    assert {"code", "name", "docs", "primary", "variables"} == set(ui[0])
     assert all(set(v) == {"name", "description", "kind", "group"} for p in ui for v in p["variables"])
+
+
+def test_every_recommended_setting_exists_for_its_provider():
+    for code, names in providers.PRIMARY.items():
+        available = {v.name for v in providers.get(code).variables}
+        assert set(names) <= available, (code, set(names) - available)
+
+
+def test_cloudflare_leads_with_just_the_api_token():
+    ui = {p["code"]: p for p in providers.catalog_for_ui()}
+    assert ui["cloudflare"]["primary"] == ["CF_DNS_API_TOKEN"]
+    assert ui["hetzner"]["primary"] == []

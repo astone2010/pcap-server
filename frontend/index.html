@@ -572,79 +572,121 @@
 
         <!-- BPF capture filter library -->
         <!-- admin panel -->
+        <!-- Admin: a short list of sections down the side and one section on
+             screen at a time. It used to be every section stacked in one
+             column, each opening with a paragraph of explanation -- about
+             2,000px of scrolling before the last control. Each page now leads
+             with one sentence; the reasoning is behind Learn more. The element
+             ids inside each page are unchanged, so the loaders in app.js and
+             tls.js fill them exactly as before. -->
         <div id="panel-admin" class="panel">
-            <div class="admin-layout">
-                <div class="admin-section">
-                    <h3>Capture encryption</h3>
-                    <div id="admin-encryption"></div>
-                </div>
-                <div class="admin-section">
-                    <h3>HTTPS certificate</h3>
-                    <p class="field-hint" style="margin-bottom:10px">
-                        pcap-server can get its own Let's Encrypt certificate and serve HTTPS
-                        itself, with no reverse proxy. It proves the domain is yours with a DNS
-                        record, through any of about two hundred DNS providers, so the machine
-                        never has to be reachable from the internet. Credentials are stored
-                        encrypted under the master key, and renewal is automatic.
-                    </p>
-                    <div id="admin-tls"></div>
-                </div>
-                <div class="admin-section">
-                    <h3>Settings</h3>
-                    <div id="admin-settings" class="admin-settings-grid"></div>
-                    <button id="btn-save-settings" class="btn btn-sm btn-primary" style="margin-top:12px">Save settings</button>
-                    <div id="settings-msg" class="error-msg"></div>
-                </div>
-                <div class="admin-section">
-                    <h3>Users</h3>
-                    <div id="admin-user-list" class="admin-table-container"></div>
-                    <div class="admin-inline-form" style="margin-top:12px"
-                         data-enter-submits="#btn-admin-create-user">
-                        <input type="text" id="admin-new-username" placeholder="Username" style="width:140px">
-                        <input type="password" id="admin-new-password" placeholder="Password" style="width:140px">
-                        <button id="btn-admin-create-user" class="btn btn-sm btn-secondary">Add user</button>
-                    </div>
-                    <div id="admin-user-msg" class="error-msg"></div>
-                </div>
-                <div class="admin-section">
-                    <h3>SSH Keys</h3>
-                    <p class="field-hint" style="margin-bottom:10px">
-                        The <em>private</em> keys pcap-server logs in with — your identity to the
-                        target hosts, chosen per server on the Servers tab. Upload the private
-                        key file (the one without <code>.pub</code>) whose public half is already
-                        in that host's <code>~/.ssh/authorized_keys</code>. Passwords are never
-                        used: key authentication is the only method, which is why capturing as a
-                        non-root user needs passwordless sudo. Keys are encrypted at rest under
-                        the master key.
-                    </p>
-                    <div id="admin-ssh-keys" class="admin-table-container"></div>
-                    <div class="admin-inline-form" style="margin-top:12px">
-                        <input type="file" id="admin-key-file" style="font-size:0.8125rem">
-                        <button id="btn-admin-upload-key" class="btn btn-sm btn-secondary">Upload key</button>
-                    </div>
-                    <div id="admin-key-msg" class="error-msg"></div>
-                </div>
-                <div class="admin-section">
-                    <h3>Known Hosts</h3>
-                    <p class="field-hint" style="margin-bottom:10px">
-                        SSH host-key verification, per configured host. These are the
-                        <em>host's</em> identity — proof the machine answering is the one you
-                        meant — not the login keys under SSH Keys above. Trusting a host pins
-                        what it answers with, so an impostor on that address is refused instead
-                        of being handed your key. A host with no trusted keys is refused
-                        outright &mdash; nothing connects to it until it is trusted here, or
-                        from the <strong>Trust host</strong> button on the server itself.
-                    </p>
-                    <p class="field-hint" style="margin-bottom:10px">
-                        A host usually answers with <strong>several keys — one per algorithm</strong>
-                        (<code>ssh-ed25519</code> is the modern default, <code>ecdsa-sha2-nistp256</code>
-                        and <code>ssh-rsa</code> are kept for older clients). Whichever the two ends
-                        negotiate is the one checked, so all of them are stored together and
-                        trusted or forgotten as a set. Rescanning re-fetches them from the host
-                        and updates the stored time.
-                    </p>
-                    <div id="admin-known-hosts" class="admin-table-container"></div>
-                    <div id="admin-host-msg" class="error-msg"></div>
+            <div class="admin-shell">
+                <nav class="admin-nav" aria-label="Admin sections">
+                    <button type="button" class="admin-nav-item" data-admin-page="overview">Overview</button>
+                    <button type="button" class="admin-nav-item" data-admin-page="https">HTTPS <span class="admin-nav-dot" id="admin-nav-dot-https" hidden></span></button>
+                    <button type="button" class="admin-nav-item" data-admin-page="encryption">Encryption <span class="admin-nav-dot" id="admin-nav-dot-encryption" hidden></span></button>
+                    <button type="button" class="admin-nav-item" data-admin-page="users">Users</button>
+                    <button type="button" class="admin-nav-item" data-admin-page="ssh-keys">SSH keys</button>
+                    <button type="button" class="admin-nav-item" data-admin-page="known-hosts">Known hosts <span class="admin-nav-dot" id="admin-nav-dot-known-hosts" hidden></span></button>
+                    <button type="button" class="admin-nav-item" data-admin-page="settings">Settings</button>
+                </nav>
+
+                <div class="admin-content">
+                    <section class="admin-page" id="admin-page-overview" hidden>
+                        <h2>Overview</h2>
+                        <p class="admin-lead">How this installation stands. Choose a card to open that section.</p>
+                        <div id="admin-overview" class="admin-cards"></div>
+                    </section>
+
+                    <section class="admin-page" id="admin-page-https" hidden>
+                        <h2>HTTPS certificate</h2>
+                        <p class="admin-lead">Get a Let's Encrypt certificate and serve HTTPS directly &mdash; no reverse proxy, no inbound ports.</p>
+                        <details class="learn-more">
+                            <summary>Learn more</summary>
+                            <p>
+                                pcap-server proves the domain is yours by creating a DNS record
+                                through your DNS provider &mdash; about two hundred are supported &mdash;
+                                so the machine never has to be reachable from the internet. It waits a
+                                short delay and then lets Let's Encrypt check, the same way Proxmox and
+                                certbot do. Credentials and the certificate's key are stored encrypted
+                                under the master key, and renewal is automatic.
+                            </p>
+                        </details>
+                        <div id="admin-tls"></div>
+                    </section>
+
+                    <section class="admin-page" id="admin-page-encryption" hidden>
+                        <h2>Capture encryption</h2>
+                        <p class="admin-lead">Whether captures and SSH keys are encrypted at rest, and with which key.</p>
+                        <div id="admin-encryption"></div>
+                    </section>
+
+                    <section class="admin-page" id="admin-page-users" hidden>
+                        <h2>Users</h2>
+                        <p class="admin-lead">Accounts that can sign in. Every account must set up a second factor.</p>
+                        <div id="admin-user-list" class="admin-table-container"></div>
+                        <div class="admin-inline-form admin-page-form" data-enter-submits="#btn-admin-create-user">
+                            <input type="text" id="admin-new-username" placeholder="Username" style="width:160px">
+                            <input type="password" id="admin-new-password" placeholder="Password" style="width:160px">
+                            <button id="btn-admin-create-user" class="btn btn-sm btn-secondary">Add user</button>
+                        </div>
+                        <div id="admin-user-msg" class="error-msg"></div>
+                    </section>
+
+                    <section class="admin-page" id="admin-page-ssh-keys" hidden>
+                        <h2>SSH keys</h2>
+                        <p class="admin-lead">The private keys pcap-server logs in to target hosts with.</p>
+                        <details class="learn-more">
+                            <summary>Learn more</summary>
+                            <p>
+                                These are your identity to the target hosts, chosen per server on the
+                                Servers tab. Upload the private key file (the one without
+                                <code>.pub</code>) whose public half is already in that host's
+                                <code>~/.ssh/authorized_keys</code>. Passwords are never used: key
+                                authentication is the only method, which is why capturing as a non-root
+                                user needs passwordless sudo. Keys are encrypted at rest under the master
+                                key.
+                            </p>
+                        </details>
+                        <div id="admin-ssh-keys" class="admin-table-container"></div>
+                        <div class="admin-inline-form admin-page-form">
+                            <input type="file" id="admin-key-file" style="font-size:0.8125rem">
+                            <button id="btn-admin-upload-key" class="btn btn-sm btn-secondary">Upload key</button>
+                        </div>
+                        <div id="admin-key-msg" class="error-msg"></div>
+                    </section>
+
+                    <section class="admin-page" id="admin-page-known-hosts" hidden>
+                        <h2>Known hosts</h2>
+                        <p class="admin-lead">Each target host's verified identity. Nothing connects to a host until its keys are trusted.</p>
+                        <details class="learn-more">
+                            <summary>Learn more</summary>
+                            <p>
+                                These are the <em>host's</em> identity &mdash; proof the machine answering
+                                is the one you meant &mdash; not the login keys under SSH keys. Trusting a
+                                host pins what it answers with, so an impostor on that address is refused
+                                instead of being handed your key. A host can also be trusted from the
+                                <strong>Trust host</strong> button on the server itself.
+                            </p>
+                            <p>
+                                A host usually answers with <strong>several keys, one per algorithm</strong>
+                                (<code>ssh-ed25519</code> is the modern default; <code>ecdsa-sha2-nistp256</code>
+                                and <code>ssh-rsa</code> are kept for older clients). Whichever the two ends
+                                negotiate is the one checked, so all of them are stored together and trusted
+                                or forgotten as a set. Rescanning re-fetches them and updates the stored time.
+                            </p>
+                        </details>
+                        <div id="admin-known-hosts" class="admin-table-container"></div>
+                        <div id="admin-host-msg" class="error-msg"></div>
+                    </section>
+
+                    <section class="admin-page" id="admin-page-settings" hidden>
+                        <h2>Settings</h2>
+                        <p class="admin-lead">Limits on captures, sessions and request rates.</p>
+                        <div id="admin-settings" class="admin-settings-grid"></div>
+                        <button id="btn-save-settings" class="btn btn-sm btn-primary" style="margin-top:12px">Save settings</button>
+                        <div id="settings-msg" class="error-msg"></div>
+                    </section>
                 </div>
             </div>
         </div>

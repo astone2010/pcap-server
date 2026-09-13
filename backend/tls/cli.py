@@ -115,6 +115,7 @@ def _print_status(st: dict) -> None:
         print(f"email:       {cfg['email']}")
         print(f"provider:    {cfg['provider_name']} ({cfg['provider']})")
         print(f"staging:     {'yes' if cfg['staging'] else 'no'}")
+        print(f"wait:        {cfg['validation_delay']}s before validation")
     else:
         print("domain:      (not configured)")
     print(f"credentials: {', '.join(st['stored_credentials']) or 'none stored'}")
@@ -141,6 +142,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     iss.add_argument("--domain", required=True)
     iss.add_argument("--email", required=True)
     iss.add_argument("--provider", required=True, help="a code from `providers`, e.g. cloudflare")
+    iss.add_argument("--validation-delay", default="",
+                     help="seconds to wait after creating the DNS record before Let's Encrypt "
+                          "checks it (default 30)")
     iss.add_argument("--staging", action="store_true",
                      help="Let's Encrypt staging: untrusted certificates, generous limits")
     sub.add_parser("renew", help="request a new certificate now with the stored settings")
@@ -183,7 +187,9 @@ def main(argv: list[str] | None = None) -> int:
             stored = set(st["stored_credentials"]) if st["stored_provider"] == provider.code else set()
             values = (_prompt_credentials(provider, stored) if sys.stdin.isatty()
                       else _read_piped_credentials(provider))
-            info = manager.issue(args.domain, args.email, provider.code, values, args.staging)
+            store.validate_validation_delay(args.validation_delay)
+            info = manager.issue(args.domain, args.email, provider.code, values, args.staging,
+                                 args.validation_delay)
     except (AcmeError, ValueError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2

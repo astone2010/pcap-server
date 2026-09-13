@@ -316,6 +316,12 @@ Four details carry the security weight:
   and the finished argv is checked once more before it runs. lego also loads a
   `.lego.yml` from its working directory if one exists; the fresh scratch
   directory has none.
+- **lego waits instead of polling DNS.** It runs with
+  `--dns.propagation.wait=<delay>s` (30 s by default, the admin's **Wait before
+  validation**), which skips lego's own check that the challenge record is
+  visible — a check made through the container's resolver, which failed on a
+  network where certbot and Proxmox succeed. Neither of those polls local DNS;
+  they wait and let Let's Encrypt look, and so does this.
 
 The cipher list is narrowed to ECDHE with AEAD for TLS 1.2, with TLS 1.2 as the
 floor. uvicorn's own default string, `TLSv1`, selects the TLS 1.0-era CBC/SHA-1

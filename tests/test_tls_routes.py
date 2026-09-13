@@ -120,7 +120,7 @@ def test_a_credential_the_provider_does_not_list_is_refused(http_client, admin):
 def test_issue_route_hands_the_request_to_the_manager(http_client, admin, monkeypatch):
     seen = []
 
-    def fake_issue(domain, email, provider, credentials, staging):
+    def fake_issue(domain, email, provider, credentials, staging, resolvers):
         seen.append((domain, email, provider, credentials, staging))
         return store.cert_info(make_pair()[0])
 

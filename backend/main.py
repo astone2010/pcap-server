@@ -80,7 +80,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.28"
+APP_VERSION = "0.1.0-dev.29"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -393,10 +393,10 @@ _INSECURE_ALLOWED_PATHS = frozenset({
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 _HTTPS_REMEDY = (
-    "Let pcap-server obtain its own certificate (Admin, HTTPS certificate), or put it "
-    "behind an HTTPS reverse proxy that can obtain and renew its "
-    "own certificates (Caddy, Nginx Proxy Manager and Traefik all do this "
-    "automatically; plain nginx needs certbot or similar alongside it), then set "
+    "Serve pcap-server over HTTPS. Built in: an admin requests a Let's Encrypt "
+    "certificate (ACME, DNS-01) under Admin, HTTPS, and pcap-server serves "
+    "HTTPS itself with no proxy and no inbound ports. Or put it behind a reverse proxy "
+    "that obtains its own certificates (Caddy, Nginx Proxy Manager, Traefik) and set "
     "TRUST_PROXY_HEADERS=true so pcap-server recognises the proxy's TLS."
 )
 

@@ -24,6 +24,25 @@ from backend.tls import destinations
 
 _CATALOG = Path(__file__).with_name("lego_providers.json")
 
+# What to show first, for providers that take several alternative ways to
+# authenticate. lego's metadata lists every credential a provider accepts and
+# says nothing about which are needed, so Cloudflare shows four boxes when one
+# API token is the usual answer -- and four empty boxes read as four required
+# ones. These are the common, recommended set; everything else a provider
+# accepts is still offered, under "Other ways to authenticate". Providers not
+# listed here show all their credentials, which for most is exactly what they
+# need.
+PRIMARY = {
+    "cloudflare": ("CF_DNS_API_TOKEN",),
+    "route53": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"),
+    "lightsail": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+    "gcloud": ("GCE_PROJECT", "GCE_SERVICE_ACCOUNT"),
+    "azuredns": ("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID",
+                 "AZURE_SUBSCRIPTION_ID", "AZURE_RESOURCE_GROUP"),
+    "ovh": ("OVH_ENDPOINT", "OVH_APPLICATION_KEY", "OVH_APPLICATION_SECRET", "OVH_CONSUMER_KEY"),
+    "gandiv5": ("GANDIV5_PERSONAL_ACCESS_TOKEN",),
+}
+
 MAX_VALUE_BYTES = 4096
 MAX_FILE_BYTES = 64 * 1024
 MAX_VARIABLES = 40
@@ -83,6 +102,7 @@ def catalog_for_ui() -> list[dict]:
     return [
         {
             "code": p.code, "name": p.name, "docs": p.docs,
+            "primary": list(PRIMARY.get(p.code, ())),
             "variables": [
                 {"name": v.name, "description": v.description, "kind": v.kind, "group": v.group}
                 for v in p.variables

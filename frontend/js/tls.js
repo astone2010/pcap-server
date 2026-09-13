@@ -55,21 +55,34 @@ function tlsSummary(st) {
                  + "is read-only to anyone not on this machine." };
 }
 
+// Setup is a guided flow that stays out of the way. The page leads with how
+// HTTPS stands and what can be done about it; the form only appears after "Set
+// up certificate" (or "Change settings"), one step at a time.
+let tlsSetupOpen = false;
+let tlsStep = 1;
+const TLS_STEPS = ["Domain", "DNS provider", "Request"];
+
+let tlsLastStatus = null;
+
 function renderTls(box, st) {
+    tlsLastStatus = st;
     box.textContent = "";
     const summary = tlsSummary(st);
     box.append(tlsEl("div", `enc-state enc-${summary.level}`, summary.headline));
     box.append(tlsEl("div", "enc-detail", summary.detail));
-    box.append(tlsFacts(st));
+    if (st.config || st.certificate) box.append(tlsFacts(st));
     if (st.last_error) {
-        box.append(tlsEl("div", "error-msg", "Last attempt failed:"));
-        box.append(tlsEl("pre", "enc-howto", st.last_error));
+        const err = tlsEl("details", "tls-last-error");
+        err.open = true;
+        err.append(tlsEl("summary", "", "Last attempt failed"), tlsEl("pre", "enc-howto", st.last_error));
+        box.append(err);
     }
-    if (st.certificate || st.config) box.append(tlsActions(st));
-    if (st.available) box.append(tlsRequestForm(st));
+    if (st.available) box.append(tlsActions(st));
+    if (st.available && tlsSetupOpen) box.append(tlsSetupWizard(st));
     const msg = tlsEl("div", "error-msg");
     msg.id = "tls-msg";
     box.append(msg);
+    if (typeof loadAdminOverview === "function") loadAdminOverview();
 }
 
 function tlsFacts(st) {
@@ -97,21 +110,34 @@ function tlsFacts(st) {
 }
 
 function tlsActions(st) {
-    const actions = tlsEl("div", "admin-inline-form");
-    actions.style.marginTop = "12px";
+    const actions = tlsEl("div", "admin-inline-form tls-status-actions");
     if (st.restart_needed) {
         const b = tlsEl("button", "btn btn-sm btn-primary", "Switch to HTTPS");
         b.addEventListener("click", () => switchToHttps(st));
         actions.append(b);
     }
-    if (st.config && st.stored_credentials.length && st.available) {
+    if (!tlsSetupOpen) {
+        const configured = st.config || st.certificate;
+        const setup = tlsEl("button", configured ? "btn btn-sm btn-secondary" : "btn btn-sm btn-primary",
+                            configured ? "Change settings" : "Set up certificate");
+        setup.id = "btn-tls-setup";
+        setup.addEventListener("click", () => {
+            tlsSetupOpen = true;
+            tlsStep = 1;
+            renderTls($("admin-tls"), st);
+        });
+        actions.append(setup);
+    }
+    if (st.config && st.stored_credentials.length) {
         const b = tlsEl("button", "btn btn-sm btn-secondary", "Renew now");
         b.addEventListener("click", renewCertificate);
         actions.append(b);
     }
-    const rm = tlsEl("button", "btn btn-sm btn-danger", "Remove");
-    rm.addEventListener("click", removeCertificate);
-    actions.append(rm);
+    if (st.certificate || st.config) {
+        const rm = tlsEl("button", "btn btn-sm btn-danger", "Remove");
+        rm.addEventListener("click", removeCertificate);
+        actions.append(rm);
+    }
     return actions;
 }
 
@@ -133,14 +159,77 @@ function tlsInput(id, { type = "text", placeholder = "", value = "" } = {}) {
     return input;
 }
 
-function tlsRequestForm(st) {
-    const wrap = tlsEl("div", "tls-form");
-    if (!secureTransport) wrap.append(tlsHttpWarning());
-    wrap.append(tlsBasics(st));
-    wrap.append(tlsProviderPicker(st));
-    wrap.append(tlsSubmitRow(st));
-    wrap.append(...tlsCliHint(st));
+function tlsSetupWizard(st) {
+    const wrap = tlsEl("div", "tls-form tls-wizard");
+
+    const steps = tlsEl("ol", "tls-steps");
+    TLS_STEPS.forEach((name, n) => {
+        const li = tlsEl("li", n + 1 === tlsStep ? "current" : (n + 1 < tlsStep ? "done" : ""), name);
+        steps.append(li);
+    });
+    wrap.append(steps);
+
+    const one = tlsEl("div", "tls-step");
+    one.dataset.tlsStep = "1";
+    one.append(tlsBasics(st));
+
+    const two = tlsEl("div", "tls-step");
+    two.dataset.tlsStep = "2";
+    if (!secureTransport) two.append(tlsHttpWarning());
+    two.append(tlsProviderPicker(st));
+
+    const three = tlsEl("div", "tls-step");
+    three.dataset.tlsStep = "3";
+    three.append(tlsValidationDelayField(st), tlsSubmitRow(st), tlsCliHint(st));
+
+    for (const step of [one, two, three]) {
+        step.hidden = Number(step.dataset.tlsStep) !== tlsStep;
+        wrap.append(step);
+    }
+    wrap.append(tlsWizardNav(st));
     return wrap;
+}
+
+function tlsWizardNav(st) {
+    const nav = tlsEl("div", "tls-wizard-nav");
+    const cancel = tlsEl("button", "btn btn-sm btn-secondary", "Cancel");
+    cancel.addEventListener("click", () => { tlsSetupOpen = false; renderTls($("admin-tls"), st); });
+    nav.append(cancel);
+    if (tlsStep > 1) {
+        const back = tlsEl("button", "btn btn-sm btn-secondary", "Back");
+        back.id = "btn-tls-back";
+        back.addEventListener("click", () => tlsGoToStep(tlsStep - 1));
+        nav.append(back);
+    }
+    if (tlsStep < TLS_STEPS.length) {
+        const next = tlsEl("button", "btn btn-sm btn-primary", "Next");
+        next.id = "btn-tls-next";
+        next.addEventListener("click", () => {
+            if (tlsStep === 1 && (!$("tls-domain").value.trim() || !$("tls-email").value.trim())) {
+                tlsMessage("Enter the domain and a contact email first.", false);
+                return;
+            }
+            tlsGoToStep(tlsStep + 1);
+        });
+        nav.append(next);
+    }
+    return nav;
+}
+
+// Steps are shown and hidden rather than re-rendered, so what has been typed
+// into one survives going to the next and back.
+function tlsGoToStep(n) {
+    tlsStep = n;
+    tlsMessage("", false);
+    document.querySelectorAll(".tls-wizard [data-tls-step]").forEach((el) => {
+        el.hidden = Number(el.dataset.tlsStep) !== n;
+    });
+    document.querySelectorAll(".tls-steps li").forEach((li, k) => {
+        li.className = k + 1 === n ? "current" : (k + 1 < n ? "done" : "");
+    });
+    const wizard = document.querySelector(".tls-wizard");
+    const oldNav = wizard?.querySelector(".tls-wizard-nav");
+    if (wizard && oldNav) oldNav.replaceWith(tlsWizardNav(tlsLastStatus));
 }
 
 function tlsHttpWarning() {
@@ -180,12 +269,24 @@ function tlsProviderPicker(st) {
         renderProviderFields(fields, st);
     });
     const group = tlsEl("div", "");
-    group.append(tlsField("DNS provider",
-        "Where the domain's DNS is hosted. pcap-server proves the domain is yours by creating "
-        + "a TXT record there, so the machine never has to be reachable from the internet.", select));
+    group.append(tlsField("DNS provider", "Where the domain's DNS is hosted.", select));
     group.append(fields);
     renderProviderFields(fields, st);
     return group;
+}
+
+function tlsValidationDelayField(st) {
+    const input = tlsInput("tls-validation-delay", {
+        type: "number",
+        placeholder: String(st.default_validation_delay || 30),
+        value: st.config ? String(st.config.validation_delay) : "",
+    });
+    input.min = "5";
+    input.max = "600";
+    return tlsField("Wait before validation (seconds)",
+        "How long to wait after creating the DNS record before Let's Encrypt checks it — the "
+        + "same as Proxmox's validation delay or certbot's propagation seconds. Raise it if "
+        + "your provider is slow to publish.", input);
 }
 
 function tlsSubmitRow(st) {
@@ -202,15 +303,19 @@ function tlsSubmitRow(st) {
 }
 
 function tlsCliHint(st) {
-    const hint = tlsEl("div", "field-hint",
-        "Or from the Docker host, which keeps the credentials off the network — they are prompted for:");
+    const more = tlsEl("details", "learn-more tls-cli-hint");
+    more.append(tlsEl("summary", "", "Prefer the command line?"));
+    more.append(tlsEl("p", "",
+        "From the Docker host, in the folder holding docker-compose.yml. The credentials are "
+        + "prompted for, so they never cross the network:"));
     const cli = tlsEl("pre", "enc-howto");
     cli.id = "tls-cli";
     cli.textContent = `docker compose exec -it pcap-server python -m backend.tls issue \\\n`
         + `    --domain ${st.config?.domain || "pcap.example.com"} --email ${st.config?.email || "you@example.com"}`
         + ` --provider ${tlsSelectedProvider}\n`
         + `docker compose restart pcap-server`;
-    return [hint, cli];
+    more.append(cli);
+    return more;
 }
 
 function renderProviderFields(container, st) {
@@ -227,37 +332,54 @@ function renderProviderFields(container, st) {
     link.href = provider.docs;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    docs.append(document.createTextNode("Which of these you need depends on how you authenticate — see "),
-                link, document.createTextNode(". Stored values are never shown; leave a stored field blank to keep it."));
+    docs.append(document.createTextNode(provider.primary?.length
+        ? "The usual settings — "
+        : "Which of these you need depends on how you authenticate — "),
+                link, document.createTextNode(stored.size ? ". Leave a stored field blank to keep it." : "."));
     container.append(docs);
 
+    // A provider with a recommended set shows just that set; the alternatives
+    // are one click away. Otherwise every credential is shown.
+    const primary = new Set(provider.primary || []);
     const main = tlsEl("div", "tls-grid");
-    const more = tlsEl("details", "tls-more");
-    more.append(tlsEl("summary", "", "More settings"));
-    const moreGrid = tlsEl("div", "tls-grid");
-    more.append(moreGrid);
-
+    const other = tlsDetails("Other ways to authenticate");
+    const more = tlsDetails("More settings");
     for (const v of provider.variables) {
-        const id = `tls-var-${v.name}`;
-        let control;
-        if (v.kind === "file") {
-            control = tlsEl("textarea");
-            control.rows = 3;
-            control.placeholder = stored.has(v.name) ? "stored — paste to replace" : "Paste the file's contents";
-        } else {
-            control = tlsEl("input");
-            control.type = v.kind === "secret" ? "password" : "text";
-            control.autocomplete = "off";
-            control.placeholder = stored.has(v.name) ? "stored — blank keeps it" : "";
-        }
-        control.id = id;
-        control.dataset.tlsVar = v.name;
-        control.spellcheck = false;
-        const hint = v.kind === "file" ? `${v.description} (paste the file itself, not a path)` : v.description;
-        (v.group === "credentials" ? main : moreGrid).append(tlsField(v.name, hint, control, true));
+        const field = tlsVariableField(v, stored);
+        if (primary.size ? primary.has(v.name) : v.group === "credentials") main.append(field);
+        else if (v.group === "credentials") other.grid.append(field);
+        else more.grid.append(field);
     }
     container.append(main);
-    if (moreGrid.childElementCount) container.append(more);
+    if (other.grid.childElementCount) container.append(other.el);
+    if (more.grid.childElementCount) container.append(more.el);
+}
+
+function tlsDetails(summary) {
+    const el = tlsEl("details", "tls-more");
+    el.append(tlsEl("summary", "", summary));
+    const grid = tlsEl("div", "tls-grid");
+    el.append(grid);
+    return { el, grid };
+}
+
+function tlsVariableField(v, stored) {
+    let control;
+    if (v.kind === "file") {
+        control = tlsEl("textarea");
+        control.rows = 3;
+        control.placeholder = stored.has(v.name) ? "stored — paste to replace" : "Paste the file's contents";
+    } else {
+        control = tlsEl("input");
+        control.type = v.kind === "secret" ? "password" : "text";
+        control.autocomplete = "off";
+        control.placeholder = stored.has(v.name) ? "stored — blank keeps it" : "";
+    }
+    control.id = `tls-var-${v.name}`;
+    control.dataset.tlsVar = v.name;
+    control.spellcheck = false;
+    const hint = v.kind === "file" ? `${v.description} (paste the file itself, not a path)` : v.description;
+    return tlsField(v.name, hint, control, true);
 }
 
 function tlsMessage(text, ok) {
@@ -279,15 +401,19 @@ async function requestCertificate() {
         provider: $("tls-provider").value,
         credentials,
         staging: $("tls-staging").checked,
+        validation_delay: $("tls-validation-delay").value.trim(),
     };
     const btn = $("btn-tls-request");
     if (btn) btn.disabled = true;
-    tlsMessage("Requesting a certificate — this usually takes a minute or two while DNS propagates…", true);
+    tlsMessage("Requesting a certificate — this takes about a minute: the DNS record is created, then Let's Encrypt checks it after the wait…", true);
     try {
-        renderTls($("admin-tls"), await api("/api/admin/tls/acme", { method: "POST", body: JSON.stringify(body) }));
+        const st = await api("/api/admin/tls/acme", { method: "POST", body: JSON.stringify(body) });
+        tlsSetupOpen = false;
+        renderTls($("admin-tls"), st);
         tlsMessage("Certificate issued.", true);
     } catch (e) {
-        await loadTlsStatus();
+        // Left open, as typed: re-rendering would clear the credentials the
+        // admin just entered, and the error is usually fixed by changing one.
         tlsMessage(e.message, false);
     } finally {
         const again = $("btn-tls-request");

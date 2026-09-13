@@ -1,5 +1,12 @@
 # Dev Skills gate state
-Track: 0.1.0-dev.28 OPEN — release sequence. dev.27 closed and shipped (below).
+Track: 0.1.0-dev.29 release sequence — gates 1-4 ✅, committing (user away).
+       0.1.0-dev.28 CLOSED AND SHIPPED 2026-09-13 (below).
+
+## PENDING WORK — read before starting a session
+- Prepared, approved, NOT YET RUN: exhaustive security audit + operability + pentest.
+  Full plan and locked user decisions in .claude/audit-handoff.md. Read-only
+  investigation, carries no gates itself. Resume with "run the audit handoff".
+
 Version: 0.1.0-dev.28 (bumped). Previous tag v0.1.0-dev.27 confirmed on
          the remote: object b63c695, ^{} -> d70e47b.
 Updated: 2026-09-13 (session: local CLI, Fedora 44, bash)
@@ -9,9 +16,90 @@ Environment: LOCAL Claude Code CLI — Claude PRESENTS git commands, the user
 Model: Opus 5, above the Sonnet ceiling; the user approved staying on it FOR
        dev.28 (2026-09-13).
 
+## 0.1.0-dev.29 tracker
+
+Opened 2026-09-13 from the user's first real dev.28 issuance attempt.
+Gates run on the user's instruction ("Run the gates And do the commit since I'm
+away from my desk").
+
+🔢 VERSION    ✅ 0.1.0-dev.29 in all seven refs (main.py:83, compose:92, README
+                130/225/241, reverse-proxy.md 110/274); CHANGELOG heading dated
+                2026-09-13. v0.1.0-dev.28 on remote -> 8fac667 = branch head.
+                docs/tls.md:238 names dev.28 deliberately (troubleshooting row).
+🔨 BUILD      ✅ check.sh after bump: 1264 passed, 0 skipped, exit 0. Image built
+                with rootless podman; container serves /api/auth/status, ships
+                tls.js wizard + admin-shell markup, lego 5.4.1, no log errors.
+                (Afterwards: a comment fix in lego.py + architecture.md bullet;
+                TLS suites re-run 179 passed.)
+🔒 SECURITY   ✅ 0 Critical, 0 High. pip-audit clean. Diff since 8fac667 reviewed:
+                argv gets --dns.propagation.wait from a validated int (5..600,
+                bools refused); _ERROR_FIELD regex single-line, non-overlapping
+                alternation; redaction runs after unescape; overview/wizard DOM
+                built with textContent; localStorage page name allowlisted.
+                Standing Medium (user decision): credentials over plain HTTP.
+                Quality: loadAdminOverview ~45 lines (card builders split) -- ok.
+📄 DOCS       ✅ CHANGELOG dev.29 (wait-not-poll, readable errors, Cloudflare one
+                field, banner, CLI location, admin sections, HTTPS steps);
+                tls.md (3-step setup, Wait before validation, why it waits,
+                troubleshooting), architecture.md (wait bullet), README admin
+                names. No stale "DNS servers that check"/public-resolver text.
+📦 RELEASE    ⏳ commit + push authorized by the user (away). Release notes need
+                the user's approval before SHIP. PR ➖ N/A.
+                .claude/audit-handoff.md EXCLUDED from the commit: untracked,
+                not created by Claude, contents unseen.
+🚀 SHIP       ⬜ user's tag push (minimal block: fetch / tag / push).
+
+### What the user hit on dev.28
+- lego failed: "recursive nameservers: NS 127.0.0.11:53 returned NXDOMAIN for
+  _acme-challenge.pcap.nscriven.net" after 2 min. Record WAS created via
+  Cloudflare; Docker's resolver forwards to the host's LAN DNS, which answers
+  for nscriven.net itself (split DNS). NPM works because certbot just sleeps.
+- `docker compose exec` run outside the compose dir -> "no configuration file".
+- Cloudflare showed 4 credential boxes; NPM needs only the API token.
+- Asked that the plain-HTTP banner name ACME as an option (it did, third).
+- Container lacks ping/curl/wget -- by design; lego doesn't need them.
+
+### Fixes (dev.29)
+1. lego --dns.resolvers default 1.1.1.1:53,8.8.8.8:53; configurable per install
+   (acme.json "resolvers", UI "DNS servers that check the record", CLI
+   --resolvers). IP[:port] only, max 4, no loopback/link-local. Old acme.json
+   loads. Verified real lego 5.4.1 parses the flag.
+2. lego errors: extract error="..." from the ERROR line, drop WARN HEADS UP,
+   one hint (most specific first). Tested on the user's exact output.
+3. providers.PRIMARY: cloudflare=[CF_DNS_API_TOKEN], route53, lightsail, gcloud,
+   azuredns, ovh, gandiv5; others under "Other ways to authenticate".
+4. Banner + _HTTPS_REMEDY: "two ways" -- built-in Let's Encrypt (ACME, DNS-01)
+   first, reverse proxy second.
+5. UI CLI hint says to run in the compose folder; docs give docker exec.
+
+USER DECISIONS 2026-09-13:
+- "We are not going to resolve on external resolvers." Public default reverted;
+  compose `dns:` workaround withdrawn.
+- User: "Proxmox npm termux. Everything else I use that has certbot in acme does
+  not have this issue." All of those WAIT a fixed delay and never poll local DNS.
+  -> FIX: lego --dns.propagation.wait=<delay>s (skips lego's recursive and
+  authoritative checks entirely -- verified in lego source
+  dns01.PropagationWait(wait, skipCheck=true)). "Wait before validation",
+  default 30s like Proxmox, 5..600. The resolvers setting was REMOVED (never
+  released); old acme.json "resolvers" key ignored. Real lego 5.4.1 accepts the
+  flag. check.sh 1259 passed, 0 skipped.
+- Corrected by the user: I asserted split DNS without evidence. Cause of the
+  NXDOMAIN poll remains UNCONFIRMED; the fix does not depend on it.
+- Record name _acme-challenge.pcap.<zone> is correct (RFC 8555 8.4).
+- Admin panel "a mess ... too busy and confusing". USER CHOSE (AskUserQuestion):
+  sidebar sections (Proxmox-like), one line + Learn more, HTTPS status first
+  with setup as steps. BUILT: index.html admin-shell/nav/7 pages (Overview,
+  HTTPS, Encryption, Users, SSH keys, Known hosts, Settings); app.js
+  selectAdminPage (data-admin-page, NOT data-tab -- activatePanel clears
+  [data-tab]), remembered page (localStorage, try/catch), Overview cards + nav
+  attention dots; tls.js status-first + 3-step wizard (values survive Back/Next;
+  failed request leaves wizard open). Screenshots checked desktop + 400px.
+  Pre-existing, not touched: top toolbar overflows at 400px.
+  check.sh 1264 passed, 0 skipped, exit 0.
+
 ## 0.1.0-dev.28 tracker
 
-GATES RUNNING (user: "run the gates", 2026-09-13).
+ALL SIX GATES ✅ + FOUR POST-SHIP CHECKS ✅.
 
 🔢 VERSION    ✅ 0.1.0-dev.28 in all seven refs: backend/main.py:83,
                 docker-compose.yml:92, CHANGELOG heading, README.md:130/225/241,
@@ -63,19 +151,24 @@ GATES RUNNING (user: "run the gates", 2026-09-13).
                 368363e. PR ➖ N/A (no PR workflow). Release notes APPROVED
                 ("yes") -- to be applied with `gh release edit` after CI
                 publishes (release.yml generate_release_notes = commits only).
-🚀 SHIP       🚫 BLOCKED -- CI Check on 368363e (run 34783041188) FAILED:
-                1 failed / 1242 passed. test_opening_a_live_capture_shows_the_live_bar
-                -> page.wait_for_function with a BARE EXPRESSION -> EvalError under
-                the app CSP (no unsafe-eval). Timing-dependent: same code on
-                1abc598 (run 34782971749) passed. Pre-existing since dev.27, as is
-                a second one at test_capture_ui.py:386. Tag NOT pushed (confirmed
-                ls-remote empty).
-                FIX (uncommitted): both converted to "() => ..."; new
-                tests/test_browser_suite_hygiene.py fails on any bare-expression
-                wait_for_function (verified it fails against the old files).
-                check.sh: 1245 passed, 0 skipped, exit 0. Needs commit approval,
-                push, green Check on the new head, then the user's docker build
-                and tag push.
+🚀 SHIP       ✅ SHIPPED 2026-09-13, all four post-ship checks verified:
+                * tag v0.1.0-dev.28 on remote -> 8fac667 (LIGHTWEIGHT: created by
+                  the user's `gh api .../git/refs` from Termux; dev.27 was
+                  annotated). The user's later `git tag` said "already exists".
+                * Release workflow success: build and push image, create
+                  GitHub Release. Release v0.1.0-dev.28 (Dev), prerelease,
+                  published 2026-09-13T21:35:05Z. Approved notes applied with
+                  gh release edit (replacing generate_release_notes).
+                * PR ➖ N/A (no PR workflow).
+                * GHCR: :0.1.0-dev.28 and :dev both ->
+                  sha256:a117d7b534dd27b6af5cc73a73445fb2d7e4754147867852a5a15c157ee97fb2
+                  (real registry header digests, not e3b0c442).
+                Image also pre-verified locally with rootless podman (HTTP, HTTPS
+                via memfd from a sealed cert, no plaintext key on the volume).
+                History: Check on 368363e failed (bare-expression
+                wait_for_function under CSP); fixed in 8fac667 + hygiene test.
+                LESSON: the user on Termux wanted a MINIMAL paste block (fetch,
+                tag, push) -- long guarded scripts caused frustration.
 
 ### dev.28 scope
 1. Built-in HTTPS -- backend/tls/ package (self-contained), lego 5.4.1.

@@ -217,15 +217,17 @@ function checkCookieConfig(cookieSecure) {
             "Because of that pcap-server runs read-only on this connection: you can browse ",
             "servers and view captures, but ",
             { strong: "captures cannot be downloaded, SSH keys cannot be uploaded, and nothing can be changed" },
-            ". To get full access, serve pcap-server over HTTPS. An admin can have it get its own ",
-            "certificate under ",
-            { strong: "Admin \u2192 HTTPS certificate" },
-            " \u2014 no proxy, no inbound ports. Or put a reverse proxy in front that obtains its own ",
-            "certificates (Caddy, Nginx Proxy Manager and Traefik all do) and set ",
+            ". To get full access, serve it over HTTPS \u2014 two ways. ",
+            { strong: "Built in:" },
+            " an admin requests a Let's Encrypt certificate (ACME, DNS-01) under ",
+            { strong: "Admin \u2192 HTTPS" },
+            " and pcap-server serves HTTPS itself \u2014 no proxy, no inbound ports, renewed automatically. ",
+            { strong: "Reverse proxy:" },
+            " put Caddy, Nginx Proxy Manager or Traefik in front, set ",
             { code: "TRUST_PROXY_HEADERS=true" },
-            " so it recognises the proxy's TLS, then set ",
+            " and ",
             { code: "COOKIE_SECURE=true" },
-            " and restart the container.",
+            ", and restart the container.",
         ]);
     } else {
         $("config-banner").hidden = true;
@@ -422,6 +424,11 @@ function initTabs() {
     });
     // Admin is outside the bar, so delegation on it cannot reach the button.
     $("admin-tab")?.addEventListener("click", () => selectStaticTab("admin"));
+    // The side list and the overview cards both carry data-admin-page.
+    $("panel-admin")?.addEventListener("click", (e) => {
+        const target = e.target.closest("[data-admin-page]");
+        if (target) selectAdminPage(target.dataset.adminPage);
+    });
 }
 
 function selectStaticTab(name) {
@@ -434,6 +441,8 @@ function selectStaticTab(name) {
         loadAdminUsers();
         loadAdminSSHKeys();
         loadAdminKnownHosts();
+        loadAdminOverview();
+        selectAdminPage(storedAdminPage());
     }
     // The server list carries host trust state, and host trust is changed on
     // the Admin tab next door. Without this the list was only ever fetched at
@@ -4168,6 +4177,123 @@ async function unlockEncryption() {
     } catch (e) {
         if (msg) { msg.className = "error-msg"; msg.textContent = e.message; }
     }
+}
+
+// --- admin panel: sections ---
+//
+// One section on screen at a time, chosen from the list down the side. Every
+// section's data is still loaded when Admin opens, so switching is instant and
+// the overview can say how each one stands. data-admin-page rather than
+// data-tab: activatePanel() clears .active from every [data-tab] on the page.
+
+const ADMIN_PAGES = ["overview", "https", "encryption", "users", "ssh-keys", "known-hosts", "settings"];
+const ADMIN_PAGE_KEY = "pcap-admin-page";
+
+function storedAdminPage() {
+    try {
+        const saved = localStorage.getItem(ADMIN_PAGE_KEY);
+        return ADMIN_PAGES.includes(saved) ? saved : "overview";
+    } catch {
+        return "overview";
+    }
+}
+
+function selectAdminPage(name) {
+    if (!ADMIN_PAGES.includes(name)) name = "overview";
+    for (const page of ADMIN_PAGES) {
+        const el = $(`admin-page-${page}`);
+        if (el) el.hidden = page !== name;
+    }
+    document.querySelectorAll(".admin-nav-item").forEach((b) => {
+        const on = b.dataset.adminPage === name;
+        b.classList.toggle("active", on);
+        if (on) b.setAttribute("aria-current", "page");
+        else b.removeAttribute("aria-current");
+    });
+    try { localStorage.setItem(ADMIN_PAGE_KEY, name); } catch { /* per-browser nicety only */ }
+    if (name === "overview") loadAdminOverview();
+}
+
+// Each card: what the section is, how it stands in a few words, and a level
+// that colours it. Built with textContent -- hostnames and usernames flow in.
+async function loadAdminOverview() {
+    const box = $("admin-overview");
+    if (!box) return;
+    const settle = (p) => p.then((v) => v, () => null);
+    const [enc, tls, users, keys, hosts] = await Promise.all([
+        settle(api("/api/admin/encryption")),
+        settle(api("/api/admin/tls")),
+        settle(api("/api/admin/users")),
+        settle(api("/api/ssh-keys")),
+        settle(api("/api/admin/host-trust")),
+    ]);
+    const cards = [adminHttpsCard(tls), adminEncryptionCard(enc)];
+    if (users) cards.push({ page: "users", title: "Users", level: "neutral",
+        state: `${users.length} account${users.length === 1 ? "" : "s"}` });
+    if (keys) cards.push({ page: "ssh-keys", title: "SSH keys", level: keys.length ? "neutral" : "warn",
+        state: keys.length ? `${keys.length} uploaded` : "None uploaded yet" });
+    cards.push(adminHostsCard(hosts));
+    cards.push({ page: "settings", title: "Settings", level: "neutral", state: "Capture, session and rate limits" });
+
+    box.textContent = "";
+    for (const c of cards) {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = `admin-card admin-card-${c.level}`;
+        card.dataset.adminPage = c.page;
+        const title = document.createElement("span");
+        title.className = "admin-card-title";
+        title.textContent = c.title;
+        const state = document.createElement("span");
+        state.className = "admin-card-state";
+        state.textContent = c.state;
+        card.append(title, state);
+        if (c.detail) {
+            const detail = document.createElement("span");
+            detail.className = "admin-card-detail";
+            detail.textContent = c.detail;
+            card.append(detail);
+        }
+        box.append(card);
+    }
+    setAdminNavDot("https", adminHttpsCard(tls).level !== "good");
+    setAdminNavDot("encryption", adminEncryptionCard(enc).level === "bad" || enc?.locked);
+    setAdminNavDot("known-hosts", adminHostsCard(hosts).level === "warn");
+}
+
+function setAdminNavDot(page, on) {
+    const dot = $(`admin-nav-dot-${page}`);
+    if (dot) dot.hidden = !on;
+}
+
+function adminHttpsCard(st) {
+    const card = { page: "https", title: "HTTPS" };
+    if (!st) return { ...card, level: "neutral", state: "Status unavailable" };
+    if (st.serving_https) {
+        const c = st.certificate;
+        return { ...card, level: "good", state: "Serving HTTPS",
+                 detail: c ? `${c.names.join(", ")} · ${c.days_left} days left` : "" };
+    }
+    if (st.restart_needed) return { ...card, level: "warn", state: "Certificate ready — switch to HTTPS" };
+    if (!st.available) return { ...card, level: "neutral", state: "Not available", detail: "Needs a master key file" };
+    return { ...card, level: "bad", state: "No certificate", detail: "Plain HTTP is read-only" };
+}
+
+function adminEncryptionCard(st) {
+    const card = { page: "encryption", title: "Encryption" };
+    if (!st) return { ...card, level: "neutral", state: "Status unavailable" };
+    if (!st.enabled) return { ...card, level: "bad", state: "Captures are not encrypted" };
+    if (st.locked) return { ...card, level: "warn", state: "Locked — passphrase needed" };
+    return { ...card, level: "good", state: "Encrypted at rest", detail: `${st.encrypted_count} captures` };
+}
+
+function adminHostsCard(hosts) {
+    const card = { page: "known-hosts", title: "Known hosts" };
+    if (!hosts) return { ...card, level: "neutral", state: "Status unavailable" };
+    const untrusted = hosts.filter((h) => h.configured && !h.key_types.length).length;
+    if (!hosts.length) return { ...card, level: "neutral", state: "No servers yet" };
+    if (untrusted) return { ...card, level: "warn", state: `${untrusted} host${untrusted === 1 ? "" : "s"} not verified` };
+    return { ...card, level: "good", state: `${hosts.length} verified` };
 }
 
 // --- admin panel ---

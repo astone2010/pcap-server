@@ -246,3 +246,61 @@ def test_remove_all_forgets_everything(tls_dir, cryptor):
     store.save_config(tls_dir, CONFIG)
     assert len(store.remove_all(tls_dir)) == 4
     assert not store.has_material(tls_dir) and not store.has_credentials(tls_dir)
+
+
+# --- waiting instead of polling DNS ----------------------------------------------
+
+def test_lego_waits_then_lets_lets_encrypt_check_rather_than_polling_local_dns(tmp_path):
+    """certbot and Proxmox wait a fixed delay; lego's own poll goes through the
+    container's resolver, which failed on a network where they succeed."""
+    argv = lego.build_argv(CONFIG, tmp_path)
+    assert "--dns.propagation.wait=30s" in argv
+    assert not any(a.startswith("--dns.resolvers") for a in argv)
+
+
+def test_the_delay_can_be_set(tmp_path):
+    config = AcmeConfig.validated(DOMAIN, EMAIL, "cloudflare", validation_delay="90")
+    assert config.validation_delay == 90
+    assert "--dns.propagation.wait=90s" in lego.build_argv(config, tmp_path)
+
+
+@pytest.mark.parametrize("value", ["4", "601", "-1", "abc", "30s", "1e3", True])
+def test_bad_delays_are_refused(value):
+    with pytest.raises(ValueError):
+        store.validate_validation_delay(value)
+
+
+def test_delay_round_trips_and_older_configs_load(tls_dir):
+    store.save_config(tls_dir, AcmeConfig.validated(DOMAIN, EMAIL, "cloudflare", validation_delay=45))
+    assert store.load_config(tls_dir).validation_delay == 45
+    (tls_dir / store.CONFIG_FILE).write_text(json.dumps(
+        {"domain": DOMAIN, "email": EMAIL, "provider": "cloudflare", "staging": False,
+         "resolvers": ["10.0.0.53:53"]}))
+    assert store.load_config(tls_dir).validation_delay == store.DEFAULT_VALIDATION_DELAY
+
+
+# --- errors an operator can act on ---------------------------------------------
+
+LEGO_SPLIT_DNS_FAILURE = (
+    'time=2026-09-13T22:28:29.749Z level=WARN msg="!!!! HEADS UP !!!!\\n\\nYour account credentials '
+    'have been saved in your\\nconfiguration directory at \\"/dev/shm/pcap-acme-x/lego/accounts\\".\\n"\n'
+    'time=2026-09-13T22:30:33.021Z level=ERROR msg=Error error="obtain certificate: resolver: one or '
+    'more domains had a problem: [pcap.example.com: dns01: time limit exceeded: last error: recursive '
+    'nameservers: NS 127.0.0.11:53 returned NXDOMAIN for _acme-challenge.pcap.example.com.]"\n'
+)
+
+
+def test_a_failure_shows_the_error_not_the_log():
+    import subprocess
+    msg = lego._failure(subprocess.CompletedProcess([], 1, "", LEGO_SPLIT_DNS_FAILURE), [])
+    assert msg.startswith("lego exited 1: obtain certificate")
+    assert "returned NXDOMAIN for _acme-challenge.pcap.example.com" in msg
+    assert "HEADS UP" not in msg and "time=" not in msg
+
+
+def test_a_validation_that_ran_too_soon_says_to_wait_longer():
+    import subprocess
+    err = ('time=x level=ERROR msg=Error error="acme: error: 400 :: urn:ietf:params:acme:error:dns :: '
+           'DNS problem: NXDOMAIN looking up TXT for _acme-challenge.pcap.example.com"\n')
+    msg = lego._failure(subprocess.CompletedProcess([], 1, "", err), [])
+    assert "Wait before validation" in msg

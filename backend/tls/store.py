@@ -72,6 +72,36 @@ def validate_email(value: str) -> str:
     return v
 
 
+# How long to wait after creating the challenge record before Let's Encrypt is
+# asked to check it.
+#
+# lego's default is to poll DNS itself until the record is visible, through the
+# container's resolver, which forwards to the network's own DNS. On a network
+# where certbot and Proxmox obtain certificates for the same domain without
+# trouble, that poll was seen to get NXDOMAIN for its whole two-minute window.
+# Neither of those polls local DNS at all: they wait a fixed delay and let Let's
+# Encrypt look from the public internet. This does the same, which also keeps the
+# box's DNS traffic exactly as it was. Proxmox's default is 30 seconds.
+DEFAULT_VALIDATION_DELAY = 30
+MIN_VALIDATION_DELAY = 5
+MAX_VALIDATION_DELAY = 600
+
+
+def validate_validation_delay(value) -> int:
+    if value is None or value == "":
+        return DEFAULT_VALIDATION_DELAY
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("the validation delay must be a whole number of seconds") from None
+    if isinstance(value, bool) or not MIN_VALIDATION_DELAY <= seconds <= MAX_VALIDATION_DELAY:
+        raise ValueError(
+            f"the validation delay must be between {MIN_VALIDATION_DELAY} and "
+            f"{MAX_VALIDATION_DELAY} seconds"
+        )
+    return seconds
+
+
 # --- stored settings --------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -80,14 +110,17 @@ class AcmeConfig:
     email: str
     provider: str
     staging: bool = False
+    validation_delay: int = DEFAULT_VALIDATION_DELAY
 
     @classmethod
-    def validated(cls, domain: str, email: str, provider: str, staging: bool = False) -> "AcmeConfig":
+    def validated(cls, domain: str, email: str, provider: str, staging: bool = False,
+                  validation_delay=None) -> "AcmeConfig":
         return cls(
             domain=validate_domain(domain),
             email=validate_email(email),
             provider=providers.get(provider).code,
             staging=bool(staging),
+            validation_delay=validate_validation_delay(validation_delay),
         )
 
 
@@ -115,7 +148,9 @@ def write_atomic(path: Path, data: bytes) -> None:
 def load_config(tls_dir: Path) -> AcmeConfig | None:
     try:
         raw = json.loads((tls_dir / CONFIG_FILE).read_text())
-        return AcmeConfig.validated(raw["domain"], raw["email"], raw["provider"], raw.get("staging", False))
+        # A "resolvers" key written by an unreleased build is ignored.
+        return AcmeConfig.validated(raw["domain"], raw["email"], raw["provider"],
+                                    raw.get("staging", False), raw.get("validation_delay"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -125,7 +160,8 @@ def load_config(tls_dir: Path) -> AcmeConfig | None:
 def save_config(tls_dir: Path, config: AcmeConfig) -> None:
     ensure_tls_dir(tls_dir)
     body = {"domain": config.domain, "email": config.email,
-            "provider": config.provider, "staging": config.staging}
+            "provider": config.provider, "staging": config.staging,
+            "validation_delay": config.validation_delay}
     write_atomic(tls_dir / CONFIG_FILE, json.dumps(body, indent=2).encode())
 
 

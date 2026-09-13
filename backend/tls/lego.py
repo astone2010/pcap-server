@@ -56,6 +56,7 @@ def build_argv(config: AcmeConfig, lego_path: Path, lego_bin: str | None = None)
     domain = store.validate_domain(config.domain)
     email = store.validate_email(config.email)
     provider = providers.get(config.provider).code
+    delay = store.validate_validation_delay(config.validation_delay)
     argv = [
         lego_bin or LEGO_BIN,
         "--log.format=text",
@@ -64,6 +65,9 @@ def build_argv(config: AcmeConfig, lego_path: Path, lego_bin: str | None = None)
         f"--email={email}",
         f"--domains={domain}",
         f"--dns={provider}",
+        # Wait, then let Let's Encrypt check -- no polling of local DNS.
+        # See DEFAULT_VALIDATION_DELAY in store.py for why.
+        f"--dns.propagation.wait={delay}s",
         f"--path={lego_path}",
         "--key-type=EC256",
         f"--cert.name={CERT_NAME}",
@@ -141,18 +145,48 @@ def _environment(scratch: Path, provider_code: str, values: dict[str, str]) -> d
     return env
 
 
-# lego's log lines carry key=value noise; the message is what an operator needs.
-_NOISE = re.compile(r"^time=\S+ level=(?:INFO|DEBUG) ")
+# lego logs in logfmt: time=... level=... msg="..." error="...". What an
+# operator needs is the error="..." of the ERROR line; the rest is either
+# progress (INFO) or lego's advice to back up an account directory that is
+# deleted the moment it exits (the WARN "HEADS UP").
+_ERROR_FIELD = re.compile(r'level=ERROR\b.*?\berror="((?:[^"\\]|\\.)*)"')
+
+# Known failures, and what to do about them, matched on lego's own wording.
+_HINTS = (
+    ("NXDOMAIN looking up TXT",
+     "Let's Encrypt could not see the challenge record yet. Raise \"Wait before "
+     "validation\" and try again."),
+    ("Incorrect TXT record",
+     "Let's Encrypt found an old or different challenge record. Wait a minute for it "
+     "to expire, or raise \"Wait before validation\"."),
+    ("invalidContact",
+     "Let's Encrypt refused the contact email address."),
+    ("rateLimited",
+     "A Let's Encrypt rate limit. Tick Staging while testing."),
+    ("Authentication error", "The provider refused the credentials."),
+)
+
+
+def _unescape(value: str) -> str:
+    return value.replace('\\"', '"').replace("\\n", "\n").replace("\\\\", "\\")
 
 
 def _failure(proc: subprocess.CompletedProcess, secrets: list[str]) -> str:
     text = (proc.stderr or "") + (proc.stdout or "")
-    lines = [ln for ln in text.strip().splitlines() if ln.strip() and not _NOISE.match(ln)][-12:]
-    detail = "\n".join(lines) if lines else "no output"
+    errors = [_unescape(m) for m in _ERROR_FIELD.findall(text)]
+    if errors:
+        detail = "\n".join(errors[-3:])
+    else:
+        lines = [ln for ln in text.strip().splitlines()
+                 if ln.strip() and "level=INFO" not in ln and "level=WARN" not in ln][-12:]
+        detail = "\n".join(lines) if lines else "no output"
     for secret in sorted(secrets, key=len, reverse=True):
         if len(secret) >= 4:
             detail = detail.replace(secret, "[redacted]")
-    return f"lego exited {proc.returncode}:\n{detail}"
+    # The first match only, from a list ordered most specific first: one
+    # failure can contain more than one of the phrases.
+    hint = next((h for needle, h in _HINTS if needle.lower() in detail.lower()), "")
+    return f"lego exited {proc.returncode}: {detail}" + (f"\n\n{hint}" if hint else "")
 
 
 def issue(

@@ -37,21 +37,28 @@ everyday one; the command line keeps credentials off the network.**
 
 ### From the Admin panel
 
-**Admin → HTTPS certificate.**
+**Admin → HTTPS → Set up certificate.** Setup is three steps:
 
-1. **Domain** and **Contact email** — Let's Encrypt writes there about expiry
-   problems.
+1. **Domain** — the name, and a **contact email** Let's Encrypt writes to about
+   expiry problems.
 2. **DNS provider** — pick yours. The fields below change to that provider's
-   settings, with lego's description of each and a link to its guide for that
-   provider. Which ones you fill in depends on how you authenticate: for
-   Cloudflare, an API token in `CF_DNS_API_TOKEN` is enough.
-3. Settings a provider normally takes as a **file** — a Google service account
+   settings, with lego's description of each and a link to its guide. For
+   providers with several ways to authenticate, the usual one is shown and the
+   rest are under **Other ways to authenticate** — for Cloudflare that is just
+   `CF_DNS_API_TOKEN`, an API token with **Zone → DNS → Edit** on the zone, the
+   same token Nginx Proxy Manager asks for.
+   Settings a provider normally takes as a **file** — a Google service account
    key, a TransIP private key — are boxes you paste the file's contents into.
    pcap-server writes them where lego needs them; you never give it a path.
-4. **More settings** holds the optional ones: propagation timeouts, TTLs, API
+   **More settings** holds the optional ones: propagation timeouts, TTLs, API
    endpoints.
-5. **Request certificate.** It takes a minute or two while the record
-   propagates. Then **Switch to HTTPS**.
+3. **Request** — **Wait before validation** — 30 seconds unless your provider is slow to
+   publish. After creating the record pcap-server waits this long, then asks Let's
+   Encrypt to look — the same as Proxmox's validation delay and certbot's
+   propagation seconds. It does not query your DNS itself.
+   Then **Request certificate**, which takes about a minute. When it is issued,
+   **Switch to HTTPS**. Once a certificate exists, **Change settings** reopens
+   the same steps.
 
 Stored credentials are never shown again. The panel lists which settings are
 stored; leave a stored field blank to keep it, or fill it in to replace it.
@@ -74,6 +81,11 @@ docker compose exec -it pcap-server python -m backend.tls issue \
     --domain pcap.example.com --email you@example.com --provider cloudflare
 docker compose restart pcap-server
 ```
+
+Run it from the directory holding `docker-compose.yml` — elsewhere, `docker
+compose` answers `no configuration file provided`. From anywhere,
+`docker exec -it <container> python -m backend.tls ...` does the same, with the
+container's name from `docker ps` (for example `pcap-server-1`).
 
 It prompts for each of the provider's credentials, without echoing the secret
 ones. They are typed into the container, not sent to it, so they never cross a
@@ -223,7 +235,22 @@ For passphrase mode, use a [reverse proxy](reverse-proxy.md).
 | `lego exited 1` naming your provider and an authentication error | The credentials are wrong, expired, or not allowed to edit that zone |
 | `invalid email address` / `invalidContact` | Let's Encrypt refuses some addresses outright, `example.com` ones among them |
 | `too many certificates already issued` | A Let's Encrypt rate limit. Use [staging](#testing-with-staging) while experimenting |
-| `time limit exceeded` waiting for propagation | The record was created but not seen in time. Raise the provider's `..._PROPAGATION_TIMEOUT` under **More settings** |
+| `recursive nameservers: NS 127.0.0.11:53 returned NXDOMAIN` | 0.1.0-dev.28 only, which polled your DNS before validating. From dev.29 pcap-server waits instead — see below |
+| `NXDOMAIN looking up TXT for _acme-challenge...` from Let's Encrypt | The record was not published by the time Let's Encrypt looked. Raise **Wait before validation** |
+| `no configuration file provided: not found` from `docker compose exec` | You are not in the directory holding `docker-compose.yml`. `cd` there, or use `docker exec -it <container> ...` |
 | `HTTPS NOT ENABLED: ... Serving plain HTTP` in the log at startup | A certificate is stored but its key would not open — most often the master key was replaced without [rotating](operating.md#rotating-the-master-key). The app starts on plain HTTP rather than not at all, so you can get in and fix it |
 | `REFUSING TO START` mentioning passphrase | See [Passphrase mode](#passphrase-mode) |
 | The browser shows garbage or "connection reset" at `http://` | The port speaks TLS now. Use `https://` |
+
+### Why it waits instead of checking
+
+lego, left to its defaults, polls DNS until it can see the challenge record
+before involving Let's Encrypt — through the container's resolver, which
+forwards to your network's DNS. certbot (and so Nginx Proxy Manager) and Proxmox
+never do that: they wait a fixed delay and let Let's Encrypt look from the
+public internet. On a network where those work, lego's poll was seen to get
+`NXDOMAIN` for its whole two-minute window, so pcap-server waits the way they
+do. It never polls a resolver for the challenge record; the provider still looks up which DNS zone the domain is in, as before.
+
+If Let's Encrypt reports `NXDOMAIN looking up TXT`, the record was not published
+in time: raise **Wait before validation**.

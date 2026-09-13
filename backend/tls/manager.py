@@ -128,7 +128,7 @@ class TlsManager:
     # --- issuance ---
 
     def issue(self, domain: str, email: str, provider: str, credentials: dict | None,
-              staging: bool) -> CertInfo:
+              staging: bool, validation_delay=None) -> CertInfo:
         """Blocking -- run it in a thread. Saves the settings only on success.
 
         A blank field keeps the value already stored for the same provider, so
@@ -136,7 +136,7 @@ class TlsManager:
         cannot see. Choosing a different provider starts from nothing.
         """
         cryptor = require_unattended_key(self._vault)
-        config = AcmeConfig.validated(domain, email, provider, staging)
+        config = AcmeConfig.validated(domain, email, provider, staging, validation_delay)
         fresh = providers.validate_credentials(config.provider, credentials or {})
         stored_provider, stored = store.load_credentials(self.tls_dir, cryptor)
         merged = {**stored, **fresh} if stored_provider == config.provider else fresh
@@ -239,6 +239,7 @@ class TlsManager:
             "busy": self._lock.locked(),
             "last_error": self.last_error or stored_problem or credentials_problem,
             "lego_version": providers.lego_version(),
+            "default_validation_delay": store.DEFAULT_VALIDATION_DELAY,
         }
 
     def _stored_state(self) -> tuple[AcmeConfig | None, CertInfo | None, str | None]:
@@ -264,4 +265,5 @@ class TlsManager:
         if config is None:
             return None
         return {"domain": config.domain, "email": config.email, "staging": config.staging,
-                "provider": config.provider, "provider_name": providers.get(config.provider).name}
+                "provider": config.provider, "provider_name": providers.get(config.provider).name,
+                "validation_delay": config.validation_delay}

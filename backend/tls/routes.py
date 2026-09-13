@@ -43,6 +43,7 @@ class AcmeRequest(BaseModel):
     provider: str = ""
     credentials: dict = {}
     staging: bool = False
+    validation_delay: str | int = ""
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -71,6 +72,7 @@ def build_router(manager: TlsManager, require_admin, active_captures: Callable[[
         try:
             info = await asyncio.to_thread(
                 manager.issue, req.domain, req.email, req.provider, req.credentials, req.staging,
+                req.validation_delay,
             )
         except (AcmeError, ValueError) as exc:
             raise _error(exc)

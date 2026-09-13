@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.1.0-dev.29 — 2026-09-13
+
+### Fixed
+
+- **A certificate request no longer fails polling your DNS.** lego, left to its
+  defaults, polls DNS through the container's resolver until it can see the
+  challenge record, and only then asks Let's Encrypt to check. On a network where
+  certbot, Nginx Proxy Manager and Proxmox all obtain certificates for the same
+  domain, that poll got `recursive nameservers: NS 127.0.0.11:53 returned
+  NXDOMAIN` for its whole two minutes. None of those tools polls local DNS: they
+  wait a fixed delay and let Let's Encrypt look. pcap-server now does the same —
+  **Wait before validation**, 30 seconds by default, as Proxmox — and never
+  polls a resolver for the challenge record.
+
+- **A failed request says what went wrong.** The message was lego's raw log,
+  led by its advice to back up an account directory that is deleted the moment
+  it exits. It is now lego's actual error, with a hint for the common causes.
+
+### Changed
+
+- **Cloudflare asks for one field.** Providers with several ways to
+  authenticate show the usual one first — for Cloudflare just
+  `CF_DNS_API_TOKEN`, as Nginx Proxy Manager does — and the alternatives under
+  **Other ways to authenticate**. Four empty boxes read as four required ones.
+- **The plain-HTTP banner names both ways to HTTPS** — the built-in Let's
+  Encrypt certificate first, a reverse proxy second — and the refusal message
+  over HTTP says the same.
+- **The command-line instructions say where to run them**: in the folder
+  holding `docker-compose.yml`, or with `docker exec` from anywhere.
+- **The Admin panel is organised into sections.** It was every section stacked
+  in one column, each opening with a paragraph of explanation — about 2,000px
+  before the last control. It is now a list down the side (Overview, HTTPS,
+  Encryption, Users, SSH keys, Known hosts, Settings) with one section on screen
+  at a time. **Overview** shows how each one stands, and the list marks sections
+  that need attention. Each section leads with one sentence; the longer
+  explanations are behind **Learn more**.
+- **HTTPS setup is three steps, and out of the way until wanted.** The section
+  leads with the certificate's status and what can be done about it; **Set up
+  certificate** walks through domain, DNS provider, and request. A failed request
+  leaves the steps open with what was typed, ready to correct.
+
 ## 0.1.0-dev.28 — 2026-09-13
 
 ### Added

@@ -158,10 +158,25 @@ async def test_the_page_declares_an_icon(page):
     assert page.console_errors == []
 
 
+async def _admin(page, section):
+    """Open Admin on one section. The last section is remembered per browser,
+    so every test says which one it wants."""
+    await page.click("#admin-tab")
+    await page.wait_for_selector("#panel-admin.active")
+    await page.click(f".admin-nav [data-admin-page='{section}']")
+    await page.wait_for_selector(f"#admin-page-{section}:not([hidden])")
+
+
+async def _start_tls_setup(page):
+    await _admin(page, "https")
+    await page.wait_for_selector("#btn-tls-setup")
+    await page.click("#btn-tls-setup")
+    await page.wait_for_selector("#tls-domain", state="visible")
+
+
 async def test_enter_in_the_add_user_box_creates_the_user(app_page, api_client):
     """The Admin panel's Add user box is a form like any other."""
-    await app_page.click("#admin-tab")
-    await app_page.wait_for_selector("#panel-admin.active")
+    await _admin(app_page, "users")
     await app_page.fill("#admin-new-username", "second-operator")
     await app_page.fill("#admin-new-password", "another-long-passphrase")
     await app_page.press("#admin-new-password", "Enter")
@@ -174,23 +189,82 @@ async def test_enter_in_the_add_user_box_creates_the_user(app_page, api_client):
                 api_client.delete(f"/api/admin/users/{user['id']}")
 
 
-async def test_the_admin_panel_offers_a_certificate_and_the_cli_alternative(app_page):
+async def test_admin_shows_one_section_at_a_time(app_page):
+    await _admin(app_page, "ssh-keys")
+    visible = await app_page.eval_on_selector_all(
+        ".admin-page", "els => els.filter(e => !e.hidden).map(e => e.id)")
+    assert visible == ["admin-page-ssh-keys"]
+    assert await app_page.get_attribute(".admin-nav [data-admin-page='ssh-keys']", "aria-current") == "page"
+
+
+async def test_the_overview_cards_open_their_section(app_page):
+    await _admin(app_page, "overview")
+    await app_page.wait_for_selector("#admin-overview .admin-card[data-admin-page='https']")
+    assert "No certificate" in await app_page.text_content("#admin-overview .admin-card[data-admin-page='https']")
+    await app_page.click("#admin-overview .admin-card[data-admin-page='https']")
+    await app_page.wait_for_selector("#admin-page-https:not([hidden])")
+    # Something to act on there, so the side list marks it.
+    assert await app_page.is_visible("#admin-nav-dot-https")
+
+
+async def test_long_explanations_are_behind_learn_more(app_page):
+    await _admin(app_page, "known-hosts")
+    assert not await app_page.is_visible("#admin-page-known-hosts .learn-more p")
+    await app_page.click("#admin-page-known-hosts .learn-more summary")
+    assert await app_page.is_visible("#admin-page-known-hosts .learn-more p")
+
+
+async def test_https_leads_with_status_and_keeps_setup_out_of_the_way(app_page):
     """Served on loopback, so the page counts as secure transport and the
-    plain-HTTP token warning stays away; the CLI route is offered regardless."""
-    await app_page.click("#admin-tab")
-    await app_page.wait_for_selector("#panel-admin.active")
+    plain-HTTP credentials warning stays away; the CLI route is offered regardless."""
+    await _admin(app_page, "https")
     await app_page.wait_for_selector("#admin-tls .enc-state")
     assert (await app_page.text_content("#admin-tls .enc-state")).strip() == "No certificate"
-    assert await app_page.is_visible("#tls-domain")
+    assert await app_page.locator("#tls-domain").count() == 0, "the form should wait for Set up"
+    await _start_tls_setup(app_page)
+    assert await app_page.is_hidden("#tls-provider"), "step 2 is not shown yet"
+    await app_page.fill("#tls-domain", "pcap.example.com")
+    await app_page.fill("#tls-email", "you@example.com")
+    await app_page.click("#btn-tls-next")
+    await app_page.wait_for_selector("#tls-provider", state="visible")
     assert await app_page.input_value("#tls-provider") == "cloudflare"
+    # One API token is the usual answer for Cloudflare; the alternatives are tucked away.
     assert await app_page.get_attribute("#tls-var-CF_DNS_API_TOKEN", "type") == "password"
+    assert await app_page.is_visible("#tls-var-CF_DNS_API_TOKEN")
+    assert not await app_page.is_visible("#tls-var-CF_API_KEY")
+    await app_page.click("#btn-tls-next")
+    await app_page.wait_for_selector("#tls-validation-delay", state="visible")
+    assert await app_page.get_attribute("#tls-validation-delay", "placeholder") == "30"
     assert "python -m backend.tls issue" in await app_page.text_content("#tls-cli")
     assert await app_page.locator("#admin-tls .enc-notice-bad").count() == 0
 
 
+async def test_going_back_a_step_keeps_what_was_typed(app_page):
+    await _start_tls_setup(app_page)
+    await app_page.fill("#tls-domain", "pcap.example.com")
+    await app_page.fill("#tls-email", "you@example.com")
+    await app_page.click("#btn-tls-next")
+    await app_page.fill("#tls-var-CF_DNS_API_TOKEN", "typed-token-value")
+    await app_page.click("#btn-tls-back")
+    await app_page.wait_for_selector("#tls-domain", state="visible")
+    assert await app_page.input_value("#tls-domain") == "pcap.example.com"
+    await app_page.click("#btn-tls-next")
+    assert await app_page.input_value("#tls-var-CF_DNS_API_TOKEN") == "typed-token-value"
+
+
+async def test_step_one_needs_a_domain_and_email(app_page):
+    await _start_tls_setup(app_page)
+    await app_page.click("#btn-tls-next")
+    await app_page.wait_for_function(
+        "() => (document.querySelector('#tls-msg')?.textContent || '').includes('domain')")
+    assert await app_page.is_visible("#tls-domain")
+
+
 async def test_choosing_a_provider_shows_that_providers_settings(app_page):
-    await app_page.click("#admin-tab")
-    await app_page.wait_for_selector("#tls-provider")
+    await _start_tls_setup(app_page)
+    await app_page.fill("#tls-domain", "pcap.example.com")
+    await app_page.fill("#tls-email", "you@example.com")
+    await app_page.click("#btn-tls-next")
     await app_page.select_option("#tls-provider", "route53")
     await app_page.wait_for_selector("#tls-var-AWS_SECRET_ACCESS_KEY")
     assert await app_page.locator("#tls-var-CF_DNS_API_TOKEN").count() == 0
@@ -201,13 +275,16 @@ async def test_choosing_a_provider_shows_that_providers_settings(app_page):
 
 
 async def test_a_refused_certificate_request_is_shown_where_it_was_made(app_page):
-    await app_page.click("#admin-tab")
-    await app_page.wait_for_selector("#tls-domain")
+    await _start_tls_setup(app_page)
     await app_page.fill("#tls-domain", "--config-dir=/app/data")
     await app_page.fill("#tls-email", "you@example.com")
+    await app_page.click("#btn-tls-next")
     await app_page.fill("#tls-var-CF_DNS_API_TOKEN", "cf_TestToken_0123456789abcdefghijklmnop")
+    await app_page.click("#btn-tls-next")
     await app_page.click("#btn-tls-request")
     await app_page.wait_for_function(
         "() => (document.querySelector('#tls-msg')?.textContent || '').includes('fully qualified')"
     )
     assert "cf_TestToken" not in await app_page.text_content("#admin-tls")
+    # Still in the wizard with the value intact, ready to fix.
+    assert await app_page.input_value("#tls-var-CF_DNS_API_TOKEN") == "cf_TestToken_0123456789abcdefghijklmnop"
