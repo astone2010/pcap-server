@@ -56,8 +56,14 @@ GATES RUNNING (user: "run the gates", 2026-09-13).
                 only/"Save this filter"/chip leftovers). Security-fix docs added
                 (tls.md endpoints + cert checks, CHANGELOG, architecture,
                 security). Final rebuild: check.sh 1243 passed, 0 skipped, exit 0.
-📦 RELEASE    ⏳ branch in sync with origin (both 39e48ee); awaiting commit
-                approval. PR ➖ N/A: no PR workflow in this repo (as dev.27).
+📦 RELEASE    ⏳ commit 1abc598 APPROVED ("commit") and EXECUTED BY CLAUDE on
+                the user's reply to "Reply commit ... and I'll check the push".
+                Pushed; ls-remote heads = 1abc598 = HEAD; tree clean.
+                PR ➖ N/A: no PR workflow in this repo (as dev.27).
+                Check run 34782971749 in progress. Awaiting release-notes
+                approval (release.yml uses generate_release_notes, which is
+                commits only -- CHANGELOG entry to be added with gh release edit).
+                Note: the new dependabot.yml triggered 2 Dependabot runs.
 🚀 SHIP       ⬜
 
 ### dev.28 scope
