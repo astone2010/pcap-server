@@ -307,3 +307,38 @@ async def test_a_view_name_cannot_inject_markup_into_the_strip(app_page):
     )
     assert name == "<img src=x onerror=alert(1)>"
     assert await app_page.eval_on_selector_all("#view-tabs img", "els => els.length") == 0
+
+
+async def test_the_display_filter_sits_below_the_capture_label(app_page):
+    """They used to share a row.
+
+    That cost the filter half the width on a narrow window, and put the name
+    of the capture and the thing you are doing to it on one line as though
+    they were the same kind of thing. The label takes a row of its own now and
+    the filter has the row below it, so this compares their vertical positions
+    rather than their order in the DOM -- flex-wrap decides the layout, and the
+    DOM order did not change.
+    """
+    await _viewer(app_page)
+    # The label is filled when a capture is opened; this file drives the viewer
+    # without one, so it is given something to measure.
+    await app_page.evaluate(
+        "document.getElementById('viewer-capture-label').textContent = "
+        "'capture-2026-09-13.pcap \u00b7 1,204 packets'"
+    )
+
+    box = await app_page.evaluate(
+        """() => {
+            const label = document.getElementById("viewer-capture-label");
+            const filter = document.getElementById("display-filter");
+            const l = label.getBoundingClientRect();
+            const f = filter.getBoundingClientRect();
+            return {labelBottom: l.bottom, filterTop: f.top, labelWidth: l.width,
+                    toolbarWidth: label.parentElement.getBoundingClientRect().width};
+        }"""
+    )
+
+    assert box["filterTop"] >= box["labelBottom"] - 1, \
+        "the filter must start at or below the bottom of the label, not beside it"
+    assert box["labelWidth"] > box["toolbarWidth"] * 0.8, \
+        "the label should own its row rather than sharing it"

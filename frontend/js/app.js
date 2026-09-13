@@ -379,6 +379,7 @@ function enterApp() {
     renderFilterLibrary();
     renderFilterSuggestions("bpf-suggestions", BPF_SUGGESTIONS);
     renderFilterSuggestions("display-filter-suggestions", DISPLAY_SUGGESTIONS);
+    renderFilterPreview();
     loadServers();
     loadCaptures();
     setInterval(refreshRunningCaptures, 3000);
@@ -980,6 +981,14 @@ const FILTER_LIBRARY = [
             ["RPC endpoint mapper", "tcp port 135"],
             ["WinRM", "tcp port 5985 or tcp port 5986"],
             ["RDP", "tcp port 3389"],
+            // NTLMSSP has no port of its own -- it is carried inside SMB, RPC,
+            // LDAP and HTTP, at an offset that moves with the enclosing
+            // protocol. BPF matches fixed offsets, so there is no capture
+            // filter for it. What there is: record the transports it
+            // negotiates over, then read `ntlmssp` as a DISPLAY filter in the
+            // Viewer, which is where the dissector can actually find it.
+            ["NTLM's transports (read with the ntlmssp display filter)",
+             "tcp port 445 or tcp port 135 or tcp port 389 or tcp port 80 or tcp port 443"],
             ["DFS and netlogon on one host", "host 10.0.0.10 and (tcp port 445 or port 88)"],
         ],
     },
@@ -1088,6 +1097,16 @@ const FILTER_LIBRARY = [
             ["Large packets only", "greater 1000"],
             ["Headers only, any traffic", "less 96"],
             ["Non-IP traffic", "not ip and not ip6"],
+            // Two halves of one test, because a fragment is either flagged as
+            // having more behind it or sits at a non-zero offset. The first
+            // fragment of a set has MF set and offset 0; every later one has a
+            // non-zero offset. Matching only the offset misses the first
+            // fragment, which is the one carrying the headers.
+            ["Fragmented packets, all of them",
+             "ip[6] & 0x20 != 0 or ip[6:2] & 0x1fff != 0"],
+            // Worth its own row: these are what arrives when the first
+            // fragment went missing, and they are unreadable on their own.
+            ["Fragments after the first", "ip[6:2] & 0x1fff != 0"],
         ],
     },
 ];
@@ -1140,10 +1159,15 @@ function renderFilterLibrary() {
 // had just filled in. It now sits under that field, so there is no journey to
 // make: collapse the list and the answer is on screen above it, which is also
 // the only feedback that the click did anything.
-// BPF's combinators are the words, not the C operators: the capture request
-// validator rejects & and | outright (models.py, validate_bpf), because those
-// characters are shell metacharacters in a command that is assembled as a
-// string. libpcap accepts `and`/`or`/`not` for exactly the same expressions.
+// BPF's combinators are spelled as words here. libpcap accepts `&&` and `||`
+// for the same expressions, so this is a matter of looking like the thing it
+// was built from: every row in the library and every example in the man page
+// uses the words, and a composed filter that switched notation would read as
+// something the operator had not chosen.
+//
+// There was a harder reason once -- validate_bpf refused `&` and `|`
+// outright. That ban also refused every tcpflags filter the library offers,
+// so it was narrowed to the characters that have no place in BPF at all.
 //
 // Both sides are parenthesised. Without that, adding "or port 53" to
 // "tcp port 80 and host 10.0.0.1" silently rebinds the whole expression:
@@ -1156,14 +1180,33 @@ function combineBpf(current, expr, mode) {
     return `(${current}) ${mode} (${expr})`;
 }
 
+// The expression as it stands, shown inside the library.
+//
+// This is the feedback the collapse used to provide. The library closed itself
+// on every choice because the field it fills is above it, so nothing else
+// confirmed the click had landed -- but that made picking a second filter a
+// matter of reopening the list, which is most of the work in building one up.
+// Reading rather than writing: the field stays the single source of truth, and
+// this follows it whether the change came from a library row, a chip, or
+// somebody typing.
+function renderFilterPreview() {
+    const bar = $("filter-preview");
+    const box = $("cap-bpf");
+    if (!bar || !box) return;
+    const value = box.value.trim();
+    bar.hidden = !value;
+    const expr = $("filter-preview-expr");
+    if (expr) expr.textContent = value;
+}
+
 function applyBpfFilter(expr, mode) {
     const box = $("cap-bpf");
     if (!box) return;
     box.value = combineBpf(box.value, expr, mode);
-    const details = $("filter-library-details");
-    if (details) details.open = false;
-    box.focus();
-    box.scrollIntoView({ block: "nearest" });
+    // Deliberately no longer collapses the library, and deliberately does not
+    // steal focus into the field either: both of them move the page out from
+    // under someone who is part-way through choosing several filters.
+    renderFilterPreview();
 }
 
 // The same four modes the display filter's right-click menu offers, for the
@@ -1945,6 +1988,7 @@ const DISPLAY_FILTER_PROTOCOLS = [
     ["mysql", "MySQL"],
     ["nbns", "NetBIOS name service"],
     ["nfs", "NFS"],
+    ["ntlmssp", "NTLM authentication, inside SMB/RPC/LDAP/HTTP"],
     ["ntp", "NTP"],
     ["ospf", "OSPF"],
     ["pgsql", "PostgreSQL"],
@@ -2040,6 +2084,10 @@ const DISPLAY_FILTER_FIELDS = [
     ["smb2.cmd", "SMB2 command"],
     ["ldap.messageID", "LDAP message id"],
     ["kerberos.CNameString", "Kerberos principal"],
+    ["ntlmssp.messagetype", "NTLM negotiate / challenge / auth"],
+    ["ntlmssp.auth.username", "NTLM user name"],
+    ["ntlmssp.auth.domain", "NTLM domain"],
+    ["ntlmssp.ntlmserverchallenge", "NTLM server challenge"],
     ["ntp.stratum", "NTP stratum"],
     ["vlan.id", "VLAN id"],
 ];
@@ -3547,6 +3595,17 @@ function initEventDelegation() {
     $("filter-library-search")?.addEventListener("input", (e) => {
         filterLibraryQuery = e.target.value;
         renderFilterLibrary();
+    });
+    // The field is the source of truth, so the bar follows it however it
+    // changed -- including someone typing or clearing it by hand.
+    $("cap-bpf")?.addEventListener("input", renderFilterPreview);
+    $("filter-preview-clear")?.addEventListener("click", () => {
+        // Starting over is a normal part of composing, and the field can be
+        // scrolled out of sight behind the list by the time you want to.
+        const box = $("cap-bpf");
+        if (!box) return;
+        box.value = "";
+        renderFilterPreview();
     });
     delegate("filter-library", {
         "use-library-filter": (expr, el, ev) => useLibraryFilter(expr, el, ev),

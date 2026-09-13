@@ -85,11 +85,13 @@ async def test_the_filter_library_starts_collapsed(app_page):
     assert await app_page.is_hidden("#filter-library-search")
 
 
-async def test_choosing_a_filter_fills_the_field_and_collapses_the_library(app_page):
-    """The click's only feedback is the field above, so the list has to close.
+async def test_choosing_a_filter_fills_the_field_and_leaves_the_library_open(app_page):
+    """The library used to collapse itself on every choice.
 
-    If the library stayed open it would cover the field it had just filled in,
-    and nothing on screen would confirm the click did anything at all.
+    That was the only feedback the click had landed -- the field it fills sits
+    above the list -- but it made choosing a second filter a matter of
+    reopening the list, which is most of the work in building one up. The
+    preview bar is the feedback now, so the list can stay where it is.
     """
     await _capture_tab(app_page)
     await _open_library(app_page)
@@ -99,7 +101,8 @@ async def test_choosing_a_filter_fills_the_field_and_collapses_the_library(app_p
     await row.locator("button[data-action='use-library-filter']").click()
 
     assert await app_page.input_value("#cap-bpf") == expression
-    assert await app_page.eval_on_selector("#filter-library-details", "el => el.open") is False
+    assert await app_page.eval_on_selector("#filter-library-details", "el => el.open") is True
+    assert await app_page.text_content("#filter-preview-expr") == expression
 
 
 async def test_searching_the_library_narrows_it_to_what_matches(app_page):
@@ -223,7 +226,6 @@ async def test_a_second_pick_asks_rather_than_overwriting(app_page):
     await _open_library(app_page)
     first = await _pick_library_row(app_page)
 
-    await _open_library(app_page)
     await _pick_library_row(app_page, 1)
 
     await app_page.wait_for_selector("#filter-menu")
@@ -241,7 +243,6 @@ async def test_or_composes_both_sides_in_parentheses(app_page):
     await _open_library(app_page)
     first = await _pick_library_row(app_page)
 
-    await _open_library(app_page)
     second = await _pick_library_row(app_page, 1)
     await app_page.wait_for_selector("#filter-menu")
     await app_page.click("#filter-menu .filter-menu-item:has-text('or this')")
@@ -254,7 +255,6 @@ async def test_and_composes_both_sides_in_parentheses(app_page):
     await _open_library(app_page)
     first = await _pick_library_row(app_page)
 
-    await _open_library(app_page)
     second = await _pick_library_row(app_page, 1)
     await app_page.wait_for_selector("#filter-menu")
     await app_page.click("#filter-menu .filter-menu-item:has-text('and this')")
@@ -267,7 +267,6 @@ async def test_replace_is_still_available_from_the_menu(app_page):
     await _open_library(app_page)
     await _pick_library_row(app_page)
 
-    await _open_library(app_page)
     second = await _pick_library_row(app_page, 1)
     await app_page.wait_for_selector("#filter-menu")
     await app_page.click("#filter-menu .filter-menu-item:has-text('Replace with:')")
@@ -276,14 +275,19 @@ async def test_replace_is_still_available_from_the_menu(app_page):
 
 
 async def test_the_composed_filter_never_uses_the_c_operators(app_page):
-    """`&` and `|` are refused by the capture request validator, because the
-    command is assembled as a string and those are shell metacharacters.
-    libpcap spells the same thing `and` and `or`."""
+    """The composed filter reads like the rows it was composed from.
+
+    This used to be enforcement: the validator refused `&` and `|` outright.
+    That ban also refused every tcpflags filter in the library, so it was
+    narrowed, and both spellings are accepted now. The composition still uses
+    the words, because every row in the library and every example in the man
+    page does -- a filter that switched notation halfway would read as
+    something the operator had not chosen.
+    """
     await _capture_tab(app_page)
     await _open_library(app_page)
     await _pick_library_row(app_page)
 
-    await _open_library(app_page)
     await _pick_library_row(app_page, 1)
     await app_page.wait_for_selector("#filter-menu")
     await app_page.click("#filter-menu .filter-menu-item:has-text('and this')")
@@ -316,3 +320,123 @@ async def test_the_display_filter_chips_are_left_alone(app_page):
         "#display-filter-suggestions .filter-chip", "els => els.map(e => e.textContent)"
     )
     assert labels, "the display filter should still offer its chips"
+
+
+async def test_several_filters_can_be_chosen_without_reopening_the_library(app_page):
+    """The point of the whole change.
+
+    Three picks, one opening of the list. Before this the library collapsed on
+    every choice, so the second and third each cost a reopen -- and the tests
+    for composition in this file had to reopen it between picks, which is how
+    obvious the friction was from the inside.
+    """
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+
+    first = await _pick_library_row(app_page, 0)
+    second = await _pick_library_row(app_page, 1)
+    await app_page.wait_for_selector("#filter-menu")
+    await app_page.click("#filter-menu .filter-menu-item:has-text('or this')")
+    third = await _pick_library_row(app_page, 2)
+    await app_page.wait_for_selector("#filter-menu")
+    await app_page.click("#filter-menu .filter-menu-item:has-text('and this')")
+
+    assert await app_page.input_value("#cap-bpf") == f"(({first}) or ({second})) and ({third})"
+    assert await app_page.eval_on_selector("#filter-library-details", "el => el.open") is True
+
+
+async def test_the_preview_follows_the_field_when_it_is_typed_into(app_page):
+    """The field stays the source of truth. A bar that only tracked clicks
+    would disagree with the field the moment anyone edited it by hand."""
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    await _pick_library_row(app_page)
+
+    await app_page.fill("#cap-bpf", "tcp port 9999")
+    await app_page.wait_for_function(
+        "document.getElementById('filter-preview-expr').textContent === 'tcp port 9999'"
+    )
+
+
+async def test_the_preview_is_hidden_until_there_is_something_to_preview(app_page):
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    assert await app_page.is_hidden("#filter-preview")
+
+    await _pick_library_row(app_page)
+    assert await app_page.is_visible("#filter-preview")
+
+
+async def test_clear_empties_the_field_without_leaving_the_library(app_page):
+    """Starting over is a normal part of composing, and by then the field can
+    be scrolled out of sight behind the list."""
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    await _pick_library_row(app_page)
+
+    await app_page.click("#filter-preview-clear")
+
+    assert await app_page.input_value("#cap-bpf") == ""
+    assert await app_page.is_hidden("#filter-preview")
+    assert await app_page.eval_on_selector("#filter-library-details", "el => el.open") is True
+
+
+# --- library contents ---------------------------------------------------------
+
+
+async def test_the_library_offers_a_fragment_filter(app_page):
+    """A fragment is either flagged as having more behind it or sits at a
+    non-zero offset, so the filter has to test both. Matching only the offset
+    misses the first fragment -- the one carrying the headers."""
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    await app_page.fill("#filter-library-search", "fragment")
+    await app_page.wait_for_selector("#filter-library tr")
+
+    rows = await app_page.eval_on_selector_all(
+        "#filter-library tr", "els => els.map(e => e.textContent)"
+    )
+    joined = " ".join(rows)
+    assert "ip[6] & 0x20 != 0 or ip[6:2] & 0x1fff != 0" in joined
+    assert "ip[6:2] & 0x1fff != 0" in joined
+
+
+async def test_the_library_covers_ntlm_by_its_transports(app_page):
+    """NTLMSSP has no port of its own -- it rides inside SMB, RPC, LDAP and
+    HTTP at an offset that moves with the enclosing protocol, and BPF matches
+    fixed offsets. So the capture-side entry records the transports, and the
+    row says where the real filter lives."""
+    await _capture_tab(app_page)
+    await _open_library(app_page)
+    await app_page.fill("#filter-library-search", "ntlm")
+    await app_page.wait_for_selector("#filter-library tr")
+
+    rows = await app_page.eval_on_selector_all(
+        "#filter-library tr", "els => els.map(e => e.textContent)"
+    )
+    assert rows, "the library should offer something for ntlm"
+    joined = " ".join(rows)
+    assert "tcp port 445" in joined
+    assert "ntlmssp display filter" in joined, \
+        "the row must point at the display filter, or it reads as an NTLM capture filter"
+
+
+async def test_ntlmssp_is_offered_as_a_display_filter_protocol(app_page):
+    """Where an NTLM filter actually works: the Viewer, where the dissector
+    can find it inside whatever carried it."""
+    protocols = await app_page.evaluate(
+        "() => DISPLAY_FILTER_PROTOCOLS.map(p => p[0])"
+    )
+    assert "ntlmssp" in protocols
+
+
+async def test_the_ntlmssp_display_fields_are_offered_too(app_page):
+    """Names checked against `tshark -G fields`, not written from memory."""
+    fields = await app_page.evaluate("() => DISPLAY_FILTER_FIELDS.map(f => f[0])")
+    for name in (
+        "ntlmssp.messagetype",
+        "ntlmssp.auth.username",
+        "ntlmssp.auth.domain",
+        "ntlmssp.ntlmserverchallenge",
+    ):
+        assert name in fields, name

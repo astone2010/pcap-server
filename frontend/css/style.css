@@ -492,13 +492,29 @@ body {
     overflow: hidden;
 }
 
+/* Two rows, not one. The capture label and the filter box used to sit side by
+   side, which cost the filter half the width on a narrow window and put the
+   name of the capture and the thing you are doing to it on the same line, as
+   though they were the same kind of thing. The label takes a full row of its
+   own; the filter and its buttons share the row below. */
 .packet-toolbar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
     padding: 8px 16px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
+}
+
+/* flex-basis 100% is what breaks the row. white-space:normal because the
+   label no longer shares its line with anything and so no longer needs to
+   refuse to wrap to protect the filter box beside it. */
+#viewer-capture-label {
+    flex: 0 0 100%;
+    white-space: normal;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
 }
 
 .packet-toolbar input {
@@ -1859,6 +1875,43 @@ body {
 }
 
 #filter-library-search:focus { border-color: var(--accent); outline: none; }
+
+/* The bar sits outside .filter-library-scroll, so scrolling the list never
+   moves it -- that is what keeps the expression readable while you pick the
+   next row. Sticky is for the other axis: when the page itself scrolls, the
+   bar holds at the top of the open library rather than riding away with it. */
+.filter-preview {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 8px 0 4px;
+    padding: 8px 10px;
+    background: var(--bg-elevated, var(--bg-secondary));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.filter-preview-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+
+/* min-width:0 so a long expression wraps inside the flex row instead of
+   pushing Clear off the edge. */
+#filter-preview-expr {
+    flex: 1 1 200px;
+    min-width: 0;
+    font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 0.78rem;
+    color: var(--text-primary, var(--text-secondary));
+    overflow-wrap: anywhere;
+}
 
 /* The scroll box goes on the wrapper, never on .filter-library itself: a
    multi-column element given a fixed height fragments sideways into more

@@ -231,6 +231,20 @@
                     </p>
                     <input type="search" id="filter-library-search"
                            placeholder="Search by name, port or expression">
+                    <!-- The library used to collapse itself on every choice,
+                         because the field it fills sits above it and the
+                         collapse was the only sign the click had done
+                         anything. That made choosing a second filter a matter
+                         of reopening the list each time. It stays open now,
+                         and this bar is the feedback instead: the expression
+                         as it is being built, without looking away from the
+                         list you are building it from. -->
+                    <div class="filter-preview" id="filter-preview" hidden>
+                        <span class="filter-preview-label">Capture filter</span>
+                        <code id="filter-preview-expr"></code>
+                        <button type="button" class="btn btn-sm btn-secondary"
+                                id="filter-preview-clear">Clear</button>
+                    </div>
                     <div class="filter-library-scroll">
                         <div id="filter-library" class="filter-library"></div>
                     </div>
@@ -318,7 +332,11 @@
             <div id="viewer-empty" class="empty-state">Select a completed capture to view packets</div>
             <div id="packet-viewer" class="packet-viewer" hidden>
                 <div class="packet-toolbar">
-                    <span id="viewer-capture-label" style="font-size:0.8125rem;white-space:nowrap;color:var(--text-secondary)"></span>
+                    <!-- Sits on its own row above the filter; the widths and
+                         the row break are in .packet-toolbar / #viewer-capture-label
+                         rather than here, so the inline style no longer fights
+                         the stylesheet over white-space. -->
+                    <span id="viewer-capture-label"></span>
                     <!-- Wrapped so the suggestion list can be positioned against
                          the box it belongs to. .packet-toolbar input carries the
                          flex:1 that used to size the input directly, so the
