@@ -33,7 +33,12 @@ from backend.auth import (
     verify_password,
     verify_totp,
 )
-from backend.capture import CaptureLimitExceeded, CaptureManager, InterfaceAlreadyCapturing
+from backend.capture import (
+    CaptureLimitExceeded,
+    CaptureManager,
+    InterfaceAlreadyCapturing,
+    LiveStreamLimitExceeded,
+)
 from backend.crypto import CryptoError
 from backend.database import Database
 from backend.models import (
@@ -88,6 +93,7 @@ async def _housekeeping() -> None:
             rate_limiter.prune()
             packet_rate_limiter.prune()
             capture_start_rate_limiter.prune()
+            live_poll_rate_limiter.prune()
             if sessions or devices:
                 logger.info(
                     "housekeeping: removed %d expired session(s), %d expired device(s)",
@@ -160,6 +166,12 @@ packet_rate_limiter = SlidingWindowLimiter(
 )
 capture_start_rate_limiter = SlidingWindowLimiter(
     max_per_minute=db.get_setting_int("rate_limit_captures_per_min"),
+)
+# Live views poll on a timer rather than when someone clicks, so they need their
+# own budget: two streams at one poll every few seconds would eat the stored
+# viewer's whole allowance and leave clicking a packet rate-limited.
+live_poll_rate_limiter = SlidingWindowLimiter(
+    max_per_minute=db.get_setting_int("rate_limit_live_polls_per_min"),
 )
 
 # A restart must not leave anyone signed in. Sessions live in SQLite on a
@@ -691,6 +703,8 @@ async def admin_update_setting(req: SettingUpdate, user: dict = Depends(require_
         packet_rate_limiter.update_config(int_val)
     elif req.key == "rate_limit_captures_per_min":
         capture_start_rate_limiter.update_config(int_val)
+    elif req.key == "rate_limit_live_polls_per_min":
+        live_poll_rate_limiter.update_config(int_val)
     return {"ok": True}
 
 
@@ -1193,6 +1207,10 @@ async def start_capture(req: CaptureRequest, user: dict = Depends(get_current_us
         # 409, not 429: this is a conflict over one link that waiting will not
         # clear, so retrying the same request is not the remedy.
         raise HTTPException(409, str(exc))
+    except LiveStreamLimitExceeded as exc:
+        # 429 like the concurrency limit, not 409: the slot does clear by
+        # waiting, and the same request will then succeed unchanged.
+        raise HTTPException(429, str(exc))
     except Exception:
         logger.exception("failed to start capture")
         raise HTTPException(500, "failed to start capture")
@@ -1438,6 +1456,133 @@ async def list_packets(
     except Exception:
         logger.exception("packet list failed")
         raise HTTPException(500, "failed to list packets")
+
+
+# --- live streaming -----------------------------------------------------
+#
+# The same two reads as the stored viewer -- a packet list and one packet's
+# detail -- served from a capture that has not finished yet. Everything below
+# goes through the SAME get_packet_list / get_packet_detail as the stored
+# routes; only the PcapSource differs. That is the point: the display filter, the
+# view flags, name resolution, and the way a bad filter is reported all behave
+# identically whether the capture is live or saved, because there is one
+# implementation of each and not two.
+
+# Live streaming is a view of a capture in flight, so it ends when the capture
+# does. STOPPING is included because a stopped capture is still flushing, and
+# the last packets arrive during it.
+_LIVE_STATUSES = (CaptureStatus.RUNNING, CaptureStatus.STOPPING)
+
+
+def _require_live_capture(capture_id: str, user: dict):
+    """This user's capture, started for live streaming. 404 or 400 otherwise."""
+    info = _require_own_capture(capture_id, user)
+    if not info.live_stream:
+        raise HTTPException(400, "this capture was not started with live streaming")
+    return info
+
+
+def _live_state(info, buffer) -> dict:
+    """What the viewer needs to know beyond the packets themselves."""
+    return {
+        "status": info.status.value,
+        # The viewer stops polling and reopens the saved capture on this.
+        "finished": info.status not in _LIVE_STATUSES,
+        "live": info.status in _LIVE_STATUSES,
+        "buffered_packets": buffer.packets if buffer else 0,
+        "buffered_bytes": buffer.size if buffer else 0,
+        "buffer_capacity": buffer.capacity if buffer else 0,
+        # The preview has reached its cap. The CAPTURE has not stopped and the
+        # saved pcap is unaffected -- the wording in the UI has to carry that,
+        # because "frozen" on its own reads like the capture died.
+        "frozen": bool(buffer and buffer.frozen),
+        "problem": buffer.problem if buffer else "",
+        "read_error": buffer.read_error if buffer else "",
+        # tcpdump's own running total, which keeps climbing past a frozen
+        # preview and is how the operator sees the capture is still going.
+        "captured_packets": info.packet_count,
+    }
+
+
+@app.get("/api/captures/{capture_id}/live/packets")
+async def live_packets(
+    capture_id: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=5000),
+    display_filter: str = Query(""),
+    flags: str = Query(""),
+    resolve_names: bool = Query(False),
+    user: dict = Depends(get_current_user),
+):
+    """Packets captured so far, from `offset` onwards.
+
+    `offset` is a frame number, not a byte offset, and the viewer passes back
+    the highest it has already drawn. Frame numbers are stable here -- the
+    buffer only ever grows and is never renumbered -- so appending everything
+    above the last one drawn is correct even with a display filter applied,
+    which is what makes the live list an append rather than a redraw.
+    """
+    if not live_poll_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many live stream requests, slow down")
+    view_flags = [f for f in flags.split(",") if f]
+    unknown = set(view_flags) - ALLOWED_VIEW_FLAGS
+    if unknown:
+        raise HTTPException(400, f"unknown view flags: {sorted(unknown)}")
+
+    info = _require_live_capture(capture_id, user)
+    if info.status not in _LIVE_STATUSES:
+        # Not an error. The capture finished between two polls, which is the
+        # normal end of every live stream; the viewer reads `finished` and moves
+        # to the saved capture.
+        return {"packets": [], **_live_state(info, capture_manager.live_buffer(capture_id))}
+
+    try:
+        buffer = await capture_manager.live_poll(capture_id)
+    except KeyError:
+        raise HTTPException(404, "capture not found")
+
+    state = _live_state(info, buffer)
+    source = buffer.source()
+    if source is None:
+        # The pcap header has arrived but no whole packet has, or nothing has.
+        # An empty list, not an error -- this is what the first second of every
+        # capture on a quiet link looks like.
+        return {"packets": [], **state}
+
+    try:
+        packets = await get_packet_list(
+            source, offset=offset, limit=limit,
+            display_filter=display_filter, view_flags=view_flags,
+            resolve_names=resolve_names,
+        )
+    except DisplayFilterError as exc:
+        raise HTTPException(400, {"code": "bad_display_filter", "reason": str(exc)})
+    except Exception:
+        logger.exception("live packet list failed")
+        raise HTTPException(500, "failed to list live packets")
+    return {"packets": packets, **state}
+
+
+@app.get("/api/captures/{capture_id}/live/packets/{frame_number}")
+async def live_packet_detail(
+    capture_id: str, frame_number: int, user: dict = Depends(get_current_user)
+):
+    """One packet's detail from the live buffer.
+
+    Served from what has already been pulled down rather than polling for more:
+    a packet the operator can see in the list is, by definition, already here.
+    """
+    if not live_poll_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many live stream requests, slow down")
+    _require_live_capture(capture_id, user)
+    buffer = capture_manager.live_buffer(capture_id)
+    source = buffer.source() if buffer else None
+    if source is None:
+        raise HTTPException(404, "that packet is not in the live stream yet")
+    try:
+        return await get_packet_detail(source, frame_number)
+    except Exception:
+        raise HTTPException(500, "failed to get packet detail")
 
 
 @app.get("/api/captures/{capture_id}/packets/{frame_number}")

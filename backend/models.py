@@ -329,6 +329,16 @@ class CaptureRequest(BaseModel):
     snap_len: int | None = Field(default=None, ge=0, le=65535)
     duration_seconds: int | None = Field(default=None, ge=1, le=600)
     bpf_filter: str = ""
+    # Watch the packets arrive instead of waiting for the transfer. Changes two
+    # things about the capture itself: tcpdump is given -U so the remote file
+    # grows packet by packet rather than a buffer at a time, and the capture
+    # counts against max_live_streams as well as max_concurrent_captures.
+    #
+    # It does NOT change what is captured or how it is stored. The authoritative
+    # pcap still accumulates on the remote host and is still fetched and sealed
+    # at the end, so a live-streamed capture and an ordinary one are the same
+    # file by the time either is saved.
+    live_stream: bool = False
 
     @field_validator("interface")
     @classmethod
@@ -380,6 +390,12 @@ class CaptureInfo(BaseModel):
     # restored as FAILED, so no stale record can hold an interface hostage.
     interface: str = ""
     user_id: str = ""
+    # Recorded rather than inferred, and kept after the capture completes: the
+    # operator asked for a live stream and the finished capture should still say
+    # so. It also decides what the viewer does when the capture is opened while
+    # it is still running -- without the flag there is no way to tell a capture
+    # that can be watched from one that merely happens to be RUNNING.
+    live_stream: bool = False
     status: CaptureStatus
     started_at: datetime | None = None
     stopped_at: datetime | None = None

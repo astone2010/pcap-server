@@ -42,6 +42,7 @@ over an unencrypted connection.
 | `capture.py` | Capture lifecycle: start, monitor, progress, transfer, cleanup |
 | `packet_parser.py` | Feeding captures to `tshark`/`capinfos` and parsing what comes back |
 | `pcapsource.py` | How a capture's bytes reach a tool, plaintext or decrypting in flight |
+| `livestream.py` | Holding a running capture's bytes, and walking pcap records so only whole ones reach tshark |
 | `crypto.py` | The envelope format, sealing and opening |
 | `vault.py` | Key resolution, startup policy, plaintext migration |
 | `localnet.py` | Detecting that a capture target is the machine pcap-server runs on |
@@ -94,6 +95,70 @@ is inherent to running `tcpdump -w` on someone else's machine, and worth knowing
 
 **The pcap is sealed as it arrives**, not written and then encrypted. There is no
 window in which a plaintext capture exists on the data volume.
+
+---
+
+## Streaming a capture live
+
+A capture started with **Live stream** runs the pipeline above unchanged — same
+remote file, same transfer, same sealing — and adds a second, read-only path
+alongside it that exists only while the capture runs:
+
+```
+tcpdump -U -w /tmp/<uuid>.pcap        (on the target; -U so it writes per packet)
+        │
+        │  SFTP read from a byte offset, over the capture's OWN connection
+        ▼
+  LiveBuffer                           (in memory, capped, append-only)
+        │  walks pcap record headers; offers only whole records
+        ▼
+  BytesSource ──▶ the same get_packet_list() the stored viewer uses ──▶ browser
+```
+
+Three constraints shaped this, each verified against the real tools rather than
+assumed.
+
+**The partially written stored file is unreadable, by design.** `Cryptor
+.open_stream` raises on an incomplete sealed file rather than yielding the
+chunks it holds — that is the truncation detection described under *Data at
+rest*, and it is an anti-tamper property worth more than a live view. So the
+obvious design, reading the file the transfer is writing, is not available, and
+weakening the check to make it available was rejected. The live path is a
+pass-through: the bytes never become a file on the data volume.
+
+**tshark rejects a capture cut mid-packet.** Fed a torn record it emits every
+complete packet, warns that the capture "appears to have been cut short in the
+middle of a packet", and exits 2 — and a non-zero exit with a display filter
+present is precisely how `get_packet_list` detects a filter tshark refused. A
+live read lands mid-record constantly, so without intervention every poll would
+report the operator's valid filter as invalid. `LiveBuffer` therefore walks the
+16-byte pcap record headers itself and hands tshark only whole records, which
+exits 0 and leaves the filter path's meaning intact. It refuses rather than
+guesses on an unrecognised magic or an implausible record length, since the
+file sits on a host under investigation.
+
+**The remote file is kept as the source of truth.** A `tcpdump -U -w -` stdout
+stream would be simpler and would delete the transfer phase entirely, but a
+dropped SSH connection would then lose the capture. Reading a file that
+accumulates on the target costs a phase and buys a capture that survives the
+connection.
+
+There is one filtering implementation, not two: the live routes call the same
+`get_packet_list` and `get_packet_detail` as the stored ones, differing only in
+which `PcapSource` they are handed. A separate live filter path is how the two
+halves of the app would end up disagreeing about what a filter means.
+
+**Two limits, for two different costs.** `max_live_streams` (2) bounds
+concurrent live captures — each holds an SFTP channel on the target and costs a
+tshark run over the whole buffer per poll — and is checked in `start()` in the
+same await-free stretch as the concurrency and per-interface checks, so two
+simultaneous requests cannot both pass it. `live_stream_buffer_mb` (16) bounds
+the buffer, which is both a memory ceiling and a CPU one. At the cap the buffer
+**freezes**: the preview stops advancing and says so while the capture runs on
+and is saved in full. A rolling window was rejected because dropping the oldest
+packets renumbers frames, and a frame number that means something different on
+each poll breaks both the detail pane and the append-only list that depends on
+frame numbers being stable.
 
 ---
 
@@ -407,11 +472,16 @@ Adjustable from the Admin panel, applied without a restart:
 | `max_capture_seconds` | 300 |
 | `max_capture_packets` | 100000 |
 | `max_concurrent_captures` | 5 |
+| `max_live_streams` | 2 |
+| `live_stream_buffer_mb` | 16 |
 | `session_duration_hours` | 8 |
 | `session_idle_timeout_minutes` | 60 |
 | `device_trust_days` | 30 |
 | `rate_limit_max_attempts` | 5 |
 | `rate_limit_lockout_minutes` | 15 |
+| `rate_limit_packets_per_min` | 30 |
+| `rate_limit_captures_per_min` | 10 |
+| `rate_limit_live_polls_per_min` | 90 |
 
 ---
 
@@ -437,6 +507,11 @@ subprocess handling get driven in a real browser against a real server.
   of the capture. Inherent to `tcpdump -w` on a remote machine.
 - At-rest encryption cannot protect against code execution inside the running
   container.
+- A live stream holds up to `live_stream_buffer_mb` of **unencrypted** packet
+  data in process memory for as long as the capture runs. Packets already pass
+  through memory in flight on the way to tshark; what is new is the duration and
+  the volume, and it is bounded by that setting and by `max_live_streams`. It is
+  never written to the data volume, and it is discarded when the capture ends.
 - Self-capture detection cannot see the host's LAN address from inside a bridged
   container.
 - Passwordless sudo for `tcpdump` on the target is a privilege boundary the

@@ -103,7 +103,8 @@ class Database:
                 file_size INTEGER NOT NULL DEFAULT 0,
                 error TEXT NOT NULL DEFAULT '',
                 server_label TEXT NOT NULL DEFAULT '',
-                interface TEXT NOT NULL DEFAULT ''
+                interface TEXT NOT NULL DEFAULT '',
+                live_stream INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS known_usernames (
@@ -171,6 +172,10 @@ class Database:
             conn.execute("ALTER TABLE captures ADD COLUMN server_label TEXT NOT NULL DEFAULT ''")
         if "interface" not in capture_columns:
             conn.execute("ALTER TABLE captures ADD COLUMN interface TEXT NOT NULL DEFAULT ''")
+        if "live_stream" not in capture_columns:
+            # 0 for every capture taken before live streaming existed, which is
+            # the truth: none of them was watched as it was recorded.
+            conn.execute("ALTER TABLE captures ADD COLUMN live_stream INTEGER NOT NULL DEFAULT 0")
         self._fold_saved_servers(conn)
         conn.commit()
 
@@ -433,9 +438,9 @@ class Database:
         self._conn().execute(
             """INSERT OR REPLACE INTO captures
                (id, name, user_id, server_id, server_label, status, started_at, stopped_at, command,
-                remote_path, local_path, packet_count, file_size, error, interface)
+                remote_path, local_path, packet_count, file_size, error, interface, live_stream)
                VALUES (:id, :name, :user_id, :server_id, :server_label, :status, :started_at, :stopped_at, :command,
-                       :remote_path, :local_path, :packet_count, :file_size, :error, :interface)""",
+                       :remote_path, :local_path, :packet_count, :file_size, :error, :interface, :live_stream)""",
             row,
         )
         self._conn().commit()
@@ -599,6 +604,20 @@ class Database:
         "max_capture_seconds": "300",
         "max_capture_packets": "100000",
         "max_concurrent_captures": "5",
+        # Live streams cost more than an ordinary capture while they run: an
+        # SFTP channel held open on the target, and a tshark spawn per poll per
+        # viewer over the whole accumulated buffer. Capped separately and much
+        # lower than max_concurrent_captures for that reason.
+        "max_live_streams": "2",
+        # How much of a live capture the preview will hold and re-parse. When a
+        # stream reaches this the preview freezes and says so; the capture keeps
+        # running and the saved pcap is unaffected. Every poll re-reads the
+        # whole buffer, so this is a CPU ceiling as much as a memory one.
+        "live_stream_buffer_mb": "16",
+        # A live view polls roughly every 3 seconds, so two streams plus the
+        # occasional packet-detail click needs more headroom than the stored
+        # viewer's budget gives.
+        "rate_limit_live_polls_per_min": "90",
         "session_duration_hours": "8",
         "session_idle_timeout_minutes": "60",
         "device_trust_days": "30",
