@@ -335,7 +335,7 @@ async def test_opening_a_live_capture_shows_the_live_bar(app_page):
     await app_page.click("[data-action='view-capture']")
     await app_page.wait_for_selector("#live-bar:not([hidden])")
     await app_page.wait_for_function(
-        "document.getElementById('live-status').textContent.includes('captured')"
+        "() => document.getElementById('live-status').textContent.includes('captured')"
     )
     status = await app_page.inner_text("#live-status")
     assert "Live" in status

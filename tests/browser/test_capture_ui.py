@@ -384,7 +384,7 @@ async def test_the_preview_follows_the_field_when_it_is_typed_into(app_page):
 
     await app_page.fill("#cap-bpf", "tcp port 9999")
     await app_page.wait_for_function(
-        "document.getElementById('filter-preview-expr').textContent === 'tcp port 9999'"
+        "() => document.getElementById('filter-preview-expr').textContent === 'tcp port 9999'"
     )
 
 

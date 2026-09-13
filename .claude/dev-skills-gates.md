@@ -56,15 +56,26 @@ GATES RUNNING (user: "run the gates", 2026-09-13).
                 only/"Save this filter"/chip leftovers). Security-fix docs added
                 (tls.md endpoints + cert checks, CHANGELOG, architecture,
                 security). Final rebuild: check.sh 1243 passed, 0 skipped, exit 0.
-📦 RELEASE    ⏳ commit 1abc598 APPROVED ("commit") and EXECUTED BY CLAUDE on
-                the user's reply to "Reply commit ... and I'll check the push".
-                Pushed; ls-remote heads = 1abc598 = HEAD; tree clean.
-                PR ➖ N/A: no PR workflow in this repo (as dev.27).
-                Check run 34782971749 in progress. Awaiting release-notes
-                approval (release.yml uses generate_release_notes, which is
-                commits only -- CHANGELOG entry to be added with gh release edit).
-                Note: the new dependabot.yml triggered 2 Dependabot runs.
-🚀 SHIP       ⬜
+📦 RELEASE    ✅ commit 1abc598 approved ("commit"), executed by Claude, pushed.
+                The user ALSO ran the presented block: 368363e (same message,
+                only .claude/dev-skills-gates.md differs) is the branch head;
+                local fast-forwarded, ls-remote = 368363e = HEAD. TAG TARGET IS
+                368363e. PR ➖ N/A (no PR workflow). Release notes APPROVED
+                ("yes") -- to be applied with `gh release edit` after CI
+                publishes (release.yml generate_release_notes = commits only).
+🚀 SHIP       🚫 BLOCKED -- CI Check on 368363e (run 34783041188) FAILED:
+                1 failed / 1242 passed. test_opening_a_live_capture_shows_the_live_bar
+                -> page.wait_for_function with a BARE EXPRESSION -> EvalError under
+                the app CSP (no unsafe-eval). Timing-dependent: same code on
+                1abc598 (run 34782971749) passed. Pre-existing since dev.27, as is
+                a second one at test_capture_ui.py:386. Tag NOT pushed (confirmed
+                ls-remote empty).
+                FIX (uncommitted): both converted to "() => ..."; new
+                tests/test_browser_suite_hygiene.py fails on any bare-expression
+                wait_for_function (verified it fails against the old files).
+                check.sh: 1245 passed, 0 skipped, exit 0. Needs commit approval,
+                push, green Check on the new head, then the user's docker build
+                and tag push.
 
 ### dev.28 scope
 1. Built-in HTTPS -- backend/tls/ package (self-contained), lego 5.4.1.
