@@ -203,6 +203,20 @@
                     <label>Snap length</label>
                     <input type="number" id="cap-snaplen" placeholder="auto" style="width:80px">
                 </div>
+                <!-- A live stream is still an ordinary capture: it is written
+                     on the remote host and fetched and sealed when it ends,
+                     exactly like any other. The only difference while it runs
+                     is that you can watch it. Said here because the alternative
+                     reading -- that live captures are held in the browser and
+                     lost if you close it -- is the one people assume. -->
+                <div class="form-group live-stream-option">
+                    <label class="live-stream-toggle"
+                           title="Open the capture in the Viewer as it records. It is still saved in full and can be reopened later like any other capture.">
+                        <input type="checkbox" id="cap-live">
+                        <span>Live stream</span>
+                    </label>
+                    <span class="hint live-stream-hint">watch packets arrive; still saved in full</span>
+                </div>
                 <div class="form-group bpf-filter">
                     <label>BPF filter <span class="hint">&mdash; this is how you capture specific traffic</span></label>
                     <input type="text" id="cap-bpf" placeholder="e.g. tcp port 80 and host 10.0.0.1">
@@ -329,7 +343,7 @@
 
         <!-- viewer panel -->
         <div id="panel-viewer" class="panel">
-            <div id="viewer-empty" class="empty-state">Select a completed capture to view packets</div>
+            <div id="viewer-empty" class="empty-state">Select a capture to view packets &mdash; a finished one, or a live stream while it runs</div>
             <div id="packet-viewer" class="packet-viewer" hidden>
                 <div class="packet-toolbar">
                     <!-- Sits on its own row above the filter; the widths and
@@ -361,6 +375,23 @@
                      cannot be renamed or deleted. The strip is hidden until
                      the first view is saved: an operator who never saves one
                      should not pay a line of chrome for the feature. -->
+                <!-- Only while a live capture is open. Carries the three
+                     things that are true of a live view and not of a stored
+                     one: that it is still running, how far behind the preview
+                     is allowed to get, and that Stop is available from here
+                     rather than only from the capture list. -->
+                <div id="live-bar" class="live-bar" hidden>
+                    <span class="live-dot" aria-hidden="true"></span>
+                    <span id="live-status" role="status" aria-live="polite"></span>
+                    <span class="live-bar-actions">
+                        <label class="live-follow" title="Keep the newest packets in view as they arrive">
+                            <input type="checkbox" id="live-follow" checked>
+                            <span>Follow</span>
+                        </label>
+                        <button type="button" id="btn-live-stop" class="btn btn-sm btn-secondary"
+                                title="Stop the capture. It is then saved and stays open here.">Stop capture</button>
+                    </span>
+                </div>
                 <div id="view-tabs" class="view-tabs" role="tablist"
                      aria-label="Saved views of this capture" hidden></div>
                 <!-- One line of chrome. Everything that is reference material

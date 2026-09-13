@@ -410,6 +410,13 @@ function initTabs() {
             if (tab.dataset.tab === "servers") {
                 loadServers();
             }
+            // A live view polls on a timer, so leaving the Viewer without this
+            // keeps a capture being read and rate-limited for a table nobody is
+            // looking at. Re-opening it from the Captures tab starts it again.
+            if (tab.dataset.tab !== "viewer" && inLiveView()) {
+                stopLiveView();
+                setLiveStatus("Live view paused \u2014 reopen the capture to resume.", "");
+            }
         });
     });
 }
@@ -1419,6 +1426,7 @@ async function startCapture() {
         server_id: serverId,
         interface: $("cap-interface").value || "any",
         bpf_filter: $("cap-bpf").value,
+        live_stream: $("cap-live").checked,
     };
 
     const count = parseInt($("cap-count").value);
@@ -1429,8 +1437,12 @@ async function startCapture() {
     if (snap >= 0 && $("cap-snaplen").value) body.snap_len = snap;
 
     try {
-        await api("/api/captures", { method: "POST", body: JSON.stringify(body) });
-        loadCaptures();
+        const started = await api("/api/captures", { method: "POST", body: JSON.stringify(body) });
+        await loadCaptures();
+        // Straight into the Viewer. Ticking "Live stream" and then having to
+        // find the capture in a list and press View is the same two clicks the
+        // checkbox was meant to replace.
+        if (body.live_stream && started && started.id) viewCapture(started.id);
     } catch (e) {
         alert("Capture failed: " + e.message);
     }
@@ -1460,7 +1472,13 @@ function renderCaptures() {
             const statusClass = `status-${c.status}`;
             let actions = "";
             if (c.status === "running") {
-                actions = `<button class="btn btn-sm btn-secondary" data-action="stop-capture" data-id="${c.id}">Stop</button>`;
+                // A live capture is watchable while it runs; an ordinary one has
+                // nothing to show until it has been fetched, so it gets no
+                // button rather than one that opens an empty viewer.
+                if (c.live_stream) {
+                    actions = `<button class="btn btn-sm btn-primary" data-action="view-capture" data-id="${c.id}">Watch live</button> `;
+                }
+                actions += `<button class="btn btn-sm btn-secondary" data-action="stop-capture" data-id="${c.id}">Stop</button>`;
             } else if (c.status === "completed") {
                 // Downloads are refused over plain HTTP, so say why here rather
                 // than letting the button fail with a 403 when clicked.
@@ -1491,6 +1509,7 @@ function renderCaptures() {
                         ${c.error ? ' | <span style="color:var(--danger)">' + escHtml(c.error) + "</span>" : ""}
                     </div>
                 </div>
+                ${c.live_stream ? '<span class="status-badge badge-live" title="Started with live streaming: the packets were watched in the Viewer as they were captured. The saved capture is complete either way.">live stream</span>' : ""}
                 <span class="status-badge ${statusClass}">${c.status}</span>
                 <div class="capture-actions">${actions}</div>
             </div>`;
@@ -1643,8 +1662,12 @@ function downloadCaptureById(id) {
 
 async function refreshRunningCaptures() {
     const running = captures.filter((c) => ["running", "stopping", "transferring", "pending"].includes(c.status));
-    if (!running.length) return;
-    loadCaptures();
+    if (!running.length && !viewerAwaitingCapture) return;
+    await loadCaptures();
+    // A live view that has just ended is waiting for the transfer to finish so
+    // it can reopen the sealed capture. This poll is already running at the
+    // right cadence; a second timer for it would only disagree with this one.
+    await settleFinishedCapture();
 }
 
 // --- packet viewer ---
@@ -1656,7 +1679,15 @@ function setViewerLabel(id) {
         : "Capture: " + id;
 }
 
+function isLiveNow(c) {
+    return !!(c && c.live_stream && (c.status === "running" || c.status === "stopping"));
+}
+
 async function viewCapture(id) {
+    // Whatever was streaming before, stop it: two live views polling into one
+    // table is the same table showing two captures at once.
+    stopLiveView();
+    viewerAwaitingCapture = null;
     viewingCaptureId = id;
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     document.querySelector('.tab[data-tab="viewer"]').classList.add("active");
@@ -1677,6 +1708,19 @@ async function viewCapture(id) {
     savedViews = [];
     renderViewTabs();
 
+    const capture = captures.find((c) => c.id === id);
+    if (isLiveNow(capture)) {
+        // Saved views are loaded either way: they belong to the capture, not to
+        // the state it is in, and naming a filter while the capture is still
+        // running is exactly when it is most useful.
+        startLiveView(id);
+        await loadSavedViews(id);
+        return;
+    }
+    $("live-bar").hidden = !(capture && capture.live_stream);
+    if (capture && capture.live_stream) {
+        setLiveStatus("This capture was live streamed. Showing the saved capture.", "done");
+    }
     await Promise.all([loadPackets(id), loadSavedViews(id)]);
 }
 
@@ -2347,15 +2391,44 @@ function formatLocalTime(epochSeconds) {
     return `${LOCAL_TIME_FORMAT.format(when)}.${millis}`;
 }
 
-async function loadPackets(captureId, filter = "") {
-    const tbody = $("packet-tbody");
+// Shared by the stored viewer and the live one. Two renderers for one table
+// is how the live list ends up quietly disagreeing with the saved list about
+// the same capture -- a MAC column that only appears in one of them, a
+// timestamp formatted two ways -- so there is one, and both call it.
+function packetColumns() {
     const flags = getSelectedFlags();
     const showMac = flags.includes("-e");
-    const localTime = flags.includes("-tz");
     document.querySelectorAll(".col-mac").forEach((el) => { el.hidden = !showMac; });
     applyTimeColumnWidth(flags);
-    const span = showMac ? 9 : 7;
-    const mac = showMac ? "" : " hidden";
+    return {
+        flags,
+        showMac,
+        localTime: flags.includes("-tz"),
+        span: showMac ? 9 : 7,
+        mac: showMac ? "" : " hidden",
+    };
+}
+
+function packetRowHtml(p, cols) {
+    const { localTime, mac } = cols;
+    return `
+            <tr class="${packetClass(p)}" data-frame="${p.number}">
+                <td class="col-no">${p.number}</td>
+                <td class="col-time" title="${escHtml(localTime ? LOCAL_ZONE : p.timestamp)}">${escHtml(localTime ? formatLocalTime(p.timestamp) : p.timestamp)}</td>
+                <td class="col-src" title="${escHtml(p.source)}">${escHtml(p.source)}</td>
+                <td class="col-dst" title="${escHtml(p.destination)}">${escHtml(p.destination)}</td>
+                <td class="col-mac"${mac}>${escHtml(p.src_mac || "")}</td>
+                <td class="col-mac"${mac}>${escHtml(p.dst_mac || "")}</td>
+                <td class="col-proto">${escHtml(p.protocol)}</td>
+                <td class="col-len">${p.length}</td>
+                <td class="col-info">${escHtml(p.info)}</td>
+            </tr>`;
+}
+
+async function loadPackets(captureId, filter = "") {
+    const tbody = $("packet-tbody");
+    const cols = packetColumns();
+    const { flags, span } = cols;
 
     // Kept so a rejected filter can put the packets back. The spinner replaces
     // them before the request goes out, and a filter the server refuses would
@@ -2378,22 +2451,7 @@ async function loadPackets(captureId, filter = "") {
             tbody.innerHTML = `<tr><td colspan="${span}" style="text-align:center;padding:20px;color:var(--text-muted)">No packets match</td></tr>`;
             return;
         }
-        tbody.innerHTML = data.packets
-            .map(
-                (p) => `
-            <tr class="${packetClass(p)}" data-frame="${p.number}">
-                <td class="col-no">${p.number}</td>
-                <td class="col-time" title="${escHtml(localTime ? LOCAL_ZONE : p.timestamp)}">${escHtml(localTime ? formatLocalTime(p.timestamp) : p.timestamp)}</td>
-                <td class="col-src" title="${escHtml(p.source)}">${escHtml(p.source)}</td>
-                <td class="col-dst" title="${escHtml(p.destination)}">${escHtml(p.destination)}</td>
-                <td class="col-mac"${mac}>${escHtml(p.src_mac || "")}</td>
-                <td class="col-mac"${mac}>${escHtml(p.dst_mac || "")}</td>
-                <td class="col-proto">${escHtml(p.protocol)}</td>
-                <td class="col-len">${p.length}</td>
-                <td class="col-info">${escHtml(p.info)}</td>
-            </tr>`
-            )
-            .join("");
+        tbody.innerHTML = data.packets.map((p) => packetRowHtml(p, cols)).join("");
     } catch (e) {
         if (e.badDisplayFilter) {
             // The capture is fine and the previous list is still meaningful, so
@@ -2403,6 +2461,235 @@ async function loadPackets(captureId, filter = "") {
             return;
         }
         tbody.innerHTML = `<tr><td colspan="${span}" style="color:var(--danger);padding:20px">${escHtml(e.message)}</td></tr>`;
+    }
+}
+
+// --- the live view ------------------------------------------------------
+//
+// Same viewer, same table, same display filter as a stored capture -- the
+// capture just has not finished yet. Everything below is about the two things
+// that ARE different: packets arrive over time instead of all at once, and the
+// capture eventually ends, at which point the viewer moves to the saved file
+// without the operator doing anything.
+//
+// The list is appended to rather than redrawn. That is only sound because
+// frame numbers are stable: the server never renumbers the live buffer, so
+// "everything above the highest frame I have drawn" is a correct query even
+// with a display filter applied. Redrawing instead would throw away the
+// selected packet and the scroll position on every poll.
+
+// Matches refreshRunningCaptures. A live view and the capture list are looking
+// at the same capture, and two different cadences would show two different
+// packet counts side by side.
+const LIVE_POLL_MS = 3000;
+
+// The list is capped independently of the server's byte buffer: 16MB of small
+// packets is a couple of hundred thousand rows, which no browser lays out
+// happily. Oldest go first. They are not lost -- they are in the capture, and
+// the saved capture opens with all of them.
+const LIVE_MAX_ROWS = 5000;
+
+let liveCaptureId = null;
+let liveTimer = null;
+let liveHighestFrame = 0;
+let liveFilter = "";
+let liveTrimmed = false;
+// Set while the viewer is holding for a capture that has stopped but is still
+// being fetched and sealed. refreshRunningCaptures picks it up.
+let viewerAwaitingCapture = null;
+
+function inLiveView() {
+    return liveCaptureId !== null;
+}
+
+function liveScroller() {
+    return document.querySelector(".packet-list-container");
+}
+
+function startLiveView(captureId, filter = "") {
+    liveCaptureId = captureId;
+    liveHighestFrame = 0;
+    liveFilter = filter;
+    liveTrimmed = false;
+    viewerAwaitingCapture = null;
+    $("packet-tbody").innerHTML = "";
+    $("live-bar").hidden = false;
+    setLiveStatus("Waiting for the first packets\u2026", "");
+    liveTick();
+}
+
+function stopLiveView() {
+    if (liveTimer) clearTimeout(liveTimer);
+    liveTimer = null;
+    liveCaptureId = null;
+}
+
+function scheduleLiveTick() {
+    // setTimeout after the poll returns, never setInterval: a poll over a large
+    // buffer can take longer than the interval, and setInterval would stack
+    // requests on top of each other until the rate limiter refused them all.
+    liveTimer = setTimeout(() => { liveTick(); }, LIVE_POLL_MS);
+}
+
+async function liveTick() {
+    if (!liveCaptureId) return;
+    const captureId = liveCaptureId;
+    const cols = packetColumns();
+    const query = new URLSearchParams({
+        offset: String(liveHighestFrame),
+        limit: "1000",
+        display_filter: liveFilter,
+        flags: cols.flags.join(","),
+        resolve_names: resolveNamesEnabled() ? "true" : "false",
+    });
+
+    let data;
+    try {
+        data = await api(`/api/captures/${captureId}/live/packets?${query}`);
+    } catch (e) {
+        if (e.badDisplayFilter) {
+            // Stop rather than keep asking. Every poll would fail the same way,
+            // burning the rate limit to re-learn what the operator already sees
+            // under the box -- and Apply restarts the stream once it is fixed.
+            showDisplayFilterError(e.message);
+            setLiveStatus("Paused \u2014 fix the display filter and press Apply.", "warn");
+            stopLiveView();
+            liveCaptureId = captureId;
+            return;
+        }
+        setLiveStatus(`Lost contact with the capture: ${e.message}`, "warn");
+        if (liveCaptureId === captureId) scheduleLiveTick();
+        return;
+    }
+    if (liveCaptureId !== captureId) return;  // the viewer moved on mid-request
+
+    showDisplayFilterError("");
+    appendLivePackets(data.packets, cols);
+    renderLiveStatus(data);
+
+    if (data.finished) {
+        await finishLiveView(captureId, data.status);
+        return;
+    }
+    scheduleLiveTick();
+}
+
+function appendLivePackets(packets, cols) {
+    if (!packets.length) return;
+    const tbody = $("packet-tbody");
+    const scroller = liveScroller();
+    // Read before the rows go in: afterwards the scroll height has already
+    // changed and "were we at the bottom" can no longer be answered.
+    const follow = $("live-follow").checked;
+
+    tbody.insertAdjacentHTML("beforeend", packets.map((p) => packetRowHtml(p, cols)).join(""));
+    liveHighestFrame = Math.max(liveHighestFrame, ...packets.map((p) => p.number));
+
+    while (tbody.rows.length > LIVE_MAX_ROWS) {
+        // Never the selected row's neighbours silently: if the row being
+        // removed is the one on screen in the detail pane, the pane keeps
+        // showing it. The packet is still in the capture; only the row goes.
+        if (tbody.rows[0] === selectedPacketRow) selectedPacketRow = null;
+        tbody.deleteRow(0);
+        liveTrimmed = true;
+    }
+    if (follow && scroller) scroller.scrollTop = scroller.scrollHeight;
+}
+
+function setLiveStatus(text, kind = "") {
+    const el = $("live-status");
+    if (!el) return;
+    el.textContent = text;
+    el.className = kind ? `live-status-${kind}` : "";
+}
+
+function renderLiveStatus(data) {
+    const bar = $("live-bar");
+    if (bar) bar.classList.toggle("live-frozen", !!data.frozen);
+
+    if (data.problem) {
+        setLiveStatus(data.problem, "warn");
+        return;
+    }
+    const parts = [];
+    if (data.status === "stopping") parts.push("Stopping");
+    else parts.push("Live");
+    parts.push(`${data.captured_packets} captured`);
+    if (liveFilter) parts.push(`${$("packet-tbody").rows.length} shown`);
+    if (liveTrimmed) parts.push(`oldest rows dropped from this list \u2014 all ${data.captured_packets} are in the capture`);
+    if (data.read_error) {
+        setLiveStatus(`${parts.join(" \u2022 ")} \u2014 last read failed: ${data.read_error}`, "warn");
+        return;
+    }
+    if (data.frozen) {
+        const mb = Math.round(data.buffer_capacity / (1024 * 1024));
+        setLiveStatus(
+            `Preview full at ${mb} MB and no longer updating. The capture is still running `
+            + `(${data.captured_packets} packets) and will be saved in full.`,
+            "warn",
+        );
+        return;
+    }
+    setLiveStatus(parts.join(" \u2022 "), "");
+}
+
+async function finishLiveView(captureId, status) {
+    stopLiveView();
+    if (status === "failed") {
+        setLiveStatus("The capture failed. See the Captures tab for what it reported.", "warn");
+        await loadCaptures();
+        return;
+    }
+    // STOPPING and TRANSFERRING both land here: the packets stopped arriving,
+    // but the file is still being pulled off the target and sealed. Hold until
+    // it is readable rather than showing an error for a capture that is fine.
+    setLiveStatus("Capture finished \u2014 saving it\u2026", "");
+    viewerAwaitingCapture = captureId;
+    await loadCaptures();
+    await settleFinishedCapture();
+}
+
+// Called from here and from refreshRunningCaptures, which is already polling
+// on the same cadence -- a second timer to watch one capture finish would be a
+// second cadence disagreeing with the first.
+async function settleFinishedCapture() {
+    const captureId = viewerAwaitingCapture;
+    if (!captureId) return;
+    const c = captures.find((x) => x.id === captureId);
+    if (!c) {
+        viewerAwaitingCapture = null;
+        return;
+    }
+    if (c.status === "transferring" || c.status === "stopping") return;
+    viewerAwaitingCapture = null;
+
+    if (c.status !== "completed") {
+        setLiveStatus(c.error || "The capture did not finish successfully.", "warn");
+        return;
+    }
+    // The sealed capture, opened exactly as it would be from the Captures tab.
+    // The filter survives the switch: it is the thing the operator was watching
+    // through, and losing it at the moment the capture completes would undo the
+    // work they did while it ran.
+    setViewerLabel(captureId);
+    setLiveStatus(
+        `Capture finished and saved \u2014 showing the complete capture (${c.packet_count} packets).`,
+        "done",
+    );
+    await Promise.all([
+        loadPackets(captureId, $("display-filter").value),
+        loadSavedViews(captureId),
+    ]);
+}
+
+async function stopLiveCapture() {
+    if (!liveCaptureId && !viewerAwaitingCapture) return;
+    const id = liveCaptureId || viewerAwaitingCapture;
+    setLiveStatus("Stopping\u2026", "");
+    try {
+        await stopCapture(id);
+    } catch (e) {
+        setLiveStatus(`Could not stop the capture: ${e.message}`, "warn");
     }
 }
 
@@ -2427,6 +2714,13 @@ function useFilterSuggestion(expr, el, ev) {
 
 function applyDisplayFilter() {
     if (!viewingCaptureId) return;
+    if (inLiveView()) {
+        // A new filter means a different set of packets from frame 1, not from
+        // wherever this one happened to be -- so the list restarts rather than
+        // continuing to append under the old offset.
+        startLiveView(liveCaptureId, $("display-filter").value);
+        return;
+    }
     loadPackets(viewingCaptureId, $("display-filter").value);
 }
 
@@ -2459,7 +2753,10 @@ async function selectPacket(frameNumber) {
     selectedFieldEl = null;
 
     try {
-        const detail = await api(`/api/captures/${viewingCaptureId}/packets/${frameNumber}`);
+        const path = inLiveView()
+            ? `/api/captures/${viewingCaptureId}/live/packets/${frameNumber}`
+            : `/api/captures/${viewingCaptureId}/packets/${frameNumber}`;
+        const detail = await api(path);
         currentDetail = detail;
         renderDetailTree(detail.layers);
         renderHexPane(detail.frame_hex || "");
@@ -3097,6 +3394,15 @@ const SETTING_LABELS = {
     // an SSH session and a local file handle -- but absent from this map, so
     // the panel never drew it and the only way to change it was the database.
     max_concurrent_captures: "Max simultaneous captures",
+    // Capped far below max_concurrent_captures on purpose: a live stream holds
+    // an SFTP channel open on the target and costs a tshark run over the whole
+    // buffer on every poll, which an ordinary capture does neither of.
+    max_live_streams: "Max simultaneous live streams",
+    // How much of a live capture the preview will hold and re-read. Past it the
+    // preview stops updating and says so; the capture itself runs on and is
+    // saved in full. Raising it costs memory AND CPU, because every poll
+    // re-parses the whole buffer.
+    live_stream_buffer_mb: "Live stream preview limit (MB)",
     session_duration_hours: "Session duration (hours)",
     session_idle_timeout_minutes: "Session idle timeout (minutes)",
     device_trust_days: "Device trust duration (days)",
@@ -3104,6 +3410,7 @@ const SETTING_LABELS = {
     rate_limit_lockout_minutes: "Rate limit lockout (minutes)",
     rate_limit_packets_per_min: "Packet list requests per minute",
     rate_limit_captures_per_min: "Capture start requests per minute",
+    rate_limit_live_polls_per_min: "Live stream requests per minute",
 };
 
 async function loadAdminSettings() {
@@ -3529,6 +3836,7 @@ function initStaticHandlers() {
         "delete-view": (id) => deleteView(id),
     });
     $("btn-download-capture")?.addEventListener("click", downloadCapture);
+    $("btn-live-stop")?.addEventListener("click", stopLiveCapture);
     $("resolve-names")?.addEventListener("change", onResolveNamesToggled);
     $("btn-save-settings")?.addEventListener("click", saveSettings);
     $("btn-admin-create-user")?.addEventListener("click", adminCreateUser);

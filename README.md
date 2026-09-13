@@ -36,6 +36,14 @@ matching and so on). A running capture reports how many packets it has taken so
 far. Captures can be renamed, and each one remembers which server it came from
 even after that server is deleted.
 
+**Watching it happen.** Tick **Live stream** on the capture form and the Viewer
+opens on the capture as it records, packets appearing as they are taken — with
+the same display filter, autocomplete and saved views as a finished capture,
+because it is the same viewer running the same tshark. Stop it when you have
+seen what you were waiting for and it is fetched, sealed and reopened as an
+ordinary stored capture, still marked as one that was streamed. See
+[Streaming a capture live](#streaming-a-capture-live).
+
 **Reading.** A Wireshark-style packet list with protocol colouring, a decoded
 protocol tree and a hex dump. Full Wireshark display-filter syntax narrows the
 list, with autocomplete over protocol and field names as you type, its own
@@ -352,6 +360,10 @@ form:
 | Snap length | `-s` | bytes kept per packet — lower it for headers only |
 | BPF filter | expression | which packets are captured at all |
 
+A fifth control, **Live stream**, does not change what the capture contains —
+it adds `-U` so tcpdump writes packet by packet, and opens the capture in the
+Viewer while it runs. See [Streaming a capture live](#streaming-a-capture-live).
+
 Capturing *specific* traffic is the filter's job, not a flag's, and the filter
 takes full BPF syntax: `host 10.0.0.230`, `tcp port 443`,
 `port 53 and not host 8.8.8.8`, `net 192.168.1.0/24`, `vlan 100`, `icmp or arp`,
@@ -361,6 +373,81 @@ Shell metacharacters are rejected in the filter, which is passed to tcpdump as a
 single quoted argument after `--`. `-z`, `-W`, `-G`, `-C`, `-r`, `-F`, `-V` and
 `-Z` are permanently refused: tcpdump may be running under `sudo`, and those turn
 a capture into code execution or file reads as root.
+
+## Streaming a capture live
+
+Normally a capture is written on the remote host and comes back only when it
+ends: `tcpdump -w` writes there, and nothing but a running packet count crosses
+the wire until the transfer. Tick **Live stream** on the capture form and you
+can watch it instead — the Viewer opens on the capture as it records, and rows
+appear as packets are taken.
+
+It is the same viewer. The display filter, its autocomplete, the view flags,
+name resolution and saved views all work exactly as they do on a stored
+capture, because the live view runs the same tshark over the same code path;
+there is no second, cut-down filter language for live captures. A filter
+narrows what you are watching as it arrives, and can be saved as a view while
+the capture is still running.
+
+**A live stream is still an ordinary capture.** Nothing about storage changes.
+The authoritative pcap still accumulates on the remote host and is still
+fetched and sealed into the vault when the capture ends, so a live-streamed
+capture and an ordinary one are the same file by the time either is saved.
+Closing the browser does not lose it. This is also why a dropped SSH connection
+mid-capture costs nothing: the packets are on the target, not in the browser.
+
+### Stopping and keeping it
+
+**Stop capture**, from the live bar or the capture list, ends it. The capture
+then goes through exactly the states it always does — stopping, transferring,
+completed — and the Viewer waits and reopens it from the saved file, keeping
+whatever display filter you were watching through. From that point it is a
+stored capture like any other: downloadable, filterable, saved views and all.
+It stays marked **live stream** in the capture list afterwards, because how a
+capture was taken is worth knowing later.
+
+### What it costs, and the two limits
+
+A live stream is more expensive than an ordinary capture while it runs, so two
+limits apply.
+
+**At most two live streams at once** (Max simultaneous live streams). Each one
+holds an SFTP channel open on the target and costs a tshark run over the whole
+accumulated buffer on every poll. Starting a third is refused with a message
+saying so; an ordinary capture can still start, since that limit is separate.
+
+**The preview stops at 16 MB** (Live stream preview limit). At the cap the live
+view freezes and says so plainly — *"the capture is still running and will be
+saved in full"* — because the capture does keep going, and its final pcap is
+complete. The running packet count continues to climb next to the frozen
+preview so it is obvious which of the two stopped.
+
+Freezing was chosen over the alternative, dropping the oldest packets to keep a
+rolling window. A rolling window renumbers frames underneath the detail pane,
+so a packet you just watched scroll past can no longer be opened — and a frame
+number that means something different on each poll would quietly break the
+saved views taken during the capture.
+
+### Why it is read the way it is
+
+Two things rule out the obvious designs, and both were measured rather than
+assumed:
+
+- **The partially written stored file cannot be read.** Captures are sealed as
+  they land, and the truncation check refuses an incomplete sealed file
+  outright rather than yielding the chunks it holds. That is an anti-tamper
+  property worth more than a live view, so nothing here weakens it — the live
+  bytes are a pass-through, and no plaintext partial capture is ever written to
+  the data volume.
+- **tshark objects to a capture cut mid-packet.** Fed a torn record it emits
+  every complete packet, warns, and exits non-zero — which is the same signal
+  that means "tshark refused your display filter". So pcap-server walks the
+  pcap record headers itself and only ever hands tshark whole records; a filter
+  is never blamed for the capture being mid-write.
+
+A live capture is also given `-U`, so tcpdump writes each packet as it arrives
+rather than a buffer at a time. It changes when bytes reach the file, not which
+bytes, so the saved capture is identical either way.
 
 ## Reading a capture
 
@@ -595,6 +682,11 @@ same-origin COOP and CORP. HSTS is sent only where TLS is genuinely in use.
 - The pcap exists in the clear in `/tmp` on the **target** host for the duration
   of the capture. Inherent to running `tcpdump -w` on a remote machine; it is
   deleted after transfer.
+- A live stream holds up to the preview limit (16 MB by default) of unencrypted
+  packet data in the server's memory while the capture runs, discarded when it
+  ends. Packets already pass through memory on their way to tshark; what a live
+  stream changes is how much and for how long. It is never written to the data
+  volume.
 - Self-capture detection cannot see the host's LAN address from inside a bridged
   container, so it guards against the common mistakes rather than proving
   non-locality.
@@ -624,6 +716,8 @@ These are configurable from the Admin tab by the admin user:
 | Max capture seconds | 300 | Maximum duration for a single capture |
 | Max capture packets | 100000 | Maximum packets per capture |
 | Max concurrent captures | 5 | Captures running or finishing up at once, across all users — each holds an SSH connection to a target host plus a local file. Separately, and not configurable: one capture at a time per interface per server, so `eth0` and `eth1` on the same host can run together but a second capture on either is refused |
+| Max simultaneous live streams | 2 | Live-streamed captures at once, across all users. Far lower than the limit above because a live stream costs more than an ordinary capture: an SFTP channel held open on the target, and a tshark run over the whole buffer on every poll. An ordinary capture can still start when this is full |
+| Live stream preview limit (MB) | 16 | How much of a live capture the preview holds and re-reads. Past it the preview stops updating and says so; **the capture itself keeps running and is saved in full**. Raising it costs CPU as well as memory, because every poll re-parses the whole buffer |
 | Session duration (hours) | 8 | Login session lifetime |
 | Session idle timeout (minutes) | 60 | Idle window before a session is deleted, independent of the absolute duration above. `0` disables idle expiry |
 | Device trust (days) | 30 | How long a trusted device skips MFA |
@@ -631,6 +725,7 @@ These are configurable from the Admin tab by the admin user:
 | Rate limit lockout (minutes) | 15 | Lockout duration after too many failures |
 | Packet list requests per minute | 30 | Per-user cap on `/api/captures/{id}/packets` calls, which spawn tshark |
 | Capture start requests per minute | 10 | Per-user cap on `/api/captures` (POST), which opens an SSH connection |
+| Live stream requests per minute | 90 | Per-user cap on the live streaming routes. Separate from the packet list cap above because a live view polls on a timer rather than when someone clicks — sharing one budget would leave two streams unable to open a packet |
 
 ### Sessions
 

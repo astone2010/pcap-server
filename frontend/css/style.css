@@ -1267,7 +1267,7 @@ body {
 }
 
 .prereq-head.ok { color: var(--success, #3fb950); }
-.prereq-head.warn { color: var(--warning, #d29922); }
+.prereq-head.warn { color: var(--warning); }
 .prereq-head.fail { color: var(--danger); }
 
 .prereq-readonly {
@@ -1298,7 +1298,7 @@ body {
 }
 
 .prereq-row.ok .prereq-icon { color: var(--success, #3fb950); }
-.prereq-row.warn .prereq-icon { color: var(--warning, #d29922); }
+.prereq-row.warn .prereq-icon { color: var(--warning); }
 .prereq-row.fail .prereq-icon { color: var(--danger); }
 
 .prereq-name { font-weight: 600; color: var(--text-primary); }
@@ -1536,26 +1536,32 @@ body {
 .view-tabs {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     flex-wrap: wrap;
     padding: 6px 16px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
 }
 
+/* 0.75rem here was 12px, and the names in these chips are operator-typed
+   labels read at a glance while packets scroll -- not chrome. At 0.875rem they
+   are the same size as the body text everywhere else in the app, which is the
+   size they should always have been. The padding and gap go up with it so the
+   chip keeps its proportions rather than becoming type crammed into a pill
+   sized for smaller type. */
 .view-tab {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
+    gap: 8px;
+    padding: 6px 14px;
     background: transparent;
     border: 1px solid var(--border);
     border-radius: 999px;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: 0.875rem;
     font-family: inherit;
     cursor: pointer;
-    max-width: 320px;
+    max-width: 360px;
 }
 
 .view-tab:hover { color: var(--text-primary); border-color: var(--accent); }
@@ -1577,14 +1583,17 @@ body {
 .view-tab-actions { display: none; gap: 2px; }
 .view-tab[aria-selected="true"] .view-tab-actions { display: inline-flex; }
 
+/* The action glyphs grow with the chip, and gain a touch of hit area: at the
+   old size the download arrow and the pencil were a few pixels of clickable
+   target sitting next to each other. */
 .view-tab-action {
     background: none;
     border: none;
-    padding: 0 2px;
+    padding: 2px 4px;
     color: inherit;
     opacity: 0.75;
     cursor: pointer;
-    font-size: 0.75rem;
+    font-size: 0.9375rem;
     line-height: 1;
 }
 
@@ -1968,3 +1977,92 @@ body {
 }
 
 .filter-use { text-align: right; white-space: nowrap; width: 1%; }
+
+
+/* --- live streaming ----------------------------------------------------- */
+/* A capture you can watch while it records. The bar only exists in the Viewer
+   and only while, or just after, a live capture is open: it carries the three
+   things that are true of a live view and not a stored one -- that packets are
+   still arriving, how far the preview is allowed to get, and that Stop is
+   reachable without going back to the Captures tab. */
+
+.live-stream-option {
+    justify-content: flex-end;
+}
+
+.live-stream-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: 0.875rem;
+    white-space: nowrap;
+}
+
+.live-stream-toggle input { cursor: pointer; }
+
+.live-stream-hint {
+    display: block;
+    margin-top: 2px;
+}
+
+.live-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    font-size: 0.875rem;
+    flex-shrink: 0;
+}
+
+.live-bar-actions {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.live-follow {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+/* Pulsing only while the stream is actually live. Once the preview freezes or
+   the capture ends the dot goes still, because a blinking "live" indicator on
+   a view that has stopped updating is the one thing here that would actively
+   mislead. */
+.live-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+    animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+.live-bar.live-frozen { background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.live-bar.live-frozen .live-dot { animation: none; opacity: 0.5; }
+
+@keyframes live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+}
+
+/* Respect a stated preference for less motion: a dot pulsing once a second for
+   the length of a capture is exactly the kind of thing that setting is for. */
+@media (prefers-reduced-motion: reduce) {
+    .live-dot { animation: none; }
+}
+
+.live-status-warn { color: var(--warning); }
+.live-status-done { color: var(--text-secondary); }
+
+.badge-live {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+}
