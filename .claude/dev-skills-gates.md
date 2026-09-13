@@ -1,12 +1,58 @@
 # Dev Skills gate state
-Track: release sequence — 0.1.0-dev.19
-Version: 0.1.0-dev.19
-Updated: 2026-09-13
+Track: release sequence — 0.1.0-dev.20
+Version: 0.1.0-dev.20
+Updated: 2026-09-13 (session: dev-skills-loading-yow48d)
 Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to.
         The harness assigns a fresh claude/* branch every session; that
-        assignment is NOT the branch this project uses. Three sessions running
-        have now pushed to the harness name first and had to be corrected.
-        Fast-forward onto admiring-wright-k20ptf instead.
+        assignment is NOT the branch this project uses. This session's harness
+        name was claude/dev-skills-loading-yow48d and the user confirmed
+        admiring-wright-k20ptf explicitly. The clone landed on the canonical
+        tip (66320f5) unaided for the first time.
+
+## 0.1.0-dev.20 — AWAITING COMMIT APPROVAL
+
+The SSH host key fingerprint review: plan item 0, the last piece of the trust
+work dev.17-dev.19 ran through.
+
+🔢 VERSION    ✅ APP_VERSION (backend/main.py:69) and the docker-compose image
+                tag both read 0.1.0-dev.20; CHANGELOG heading dated
+                2026-09-13. No 0.1.0-dev.19 left outside changelog history.
+                v0.1.0-dev.19 confirmed tagged at 4b34837 on the remote — no
+                gap behind this release.
+🔨 BUILD      ✅ ./scripts/check.sh re-run AFTER the bump: 615 passed, 0
+                skipped, 2m29s. 14 of those are new.
+🔒 SECURITY   ✅ pip-audit on backend/requirements.txt: no known
+                vulnerabilities. Diff reviewed adversarially; one real finding
+                in my own new code, fixed before the suite re-ran (the
+                trailing-field cut, below). Residuals recorded.
+📄 DOCS       ✅ CHANGELOG dated; README's "whatever answers is what gets
+                pinned" replaced with the review and the ssh-keygen compare
+                command; docs/architecture.md's stale fail-open paragraph
+                corrected as well.
+📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
+🚀 SHIP       ⬜ tag block to hand to the user once the commit is approved.
+
+### The finding in my own diff, and why it mattered
+
+asyncssh parses `<type> <blob> <anything>` as a key plus a comment, so a host
+answering ssh-keyscan with a trailing field still produces a VALID
+fingerprint. The old code took `split(None, 2)[2]` — the whole rest of the
+line — and wrote it into a known_hosts line, where a space starts a new field.
+The new confirm route's validator rejects whitespace, so the two halves would
+have disagreed: a fingerprint displayed as fine, then a 422 on accept. Cut at
+the parse instead, so display and storage agree. Covered by
+test_a_trailing_field_on_a_scanned_key_is_cut_off.
+
+### Residuals, recorded not fixed
+
+- store_host_keys() loops add_known_host(), each committing on its own. Every
+  fingerprint is validated before ANY key is stored, so the reachable failure
+  is covered; a mid-loop sqlite error could still leave a partial pin. Would
+  need a transaction in database.py to close properly.
+- /confirm lets an admin pin an arbitrary well-formed key for an arbitrary
+  endpoint. Not an escalation: host trust is admin-owned by design and the
+  README says so. Worth knowing it is now reachable with a chosen key rather
+  than only with whatever a host returned.
 
 ## 0.1.0-dev.17 — RELEASED AND VERIFIED
 

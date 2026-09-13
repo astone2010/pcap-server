@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.1.0-dev.20 — 2026-09-13
+
+### Changed
+
+- **Trusting a host now shows you what you are trusting.** Pressing "Trust
+  host" ran `ssh-keyscan` and stored every key it got back, in one step. The
+  operator was shown nothing and asked only whether they had meant to press the
+  button, so "trust this host" meant "pin whatever answers on that address right
+  now" -- which is the exact substitution host key verification exists to catch.
+  A verification step nobody can perform is ceremony, not security.
+
+  It is two steps now, the way `ssh` itself has always done it: you are shown
+  each key's SHA256 fingerprint and you accept or cancel.
+
+  - `POST /api/admin/known-hosts/scan` is **no longer mutating**. It asks the
+    host for its keys, returns each one with its fingerprint, and stores
+    nothing. Scanning can no longer change what this server trusts.
+  - `POST /api/admin/known-hosts/confirm` is new, and pins the keys handed back
+    to it. It does **not** re-scan: what it stores is what was on screen when
+    the operator said yes. Re-scanning on confirm would reopen the hole the
+    review was meant to close, since a key swapped between the display and the
+    acceptance would be pinned with nobody having seen it.
+
+  Fingerprints are in OpenSSH's own format, so they compare directly against
+  `ssh-keygen -lf` run on the target -- which is the detail that makes the
+  feature usable rather than decorative. The README gives the one-line command
+  that prints all of them.
+
+  A key that cannot be parsed cannot be fingerprinted, so it cannot be
+  reviewed: it is listed as unreadable, left out of what is accepted, and
+  refused by the confirm route as well rather than trusted to have been
+  filtered by the UI.
+
+- Admin → Known Hosts labels the button for an already-trusted host **Review
+  keys** rather than "Rescan", which described what the old one-step scan did
+  to the store.
+
+### Fixed
+
+- `docs/architecture.md` still described the fail-open host key behaviour that
+  0.1.0-dev.17 replaced -- it claimed an unverified host connects unchecked.
+  It is refused, as the README has said since that release.
+
 ## 0.1.0-dev.19 — 2026-09-13
 
 ### Fixed
