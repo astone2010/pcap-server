@@ -1,8 +1,8 @@
 # Dev Skills gate state
-Track: release sequence — 0.1.0-dev.27, gates 1-4 ✅, awaiting commit+push
-Version: 0.1.0-dev.27. Last RELEASED is 0.1.0-dev.26; tag v0.1.0-dev.26
-         confirmed on the remote (tag object db6b318, ^{} -> 44b7375 = branch
-         head at the time).
+Track: 0.1.0-dev.27 CLOSED AND SHIPPED. All six gates + all four post-ship
+       checks verified. Next cycle is dev.28; nothing opened yet.
+Version: 0.1.0-dev.27 (RELEASED 2026-09-13). Tag v0.1.0-dev.27 confirmed on
+         the remote: object b63c695, ^{} -> d70e47b = branch head.
 Updated: 2026-09-13 (session: local CLI, Fedora 44, bash)
 Branch: claude/admiring-wright-k20ptf — canonical.
 Environment: LOCAL Claude Code CLI — Claude PRESENTS git commands, the user
@@ -31,13 +31,41 @@ Model: Opus 5, above the Sonnet ceiling; the user approved staying on it.
                 docs/Caddyfile.example new; nginx-proxy-manager.md rewritten;
                 architecture.md and security.md carry the directory-permissions
                 fact; compose header rewritten.
-📦 RELEASE    ⏳ commit approved by the user ("yes commit and push 27").
+📦 RELEASE    ✅ commit d70e47b, pushed to origin and VERIFIED by ls-remote:
+                refs/heads/claude/admiring-wright-k20ptf = d70e47b = local
+                HEAD, 0 unpushed. 21 files.
+                EXECUTED BY CLAUDE, not presented -- the user was away from
+                their desk and explicitly asked ("I want you to do the the
+                commit and push"). That overrides SKILL.md 5.8's presentation
+                DEFAULT for a local session; it does not touch the tag rule.
                 ➖ PR — N/A: no PR workflow in this repo, `git log --merges` is
                 empty across its whole history.
-🚀 SHIP       ⬜ tag is the user's to push (SKILL.md 5.8). Confirm with
-                `git ls-remote origin "refs/tags/v0.1.0-dev.27^{}"` and check
-                it resolves to the branch head -- the tag OBJECT sha is not the
-                commit sha.
+🚀 SHIP       ✅ tagged and published by the USER, verified from the remote:
+                  * tag object b63c695; refs/tags/v0.1.0-dev.27^{} -> d70e47b,
+                    which EQUALS the branch head. Both halves checked -- the
+                    tag object sha is not the commit sha.
+                  * Release workflow 34773044743 completed/success. "Build and
+                    push image" and "Create GitHub Release" both green.
+                  * GitHub Release v0.1.0-dev.27 (Dev) exists, prerelease,
+                    published 2026-09-13T17:56:27Z.
+                  * CI fired the expected THREE runs again: Check on the branch
+                    push (success), then Check + Release on the tag push. Known
+                    and declined -- see the standing constraints.
+
+                  * BOTH IMAGE TAGS RESOLVE TO ONE MANIFEST. Run by the user
+                    on their docker host (this sandbox cannot -- DNS for
+                    pkg-containers.githubusercontent.com does not resolve, and
+                    the gh token lacks read:packages):
+                      :0.1.0-dev.27 -> 14974fbb4de5467ce7dbd9a2971cdbb1f7af3ae9
+                      :dev          -> same
+                    ALL FOUR POST-SHIP CHECKS DONE.
+
+                ⚠️ TRAP WORTH REMEMBERING for the next release. Piping a FAILED
+                `docker manifest inspect` into sha256sum yields
+                e3b0c44298fc1c14... for every tag -- that is the hash of an
+                EMPTY STRING. It looks exactly like a clean match and means the
+                command produced no output. Check the hash is not e3b0c442
+                before believing a digest comparison.
 
 ## 0.1.0-dev.27 — what changed
 
