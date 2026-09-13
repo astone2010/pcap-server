@@ -338,6 +338,16 @@ body {
     border-bottom-color: var(--accent);
 }
 
+/* Admin is a toolbar button rather than a tab, so it cannot show selection the
+   way the tab bar does. Given the accent as a filled state instead: the panel
+   it opens takes over the whole window, and nothing else on screen would say
+   which one you are looking at. */
+#admin-tab.active {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: var(--accent);
+}
+
 /* One tab per capture open in the Viewer, growing to the right of the fixed
    tabs. It scrolls rather than wrapping: the bar is a fixed-height strip above
    a full-height panel, and a second row of tabs would push the packet list

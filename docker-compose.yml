@@ -1,41 +1,57 @@
 # ============================================================================
-# FIRST-TIME SETUP -- run these in order. Copy-pasteable as written.
+# FIRST-TIME SETUP
 # ============================================================================
+#
+# Put this file in the directory you want the install to live in -- that
+# directory IS the install; see "Where the paths resolve" below -- then paste
+# this block into a terminal standing in it. Every line is explained underneath.
+#
+#     mkdir -p ssh-keys data captures secrets
+#     chmod 0700 ssh-keys data captures secrets
+#     openssl rand -base64 32 > secrets/master.key
+#     chmod 0400 secrets/master.key
+#     docker compose up -d
+#     docker compose ps
+#     docker compose logs pcap-server | grep -i encryption
+#
+# You want `encryption enabled (key id ...)` from that last line, and `running`
+# -- not `restarting` -- from `docker compose ps`. Then open
+# http://<host>:8080 and create the admin account. Have an authenticator app to
+# hand: TOTP enrolment is part of creating it.
+#
+# ----------------------------------------------------------------------------
+# WHAT EACH LINE IS FOR
+#
+#   mkdir       The four directories this file bind-mounts. All four must exist
+#               BEFORE the first start, or Docker creates them itself as
+#               root-owned -- or creates a directory where you meant a file.
+#
+#   chmod 0700  Closes them to other accounts on this host. Not belt-and-braces:
+#               at a default umask they are world-readable, and data/ holds the
+#               SQLite database, which stores every user's TOTP secret as plain
+#               text because the app has to compute codes from it. Anyone who
+#               can read that file can produce a valid second factor for any
+#               account. Password hashes are scrypt and sessions are kept as
+#               digests, so those are a slower problem; the TOTP seeds are the
+#               immediate one.
+#
+#   openssl     The master key, generated once, before the first start. The app
+#               refuses to start without one rather than storing captures in the
+#               clear. 0400 because it is the one file that opens all the rest.
+#
+# ----------------------------------------------------------------------------
+# WHERE THE PATHS RESOLVE
 #
 # Every `./` path below is resolved by Docker relative to THE DIRECTORY THIS
 # FILE IS IN -- not your home directory, and not wherever you happen to be
 # standing when you type `docker compose`. So this file's location IS the
-# install directory, and the four subdirectories it names are created next to
-# it. Pick that directory deliberately: it will hold your captures and the key
-# that decrypts them.
+# install directory, and the four subdirectories sit next to it. Pick that
+# directory deliberately: it will hold your captures and the key that decrypts
+# them. /opt/docker/pcap is a reasonable choice on a Linux host:
 #
-#   1. Make the install directory and go there. /opt/docker/pcap is a
-#      reasonable choice on a Linux host; anywhere you control is fine.
-#
-#        sudo mkdir -p /opt/docker/pcap
-#        sudo chown "$USER" /opt/docker/pcap
-#        cd /opt/docker/pcap
-#
-#   2. Put this file in that directory, named docker-compose.yml.
-#
-#   3. Create the four directories it bind-mounts. They must exist before the
-#      first start -- Docker would otherwise create them as root-owned, or
-#      create a directory where you meant a file:
-#
-#        mkdir -p ssh-keys data captures secrets
-#
-#   4. Generate the master key ONCE, before the first start:
-#
-#        openssl rand -base64 32 > secrets/master.key
-#        chmod 0400 secrets/master.key
-#
-#   5. Start it, from this same directory:
-#
-#        docker compose up -d
-#        docker compose logs pcap-server | grep -i encryption
-#
-#      You want `encryption enabled (key id ...)`. Then open http://<host>:8080
-#      and create the admin account.
+#     sudo mkdir -p /opt/docker/pcap
+#     sudo chown "$USER" /opt/docker/pcap
+#     cd /opt/docker/pcap
 #
 # Run every later `docker compose` command from this directory too. Run it from
 # somewhere else and Docker looks for a compose file that isn't there -- or, if
@@ -60,8 +76,12 @@
 # start against captures the new key cannot open. Rotate it properly --
 # see "Rotating the master key" in the README.
 #
-# The entrypoint automatically fixes ownership for the container's
-# non-root user (appuser, UID 1000). No manual chown needed.
+# OWNERSHIP. On each start the entrypoint chowns ssh-keys/, data/ and captures/
+# to the container's non-root user (appuser, UID 1000), because a bind mount
+# arrives with whatever the host gave it. No manual chown needed -- but note
+# that if your host account is NOT UID 1000, those three stop belonging to you
+# after the first start and need sudo to inspect. secrets/ is left alone: the
+# Docker daemon reads the key as root before the container exists.
 #
 # SSH keys are managed via the Admin panel in the web UI.
 #
@@ -69,7 +89,7 @@
 
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.26
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.27
     ports:
       - "8080:8080"
     volumes:

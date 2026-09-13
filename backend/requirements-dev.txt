@@ -1,6 +1,16 @@
 -r requirements.txt
-pytest==8.3.4
-pytest-asyncio==0.25.2
+# 8.3.4 carried PYSEC-2026-1845. Dev-only -- the Dockerfile installs
+# requirements.txt, so pytest was never in the shipped image -- but a scanner
+# flagging the repo cannot tell that, and an advisory nobody can close is an
+# advisory everybody learns to scroll past.
+#
+# pytest 9 drags pytest-asyncio with it: 0.25.2 pins pytest<9, so the two move
+# together or not at all. Both suites were run against the pair before this was
+# committed -- 929 API and 134 browser tests, no failures and no new warnings.
+# asyncio_mode = "auto" and the function-scoped fixture loop in pyproject.toml
+# are unchanged and still honoured.
+pytest==9.0.3
+pytest-asyncio==1.4.0
 httpx==0.28.1
 
 # The browser suites (tests/browser) drive the real UI in a real chromium: the

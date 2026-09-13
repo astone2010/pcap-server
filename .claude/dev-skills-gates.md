@@ -1,44 +1,155 @@
 # Dev Skills gate state
-Track: release sequence — 0.1.0-dev.26 (OPEN, nothing done yet)
-Version: 0.1.0-dev.25 is the last RELEASED version (tag v0.1.0-dev.25 -> dc65ae4,
-         confirmed on the remote by ls-remote this session).
+Track: release sequence — 0.1.0-dev.27, gates 1-4 ✅, awaiting commit+push
+Version: 0.1.0-dev.27. Last RELEASED is 0.1.0-dev.26; tag v0.1.0-dev.26
+         confirmed on the remote (tag object db6b318, ^{} -> 44b7375 = branch
+         head at the time).
 Updated: 2026-09-13 (session: local CLI, Fedora 44, bash)
-Branch: claude/admiring-wright-k20ptf — canonical, in sync with origin at
-        bf4a42a. Working tree clean at session start.
+Branch: claude/admiring-wright-k20ptf — canonical.
 Environment: LOCAL Claude Code CLI — Claude PRESENTS git commands, the user
         runs them (SKILL.md 5.8). Not a container.
-Model: session is on Opus 5, ABOVE the Sonnet ceiling (SKILL.md 5.2). Flagged to
-        the user at session start; awaiting their call.
+Model: Opus 5, above the Sonnet ceiling; the user approved staying on it.
 
-## 0.1.0-dev.26 tracker
+## 0.1.0-dev.27 tracker
 
-🔢 VERSION    ✅ 0.1.0-dev.26 in all FIVE places: backend/main.py:80,
-                docker-compose.yml:72, CHANGELOG heading, README.md:123
-                (Quick start curl), README.md:201 (version table),
-                README.md:217 (Upgrading curl).
-                v0.1.0-dev.25 confirmed tagged on the remote (ls-remote ->
-                dc65ae4).
-🔨 BUILD      ✅ ./scripts/check.sh on this host: 1055 passed, 0 failed,
-                0 SKIPPED, 5m48s, exit 0. Baseline dev.25 was 972; +83 = the
-                tests added this session. Ran LOCALLY, no container.
-                Run three times this session; 1055 is the final figure.
-🔒 SECURITY   ✅ shipped code: 0 Critical, 0 High. Details below.
-                RE-RUN after the MFA-reset and cap work landed; 1055 passed.
-                ONE OPEN ITEM, dev-only: pip-audit reports PYSEC-2026-1845
-                against pytest 8.3.4 (fix: 9.0.3). pytest is in
-                requirements-dev.txt only and the Dockerfile installs
-                requirements.txt, so it is NOT in the shipped image. Offered
-                the bump; it is a major version jump and was not taken during
-                the release. Re-raise at the start of dev.27.
-📄 DOCS       ✅ CHANGELOG entry for 0.1.0-dev.26; README rewritten for the
-                Quick start, the name requirement, the confirm dialog, saved
-                filters, the filter badge, capture tabs and the theme;
-                docs/architecture.md updated for the new tables, the per-user
-                scoping rule and bpf_filter-on-the-record.
-📦 RELEASE    ⬜
-🚀 SHIP       ⬜
+🔢 VERSION    ✅ 0.1.0-dev.27 in SEVEN places now, not five.
+                ⚠️ TWO NEW REFS THIS RELEASE: docs/reverse-proxy.md carries the
+                image tag TWICE (the Caddy sidecar compose and the NPM sidecar
+                compose). Full list: backend/main.py:80, docker-compose.yml:92,
+                CHANGELOG heading, README.md:127 (Quick start curl),
+                README.md:222 (version table), README.md:238 (Upgrading curl),
+                docs/reverse-proxy.md:105 and :269.
+                Check: grep -rn "0\.1\.0-dev\.26" excluding .git, .venv and
+                CHANGELOG. A bump that misses the docs ones ships sidecar
+                examples pinned to the previous image.
+🔨 BUILD      ✅ ./scripts/check.sh locally: 1063 passed, 0 failed, 0 SKIPPED,
+                3m16s, exit 0. dev.26 baseline was 1055; +8 = the live-control
+                and Admin-placement tests.
+🔒 SECURITY   ✅ 0 Critical, 0 High. pip-audit: "No known vulnerabilities
+                found" -- PYSEC-2026-1845 is CLOSED this release, not deferred
+                again (see below).
+📄 DOCS       ✅ CHANGELOG entry for dev.27; docs/reverse-proxy.md and
+                docs/Caddyfile.example new; nginx-proxy-manager.md rewritten;
+                architecture.md and security.md carry the directory-permissions
+                fact; compose header rewritten.
+📦 RELEASE    ⏳ commit approved by the user ("yes commit and push 27").
+                ➖ PR — N/A: no PR workflow in this repo, `git log --merges` is
+                empty across its whole history.
+🚀 SHIP       ⬜ tag is the user's to push (SKILL.md 5.8). Confirm with
+                `git ls-remote origin "refs/tags/v0.1.0-dev.27^{}"` and check
+                it resolves to the branch head -- the tag OBJECT sha is not the
+                commit sha.
 
-## 0.1.0-dev.26 — what shipped
+## 0.1.0-dev.27 — what changed
+
+1. setLiveControls(live) gates .live-bar-actions. The live bar still shows on a
+   saved live-streamed capture; its BUTTONS do not. Called from startLiveView
+   (true), viewCapture's stored path (false), and settleFinishedCapture (false,
+   BEFORE the completed/failed branch so a FAILED capture loses them too).
+   Hidden not disabled: on a finished capture there is no "why" for a disabled
+   button to invite. Reported by the user testing dev.26.
+2. Admin is a TOOLBAR BUTTON (#admin-tab, .btn, data-tab="admin"), not a tab.
+   activatePanel selects on `[data-tab], .tab`; initTabs attaches a direct
+   listener because .tab-bar delegation cannot reach outside the bar.
+   THREE test files referenced `.tab[data-tab='admin']` -> now `#admin-tab`.
+3. docs/reverse-proxy.md + docs/Caddyfile.example, and the NPM guide rewritten
+   for a SHARED, PRE-EXISTING NPM rather than one stood up for this app.
+4. chmod 0700 in the Quick start and the compose header.
+5. pytest 8.3.4 -> 9.0.3 AND pytest-asyncio 0.25.2 -> 1.4.0.
+
+### SECURITY — 0.1.0-dev.27
+
+- NO new routes, NO new database columns, NO schema change, NO new runtime
+  dependency. The app's attack surface is unchanged by this release.
+- The two code changes are both frontend visibility logic. setLiveControls
+  toggles one element's `hidden`; the Admin move changes which element carries
+  a class. Neither touches auth, capture data, or any request.
+- THE ONE REAL SECURITY CONTENT IS DOCUMENTATION, and it is a live finding:
+  the entrypoint chowns ssh-keys/, data/ and captures/ to appuser but sets NO
+  MODE, so at a default umask they are world-readable. data/ holds the SQLite
+  database, which stores totp_secret AS PLAIN TEXT (database.py:264 writes the
+  raw secret; the app must compute codes from it). Any local account that can
+  read that file can mint a valid second factor for every user, indefinitely.
+  Password hashes are scrypt and sessions are SHA-256 digests, so those are an
+  offline-cracking problem rather than an immediate one.
+  Fixed for NEW installs via chmod 0700 in the Quick start + compose header,
+  and written up in docs/security.md ("The data directory") and
+  architecture.md. EXISTING INSTALLS ARE STILL 0755 -- see dev.28 queue.
+  An earlier draft justified the chmod partly with "the encryption salt";
+  that was WRONG and was corrected before commit. crypto.py:334 says outright
+  the salt is not secret. The TOTP seeds are the reason.
+- pip-audit clean. PYSEC-2026-1845 (pytest 8.3.4) is closed by the bump rather
+  than carried. It was dev-only -- the Dockerfile installs requirements.txt --
+  but an advisory nobody can close is one everybody learns to scroll past.
+  pytest 9 required pytest-asyncio 1.4.0 because 0.25.2 pins pytest<9. BOTH
+  SUITES were run against the pair before committing: 929 API + 134 browser,
+  no failures, no new warnings. asyncio_mode="auto" and the function-scoped
+  fixture loop in pyproject.toml are unchanged and still honoured.
+
+### DECLINED this session — do not re-raise
+
+Wiring the NPM management page into pcap-server's Admin tab. Three shapes were
+considered and all refused:
+  * iframe -- blocked by default-src 'self' anyway, but the real objection is
+    that it trains people to type another app's credentials into a frame this
+    app serves.
+  * a link -- 127.0.0.1:81 resolves to the BROWSER's machine, not the host, so
+    it is wrong in exactly the deployment that needs it.
+  * pcap-server reverse-proxying NPM at /npm/ -- couples two trust domains (any
+    pcap-server admin session becomes NPM admin), is SSRF by construction, and
+    defeats the loopback bind that was the point.
+The real need is answered in docs/reverse-proxy.md: SSH tunnel for setup, a
+management-interface bind, or NPM behind itself with an Access List.
+
+Also reverted this session: a `docs` URL map on /api/auth/status, added on a
+MISREADING of "wire the page into the admin". backend/main.py is byte-identical
+to HEAD. Do not re-add it unless asked.
+
+## Queued for 0.1.0-dev.28
+
+1. ACME/certbot integration. THE PLAN IS docs/acme-plan.md, committed with
+   dev.27 -- read it first, it has the Termix findings and the decisions
+   already taken. Headlines:
+     * uvicorn terminates TLS; NO bundled nginx (we have one process).
+     * SEAL THE TLS PRIVATE KEY under the master key -- the user's decision,
+       2026-09-13. Termix leaves privkey.pem in plaintext on the volume; we do
+       not. Implies decrypting to a tmpfs/-/run path at startup, which implies
+       a compose-file change to the TAG-PINNED file people fetch.
+     * DNS-01 is the documented default; a capture box is usually internal.
+     * OPEN QUESTION 1: passphrase mode vs built-in TLS. A locked vault has no
+       key to open at startup. Decide: loud HTTP fallback, or refuse the
+       combination outright.
+     * OPEN QUESTION 2, and the sharpest one: you configure ACME while still
+       on plain HTTP, which is exactly when the app is read-only. The admin
+       ACME routes would have to join _INSECURE_ALLOWED_PATHS. That needs its
+       own justification and probably a local-connection restriction.
+     * Validate domain and email HARD. Termix does not, and both land in argv
+       after -d; a value starting with `-` is argument injection into
+       certbot's parser.
+2. Existing installs still have 0755 on data/. A startup check that warns when
+   DATA_DIR is group- or world-readable would cover the installs the Quick
+   start fix cannot reach. NOT YET RAISED WITH THE USER -- offer it.
+
+
+
+1. The Stop capture button is offered on a SAVED capture. The live bar is
+   shown for any capture with live_stream set, including completed ones, so
+   Stop and Follow are both live on a finished capture -- and stopLiveCapture()
+   returns early with no live capture id, so the button silently does nothing.
+   Reported by the user after testing dev.26.
+2. Move Admin off the tab bar and into the toolbar, beside the version link,
+   the GitHub link and Logout. It is a destination, not a working tab.
+3. Reverse-proxy setup: worked examples for Caddy, nginx AND Nginx Proxy
+   Manager, written as a setup procedure rather than a config reference.
+4. The NPM doc assumed you would stand NPM up FOR pcap-server, on a shared
+   Docker network. Wrong: NPM is a proxy people already run, usually on
+   another machine, and pcap-server is one more proxy host on it.
+5. Link the author's own posts where they answer the prerequisite:
+   NPM -> ramblingnonsense.nscriven.net/p/its-a-secret-to-everybody
+   SSH keys -> ramblingnonsense.nscriven.net/p/stop-using-passwords-for-ssh
+
+## 0.1.0-dev.26 — CLOSED AND SHIPPED 2026-09-13
+
+All six gates ✅. Tag confirmed on the remote (above). What shipped:
 
 Eight changes, from two batches the user queued in one session:
 

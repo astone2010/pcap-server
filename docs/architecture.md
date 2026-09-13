@@ -540,6 +540,21 @@ cannot do TLS would lock operators out of their own tool.
 | `/app/ssh-keys` | SSH private keys | Uploaded through the Admin panel |
 | `/run/secrets/…` | Master key | Deliberately **not** on a data volume |
 
+**Host-side modes are the operator's to set, and `data/` is the one that
+matters.** On each start the entrypoint chowns `ssh-keys/`, `data/` and
+`captures/` to `appuser` (UID 1000) so a bind mount from the host is writable;
+it does not set a mode, so they keep whatever the host's umask gave them —
+`0755` by default. The database stores each user's **TOTP secret as plain
+text**, because codes have to be computed from it, so a world-readable `data/`
+hands over a working second factor for every account. Password hashes are
+scrypt and session tokens are stored only as digests, so those degrade to an
+offline-cracking problem rather than an immediate one; the TOTP seeds do not.
+The Quick start therefore creates all four directories `0700`.
+
+Captures and stored SSH keys are sealed, so their directories leak metadata
+rather than contents. `secrets/` is never chowned — the Docker daemon reads the
+master key as root before the container exists.
+
 Tables: `users`, `sessions`, `trusted_devices`, `active_servers`, `known_hosts`,
 `known_usernames`, `captures`, `capture_views`, `custom_filters`, `settings`.
 

@@ -527,3 +527,85 @@ async def test_an_unfiltered_capture_claims_nothing_about_its_filter(app_page):
 async def test_the_capture_name_is_still_the_heading(app_page):
     text = await _label_for(app_page, _viewed())
     assert text.startswith("Capture: slow logons (cap-1)")
+
+
+# --- the live bar's controls belong to a live capture -------------------------
+#
+# The bar itself is shown for any capture that was live streamed, finished ones
+# included: "this was watched as it recorded" is worth saying about a stored
+# capture. Its BUTTONS are not. Stop on a saved capture is offered against
+# nothing -- stopLiveCapture() returns early with no live capture id, so it
+# silently did nothing, which is worse than a control that is not there.
+
+
+async def _stored_live_streamed(page, status="completed"):
+    """Open a capture that WAS live streamed and has since been saved."""
+    await page.evaluate(
+        """(status) => {
+            captures = [{
+                id: 'stored', name: 'finished', server_id: 's1',
+                server_label: 'web-01', interface: 'eth0',
+                status: status, live_stream: true, bpf_filter: 'tcp port 445',
+            }];
+            openCaptures = ['stored'];
+            viewingCaptureId = 'stored';
+            renderCaptureTabs();
+            activatePanel('viewer');
+            document.getElementById('packet-viewer').hidden = false;
+            document.getElementById('live-bar').hidden = false;
+            setLiveControls(false);
+        }""",
+        status,
+    )
+    await page.wait_for_selector("#live-bar:not([hidden])")
+
+
+async def _live_bar(page):
+    """The bar as it looks while packets are still arriving. The panel has to be
+    activated too -- a control inside a display:none panel is hidden whatever
+    its own attribute says, which is not what these tests are asking about."""
+    await page.evaluate(
+        """() => {
+            activatePanel('viewer');
+            document.getElementById('packet-viewer').hidden = false;
+            document.getElementById('live-bar').hidden = false;
+            setLiveControls(true);
+        }"""
+    )
+    await page.wait_for_selector("#btn-live-stop", state="visible")
+
+
+async def test_a_saved_capture_does_not_offer_stop(app_page):
+    await _stored_live_streamed(app_page)
+    assert await app_page.is_hidden("#btn-live-stop")
+
+
+async def test_a_saved_capture_does_not_offer_follow(app_page):
+    """Nothing left to follow once the list is complete. A checkbox that
+    changes nothing is the same bug in miniature."""
+    await _stored_live_streamed(app_page)
+    assert await app_page.is_hidden("#live-follow")
+
+
+async def test_the_bar_itself_still_shows_on_a_saved_live_stream(app_page):
+    """The controls go, the bar stays: that the capture was watched as it
+    recorded is a fact about the capture, not about its state."""
+    await _stored_live_streamed(app_page)
+    assert await app_page.is_visible("#live-bar")
+
+
+async def test_a_running_capture_does_offer_stop(app_page):
+    """The other half of the rule. A test that only asserted the hiding would
+    pass with the controls hidden always."""
+    await _live_bar(app_page)
+    await app_page.wait_for_selector("#btn-live-stop", state="visible")
+    assert await app_page.is_visible("#live-follow")
+
+
+async def test_opening_a_saved_capture_clears_controls_left_over_from_a_live_one(app_page):
+    """The order that actually bites: watch one capture live, then open a saved
+    one. Without the clear on the stored path the buttons carried over."""
+    await _live_bar(app_page)
+    await app_page.wait_for_selector("#btn-live-stop", state="visible")
+    await _stored_live_streamed(app_page)
+    assert await app_page.is_hidden("#btn-live-stop")

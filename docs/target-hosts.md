@@ -94,6 +94,12 @@ capture times out.
 If you would rather not open a `NOPASSWD` grant at all, use the `setcap` route
 above — it needs no sudo and no password, and it grants less.
 
+> **Not set up for key-based SSH yet?** This project's author has written a
+> guide to moving off passwords entirely:
+> **[Stop Using Passwords for SSH](https://ramblingnonsense.nscriven.net/p/stop-using-passwords-for-ssh)**.
+> pcap-server needs that to be true of every host you capture from — there is
+> no password path for it to fall back on.
+
 **Scope the grant to tcpdump. Do not make the account blanket-passwordless.**
 Searching for "passwordless sudo" turns up this rule almost everywhere, and it
 is the wrong one here:

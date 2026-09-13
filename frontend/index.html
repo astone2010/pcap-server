@@ -122,6 +122,14 @@
         <span class="logo">pcap-server</span>
         <span class="spacer"></span>
         <span id="user-display" style="font-size:0.8125rem;color:var(--text-secondary)"></span>
+        <!-- Admin lives up here with the version, the source link and Logout,
+             not on the tab bar. The tab bar is the work: the servers you
+             capture from, the capture you are setting up, and the captures you
+             have open. Admin is somewhere you go occasionally to change how
+             the app runs, and it kept the seat next to Capture warm for
+             something that belonged there. Still driven by data-tab, so
+             activatePanel and selectStaticTab reach it exactly as before. -->
+        <button id="admin-tab" class="btn btn-sm btn-secondary" data-tab="admin" hidden>Admin</button>
         <a id="version-link" class="repo-link" href="#" target="_blank" rel="noopener noreferrer"
            title="Release notes for the running version"></a>
         <a id="repo-link" class="repo-link" href="#" target="_blank" rel="noopener noreferrer"
@@ -129,15 +137,14 @@
         <button id="theme-toggle" class="btn btn-sm btn-secondary"></button>
         <button id="btn-logout" class="btn btn-sm btn-secondary">Logout</button>
     </div>
-    <!-- The three fixed tabs, then one tab per capture open in the Viewer.
+    <!-- Two fixed tabs, then one tab per capture open in the Viewer.
          There is no standing "Viewer" tab: it spent most of a session leading
          to an empty panel, and a tab that is usually empty teaches people not
          to press it. Opening a capture creates its tab; closing the last one
-         takes the Viewer off the bar again. -->
+         takes the Viewer off the bar again. Admin is in the toolbar above. -->
     <div class="tab-bar">
         <div class="tab active" data-tab="servers">Servers</div>
         <div class="tab" data-tab="capture">Capture</div>
-        <div class="tab" data-tab="admin" id="admin-tab" hidden>Admin</div>
         <div id="capture-tab-strip" class="capture-tab-strip"></div>
     </div>
     <div class="main-content">

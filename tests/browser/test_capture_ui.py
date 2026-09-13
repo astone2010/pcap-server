@@ -45,17 +45,45 @@ async def _open_library(page):
     await page.wait_for_selector("#filter-library .filter-group")
 
 
-async def test_the_tab_bar_no_longer_has_a_filters_tab(app_page):
-    """One fewer place to go. The library is not a destination any more.
+async def test_the_tab_bar_is_only_the_work(app_page):
+    """What is left on the bar is what you are doing: the servers you capture
+    from, the capture you are setting up, and the captures you have open.
 
-    Nor is the Viewer: it has no standing tab either, because it led to an
-    empty panel for most of a session. Captures open as tabs of their own --
-    see the capture-tab section at the end of this file.
+    Three things came off it. The filter library was a tab and is now a
+    collapsible under the field it fills. The Viewer had a standing tab that
+    led to an empty panel most of a session; captures open as tabs of their own
+    instead. And Admin moved to the toolbar -- it is somewhere you go
+    occasionally to change how the app runs, not something you work in.
     """
     labels = await app_page.eval_on_selector_all(
-        ".tab:not([hidden])", "els => els.map(e => e.textContent.trim())"
+        ".tab-bar .tab:not([hidden])", "els => els.map(e => e.textContent.trim())"
     )
-    assert labels == ["Servers", "Capture", "Admin"]
+    assert labels == ["Servers", "Capture"]
+
+
+async def test_admin_is_in_the_toolbar_not_the_tab_bar(app_page):
+    assert await app_page.locator(".toolbar #admin-tab").count() == 1
+    assert await app_page.locator(".tab-bar #admin-tab").count() == 0
+
+
+async def test_the_admin_button_still_opens_the_admin_panel(app_page):
+    """It is outside the tab bar, so the delegated handler there cannot reach
+    it and it carries its own listener. That is exactly the kind of wiring that
+    breaks silently."""
+    await app_page.click("#admin-tab")
+    await app_page.wait_for_selector("#panel-admin.active")
+    assert await app_page.is_hidden("#panel-servers")
+
+
+async def test_the_admin_button_shows_that_it_is_selected(app_page):
+    """A toolbar button cannot show selection the way a tab does, and the panel
+    it opens takes over the window -- so nothing else on screen would say which
+    one you are looking at."""
+    await app_page.click("#admin-tab")
+    await app_page.wait_for_selector("#admin-tab.active")
+    await app_page.click(".tab[data-tab='capture']")
+    await app_page.wait_for_selector("#panel-capture.active")
+    assert await app_page.locator("#admin-tab.active").count() == 0
 
 
 async def test_switching_tabs_shows_exactly_one_panel(app_page):

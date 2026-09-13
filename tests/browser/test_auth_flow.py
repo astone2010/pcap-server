@@ -160,7 +160,7 @@ async def test_the_page_declares_an_icon(page):
 
 async def test_enter_in_the_add_user_box_creates_the_user(app_page, api_client):
     """The Admin panel's Add user box is a form like any other."""
-    await app_page.click(".tab[data-tab='admin']")
+    await app_page.click("#admin-tab")
     await app_page.wait_for_selector("#panel-admin.active")
     await app_page.fill("#admin-new-username", "second-operator")
     await app_page.fill("#admin-new-password", "another-long-passphrase")

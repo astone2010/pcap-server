@@ -302,7 +302,7 @@ async def test_returning_to_the_servers_tab_refetches_the_list(app_page):
 
     app_page.on("request", note)
 
-    await app_page.click('.tab[data-tab="admin"]')
+    await app_page.click("#admin-tab")
     await app_page.click('.tab[data-tab="servers"]')
 
     for _ in range(30):
@@ -321,7 +321,7 @@ async def test_a_refetch_keeps_the_open_server_highlighted(app_page):
     await app_page.click(f"#server-list .server-item")
     await app_page.wait_for_selector("#server-list .server-item.active")
 
-    await app_page.click('.tab[data-tab="admin"]')
+    await app_page.click("#admin-tab")
     await app_page.click('.tab[data-tab="servers"]')
     await app_page.wait_for_timeout(400)
 

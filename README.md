@@ -29,6 +29,7 @@ full, for when you need it.
 | [Filters](docs/filters.md) | The two filter languages in full, building one by clicking, and the ways a capture filter records nothing |
 | [Streaming a capture live](docs/live-streaming.md) | Why a live stream needs a target, what it costs, and the two limits on it |
 | [Security](docs/security.md) | Encryption at rest, transport policy, sign-in, what runs on the target, and what is *not* protected |
+| [Reverse proxy setup](docs/reverse-proxy.md) | Getting it behind TLS — Caddy, nginx or Nginx Proxy Manager, external or as a sidecar in this stack, with DNS challenges for hosts that are not exposed |
 | [Operating it](docs/operating.md) | Environment variables, admin settings, sessions, MFA recovery, TLS, rotating the master key |
 | [Architecture](docs/architecture.md) | How it is built: the envelope format, every validator, and why each exists |
 
@@ -84,7 +85,7 @@ the SSH client all live inside the image. It listens on port 8080.
 
 | | |
 | --- | --- |
-| SSH access | key-based. pcap-server never asks for, stores or sends a password for a target host |
+| SSH access | key-based — pcap-server never asks for, stores or sends a password for a target host. Not there yet? [Stop Using Passwords for SSH](https://ramblingnonsense.nscriven.net/p/stop-using-passwords-for-ssh) |
 | `tcpdump` | installed. The prerequisite check finds it and reports the path |
 | Capture privilege | `cap_net_raw` on the tcpdump binary, passwordless sudo scoped to tcpdump, or root — see [Preparing a target host](#preparing-a-target-host) |
 | A writable `/tmp` | the capture is staged there and deleted after transfer |
@@ -123,17 +124,25 @@ cd /opt/docker/pcap
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.26/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.27/docker-compose.yml
 
-# 3. Create the four bind-mounted directories. All four must exist before the
-#    first start: Docker would otherwise create them owned by root.
+# 3. Create the four bind-mounted directories, and close them to other users
+#    on this host. All four must exist before the first start: Docker would
+#    otherwise create them owned by root.
+#
+#    0700 is not belt-and-braces. At the default umask these are world-readable,
+#    and data/ holds the SQLite database -- which stores every user's TOTP
+#    secret as plain text, because the app has to compute codes from it. Anyone
+#    who can read that file can generate a valid second factor for any account,
+#    for as long as the secret stands. Password hashes are scrypt and sessions
+#    are stored as digests, so those are a slower problem; the TOTP seeds are
+#    the immediate one.
 mkdir -p ssh-keys data captures secrets
+chmod 0700 ssh-keys data captures secrets
 
 # 4. The master key. Generated once, before the first start -- the app refuses
-#    to start without it rather than storing captures in the clear.
-#
-#    Ownership inside the container is not your problem: the entrypoint hands
-#    the mounts to its own non-root user (appuser, UID 1000) on each start.
+#    to start without it rather than storing captures in the clear. It is the
+#    one file that opens all the others, so it is owner-read-only.
 openssl rand -base64 32 > secrets/master.key
 chmod 0400 secrets/master.key
 
@@ -142,6 +151,16 @@ docker compose up -d
 docker compose ps                                      # State should read "running"
 docker compose logs pcap-server | grep -i encryption   # encryption enabled (key id ...)
 ```
+
+**About ownership.** On the first start the entrypoint hands `ssh-keys/`,
+`data/` and `captures/` to the container's own non-root user — `appuser`, UID
+1000 — because a bind mount arrives with whatever the host gave it. If your own
+account is UID 1000, which it is on most single-user Linux installs, nothing
+changes for you. If it is not, those three directories stop belonging to you
+after the first start and you will need `sudo` to look inside them. That is the
+chown's doing, not the `chmod`; the `chmod` only stops it being silently
+readable by everyone in the meantime. `secrets/` is left alone — Docker's daemon
+reads the key as root before the container starts.
 
 Two things are worth reading rather than skipping. `docker compose ps` should
 show the service **running**, not `restarting` — a container that is looping is
@@ -200,7 +219,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.26` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.27` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -216,7 +235,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcap
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.26/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.27/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -484,8 +503,11 @@ Two things are worth knowing before you read any of it:
 
 - **Over plain HTTP the app is read-only.** It will not start a capture, hand a
   capture over, or change any setting. This is intended, and it is enough to
-  block your first capture — see
-  [Running it without a reverse proxy](docs/operating.md#running-it-without-a-reverse-proxy).
+  block your first capture. **[Setting up a reverse
+  proxy](docs/reverse-proxy.md)** fixes it — Caddy, nginx or Nginx Proxy
+  Manager, each worked start to finish — and
+  [Running it without a reverse proxy](docs/operating.md#running-it-without-a-reverse-proxy)
+  covers what you can still do if you would rather not.
 - **`COOKIE_SECURE=false` is already set** in the published compose file, which
   is what lets sign-in work over plain HTTP at all. Set it back to `true` once
   you are behind TLS.

@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.1.0-dev.27 — 2026-09-13
+
+### Fixed
+
+- **The Stop capture button no longer appears on a saved capture.** The live bar
+  is shown for any capture that was live streamed, finished ones included —
+  that it was watched as it recorded is worth saying about a stored capture. Its
+  *controls* were not gated the same way, so **Stop** and **Follow** were both
+  offered against a capture that had already been saved. Stop then did nothing
+  at all, silently, because there was no live capture for it to act on. Both are
+  now hidden unless packets are actually still arriving, including after a
+  capture fails rather than only after it completes.
+
+### Changed
+
+- **Admin has moved off the tab bar** and up into the toolbar, beside the
+  version, the source link and Logout. The tab bar is the work — the servers you
+  capture from, the capture you are setting up, and the captures you have open.
+  Admin is somewhere you go occasionally to change how the app runs, and it was
+  keeping a seat warm next to Capture.
+
+- **The first-time setup in `docker-compose.yml` is one paste-able block**
+  again, with the explanation underneath rather than wrapped around each line.
+
+- **Setup now sets directory permissions, not just creates the directories.**
+  `chmod 0700 ssh-keys data captures secrets` is part of the Quick start. At a
+  default umask these are world-readable, and `data/` holds the database —
+  which stores every user's TOTP secret as plain text, because codes have to be
+  computed from it. Anyone able to read that file could produce a valid second
+  factor for any account. **Existing installations were not created this way**;
+  check with `ls -ld data` and fix it in place.
+
+- **pytest 8.3.4 → 9.0.3, and pytest-asyncio 0.25.2 → 1.4.0**, closing
+  PYSEC-2026-1845. Test-only: the Dockerfile installs `requirements.txt`, so
+  pytest was never in the shipped image. The two move together because 0.25.2
+  pins `pytest<9`. `pip-audit` is now clean.
+
+### Documentation
+
+- **Reverse proxy setup is its own document**, written as a procedure rather
+  than a config reference: [docs/reverse-proxy.md](docs/reverse-proxy.md). The
+  three settings that actually matter, then Caddy, nginx and Nginx Proxy Manager
+  each worked start to finish, and a checklist for confirming it worked — which
+  includes checking the app is **not** reachable except through the proxy, the
+  one failure with no banner to announce it.
+
+- **Caddy has a worked example for the first time**
+  ([`docs/Caddyfile.example`](docs/Caddyfile.example)). Two of the three
+  settings are already its defaults; it needs one line.
+
+- **The proxy can be part of this stack.** Either Caddy or NPM can run as a
+  service in the same compose file, so the install carries its own TLS and
+  pcap-server publishes no port at all. Includes DNS challenges, for a host with
+  no inbound ports from the internet — and the recommendation inverts there,
+  because stock `caddy:2` ships no DNS provider modules and needs a custom
+  build, while NPM does DNS challenges from its UI.
+
+- **The Nginx Proxy Manager guide was rewritten.** It assumed you would stand
+  NPM up *for* pcap-server on a shared Docker network. NPM is a proxy people
+  already run, usually on another machine — so it now covers the proxy host
+  fields, what actually goes in *Forward Hostname / IP*, how to reach the admin
+  UI when it is bound to loopback, and how to firewall the app's port when the
+  proxy is elsewhere.
+
 ## 0.1.0-dev.26 — 2026-09-13
 
 ### Added

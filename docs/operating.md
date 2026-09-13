@@ -116,6 +116,12 @@ captures are — a key never exists as a plaintext file on disk, and one
 uploaded before encryption was enabled is sealed in place automatically the
 next time the container starts.
 
+The key you upload here is the one that has to be authorised on your target
+hosts. If those are still on password authentication, the author's
+**[Stop Using Passwords for SSH](https://ramblingnonsense.nscriven.net/p/stop-using-passwords-for-ssh)**
+covers getting them onto keys — pcap-server has no password path to fall back
+on, by design.
+
 ## Running it without a reverse proxy
 
 You can run pcap-server with no proxy in front of it, and for a quick look at a
@@ -213,55 +219,30 @@ themselves and need very little configuration — see below.
 
 ## Behind a reverse proxy
 
-Over plain HTTP pcap-server is read-only — see
-[Traffic in transit](security.md#traffic-in-transit),
-[Running it without a reverse proxy](#running-it-without-a-reverse-proxy), and
-the banner the app shows. Putting it behind TLS restores full access. A worked nginx
-config is in [`nginx.conf.example`](nginx.conf.example), and there is a
-separate guide for **[Nginx Proxy Manager](nginx-proxy-manager.md)**, which
-generates its own config and needs different steps. Three settings are
-load-bearing and easy to miss.
+Putting pcap-server behind TLS is what restores full access — over plain HTTP it
+is read-only. **[Setting up a reverse proxy](reverse-proxy.md)** is the whole
+procedure, worked start to finish for
+[Caddy](reverse-proxy.md#caddy), [nginx](reverse-proxy.md#nginx) and
+[Nginx Proxy Manager](reverse-proxy.md#nginx-proxy-manager), with a
+[checklist for confirming it worked](reverse-proxy.md#checking-it-worked).
 
-**1. Tell the app that TLS terminated at the proxy.**
+The proxy does not have to be something external. Either Caddy or NPM can run
+as a service in this stack's own compose file, so the install carries its own
+TLS and pcap-server publishes no port at all — see
+[Running the proxy in the same stack](reverse-proxy.md#running-the-proxy-in-the-same-stack),
+which also covers DNS challenges, for a host with no inbound ports from the
+internet.
 
-```nginx
-proxy_set_header X-Forwarded-Proto $scheme;
-```
+Three settings are load-bearing and easy to miss, whichever proxy you use:
 
-and set `TRUST_PROXY_HEADERS=true` in the container. Without both, pcap-server
-sees a plain-HTTP request and stays read-only. The header is only trusted when
-that variable is set, because anyone can send it.
-
-**2. Do not publish the app port once you trust that header.**
-
-Trusting `X-Forwarded-Proto` means anyone who can reach the app directly can
-claim to be the proxy. Bind it to loopback, or drop `ports:` entirely and put
-nginx on the same Docker network:
-
-```yaml
-    ports:
-      - "127.0.0.1:8080:8080"   # not "8080:8080"
-```
-
-**3. Turn proxy buffering off.**
-
-```nginx
-proxy_buffering off;
-```
-
-A capture download is decrypted on the fly. With buffering on, nginx spools
-large responses to `proxy_temp_path`, which writes an unencrypted copy of the
-pcap onto the proxy's disk — undoing the point of encrypting captures at rest.
-
-One more worth setting: `proxy_set_header X-Forwarded-For $remote_addr;` rather
-than the usual `$proxy_add_x_forwarded_for`. The latter appends the real peer to
-whatever the client sent, leaving attacker-supplied text in the header.
-pcap-server reads the rightmost entry for exactly that reason, but sending only
-the address nginx saw removes the ambiguity.
-
-Caddy is an alternative worth knowing about: it obtains and renews Let's Encrypt
-certificates itself, and needs about five lines. nginx is fine — it just needs
-certbot alongside it.
+1. **`X-Forwarded-Proto` from the proxy, plus `TRUST_PROXY_HEADERS=true` on the
+   app.** Neither alone does anything, and without both the app stays read-only.
+2. **Then stop anything else reaching the app directly** — publish no port, bind
+   to loopback, or firewall it to the proxy. Trusting that header means whatever
+   can reach the app can claim to be the proxy.
+3. **No response buffering to disk.** A capture download is decrypted in flight;
+   a proxy that spools it to a temp file leaves an unencrypted pcap behind.
+   nginx and NPM buffer by default and must be told not to; Caddy does not.
 
 ## SSH connection lifetime
 

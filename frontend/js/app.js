@@ -418,6 +418,8 @@ function initTabs() {
         }
         selectStaticTab(tab.dataset.tab);
     });
+    // Admin is outside the bar, so delegation on it cannot reach the button.
+    $("admin-tab")?.addEventListener("click", () => selectStaticTab("admin"));
 }
 
 function selectStaticTab(name) {
@@ -451,9 +453,13 @@ function selectStaticTab(name) {
 // everything that changes what is on screen, so there is one place that knows
 // how a tab is made to look selected.
 function activatePanel(name) {
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    // `[data-tab]` rather than `.tab`, because Admin is a toolbar button and
+    // not a tab any more. One selector covers both places a panel can be
+    // selected from, so a third would not need remembering. Capture tabs carry
+    // data-captureId instead and are cleared separately.
+    document.querySelectorAll("[data-tab], .tab").forEach((t) => t.classList.remove("active"));
     document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
-    const tab = document.querySelector(`.tab[data-tab="${name}"]`);
+    const tab = document.querySelector(`[data-tab="${name}"]`);
     if (tab) tab.classList.add("active");
     const panel = $("panel-" + name);
     if (panel) panel.classList.add("active");
@@ -2385,6 +2391,7 @@ async function viewCapture(id) {
         return;
     }
     $("live-bar").hidden = !(capture && capture.live_stream);
+    setLiveControls(false);
     if (capture && capture.live_stream) {
         setLiveStatus("This capture was live streamed. Showing the saved capture.", "done");
     }
@@ -3181,8 +3188,27 @@ function startLiveView(captureId, filter = "") {
     viewerAwaitingCapture = null;
     $("packet-tbody").innerHTML = "";
     $("live-bar").hidden = false;
+    setLiveControls(true);
     setLiveStatus("Waiting for the first packets\u2026", "");
     liveTick();
+}
+
+// The live bar's CONTROLS, as opposed to the bar itself.
+//
+// The bar is shown for any capture that was live streamed, finished ones
+// included, because "this was watched as it recorded" is worth saying about a
+// stored capture. Its buttons are not: Stop on a capture that has already been
+// saved is offered against nothing, and stopLiveCapture() returns early when
+// there is no live capture id -- so it silently did nothing, which is worse
+// than a control that is not there. Follow goes with it for the same reason:
+// there is nothing left to arrive.
+//
+// Hidden rather than disabled. A disabled button invites you to work out why;
+// on a finished capture there is no why, and the bar's own note already says
+// it is showing the saved capture.
+function setLiveControls(live) {
+    const actions = document.querySelector(".live-bar-actions");
+    if (actions) actions.hidden = !live;
 }
 
 function stopLiveView() {
@@ -3333,6 +3359,10 @@ async function settleFinishedCapture() {
     }
     if (c.status === "transferring" || c.status === "stopping") return;
     viewerAwaitingCapture = null;
+    // Nothing is arriving any more, whichever way it ended. Cleared before the
+    // branch below so a FAILED capture loses the controls too -- it is no more
+    // stoppable than a completed one.
+    setLiveControls(false);
 
     if (c.status !== "completed") {
         setLiveStatus(c.error || "The capture did not finish successfully.", "warn");

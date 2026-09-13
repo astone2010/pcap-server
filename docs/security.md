@@ -9,6 +9,30 @@ below follows from that.
 **[architecture.md](architecture.md) is the full account.** This is
 the summary.
 
+## The data directory
+
+Captures and SSH keys are encrypted. **The database is not**, and it is the one
+thing on the volume whose file permissions you have to set yourself.
+
+It stores each user's TOTP secret as plain text, because the app has to compute
+codes from it. Anyone who can read `data/pcap-server.db` can therefore produce a
+valid second factor for any account, indefinitely — the password is then all
+that stands in the way. Password hashes are scrypt and sessions are kept only as
+SHA-256 digests, so those are an offline-cracking problem rather than an
+immediate one.
+
+The container's entrypoint chowns the bind mounts to its own non-root user but
+does not set a mode, so a directory created at a default umask is world-readable
+to every account on the host. Create them closed:
+
+```bash
+chmod 0700 ssh-keys data captures secrets
+```
+
+Existing installations were not created this way. Check with `ls -ld data` and
+fix it in place if the mode is not `0700` — nothing in the app depends on those
+directories being readable by anyone but the container's user.
+
 ## Captures at rest
 
 Envelope encryption. A master key wraps a per-file data key, and the capture is

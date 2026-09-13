@@ -1,0 +1,54 @@
+# pcap-server behind Caddy.
+#
+# Caddy obtains and renews its own Let's Encrypt certificates, so there is no
+# certbot, no renewal cron, and no certificate paths in this file. It needs the
+# domain to resolve to this host and ports 80 and 443 to reach it.
+#
+# Two of the three things that matter are already Caddy's defaults -- which is
+# most of the reason to pick it. Only the third needs a line.
+
+pcap.example.com {
+	reverse_proxy pcap-server:8080 {
+		# The one line you have to add.
+		#
+		# Caddy sets X-Forwarded-For by APPENDING the peer to whatever the
+		# client sent, so a client can put text of its choosing in front of its
+		# real address. pcap-server keys its login rate limiter on this header
+		# and reads the rightmost entry for exactly that reason -- but sending
+		# only the address Caddy actually saw removes the ambiguity.
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	# Already correct by default, listed so nobody "fixes" it:
+	#
+	#   X-Forwarded-Proto  Caddy sets it. That is what tells pcap-server TLS
+	#                      terminated here -- set TRUST_PROXY_HEADERS=true on
+	#                      the container so it is believed.
+	#
+	#   Response streaming Caddy streams proxied responses; it does not spool
+	#                      them to disk unless you turn on `response_buffers`.
+	#                      DO NOT. A capture download is decrypted in flight,
+	#                      so buffering it to disk writes an unencrypted copy
+	#                      of the pcap onto the proxy -- undoing the point of
+	#                      encrypting captures at rest.
+
+	# Optional. Uploads are only SSH keys, which the app caps at 64 KB itself;
+	# this refuses anything larger before it reaches the app at all.
+	request_body {
+		max_size 1MB
+	}
+
+	encode zstd gzip {
+		# A pcap is high entropy and compresses to nothing. Not worth the CPU,
+		# and it defeats streaming.
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+		}
+	}
+
+	log {
+		output file /var/log/caddy/pcap-server.log
+	}
+}
