@@ -320,9 +320,17 @@ two ends negotiate is the one checked. So all of a host's keys are stored,
 trusted and forgotten as a set; deleting one row would have left the rest still
 verifying the host, with the next scan restoring the deleted one.
 
-An unverified host still connects, it just is not checked, and the UI says so.
-The negotiated algorithm is reported after connecting, and a negotiation weaker
-than what the host had available is flagged.
+An unverified host is refused rather than connected to unchecked, and the UI
+says which hosts are in that state. (This paragraph described the old fail-open
+behaviour, which 0.1.0-dev.17 replaced.) The negotiated algorithm is reported
+after connecting, and a negotiation weaker than what the host had available is
+flagged.
+
+Keys are taken on in two steps. `POST /api/admin/known-hosts/scan` runs
+ssh-keyscan and returns each key with its OpenSSH SHA256 fingerprint, storing
+nothing; `POST /api/admin/known-hosts/confirm` pins the keys handed back to it.
+Confirm deliberately does not re-scan: the keys it stores are the ones the
+admin read, so nothing can change between the display and the acceptance.
 
 ---
 

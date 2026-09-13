@@ -592,3 +592,322 @@ def test_a_different_port_is_a_different_trust_decision(api_client, signed_in):
         assert row["host_trusted"] is False, "port 22's keys must not vouch for 2222"
     finally:
         main.db.forget_known_host("ported.example", 22)
+
+
+# --- the host key fingerprint review ------------------------------------------
+#
+# Trusting a host used to be one step: /known-hosts/scan asked ssh-keyscan for
+# the keys and stored every one of them as it parsed the line. The operator was
+# shown nothing and asked only whether they meant to press the button, so
+# "trust this host" meant "pin whatever answers on that address right now" --
+# which is precisely the thing host key verification exists to stop.
+#
+# It is now two steps. /scan reviews (and stores nothing); /confirm pins the
+# keys that came back from the operator, which are the ones that were on
+# screen. These cover both halves, and the seam between them: confirm must not
+# re-scan, because a key that changed between the display and the acceptance
+# would then be pinned with nobody having seen it.
+
+import base64  # noqa: E402
+import hashlib  # noqa: E402
+
+# Real keys, so the fingerprints are real. Generated once with asyncssh; the
+# expected fingerprint is recomputed from the blob in the test rather than
+# hardcoded, so these can be replaced without hand-editing a digest.
+ED25519_BLOB = (
+    "AAAAC3NzaC1lZDI1NTE5AAAAIFn+HAuUUzmPJJ/9Fm6nWFEfyOfj/psANlzU7NQKcBtN"
+)
+RSA_BLOB = (
+    "AAAAB3NzaC1yc2EAAAADAQABAAABAQCymyHhGKcL5qeSsIvxy/SrPg/X6AHjiTm8mSjy"
+    "jdUVtn6NDaLVS+5kNj1BxWvAWc3XT8o1ygaX8lmOaoid4IWeT1NArda4INOwc5Z6XU4G"
+    "lxVf7ByZTI5z6EHBltK2xpmHbfB+aZ1+pOdrXIJ9JlUohegRIT3cOBpYTFUAfFATe1mv"
+    "NFgRZdaeBQyLCAQBMghmJKNNsGQFhyKA721qMPKpi009fFWygtf1J85ErLpLXLRHttV/"
+    "9oZZXubmCKAr02XJcFcXGeJCI/22KqmYL0QEWQCKr5S5IVy6UYCVDODKJb++yyBygIdJ"
+    "QAucmkn6GQUty/9p7Qd6gCnBLhxzrP1P"
+)
+
+
+def _openssh_fingerprint(blob: str) -> str:
+    """OpenSSH's fingerprint, by its own definition, computed independently.
+
+    `SHA256:` followed by the unpadded base64 of the SHA-256 of the raw key
+    blob. Written out here rather than asked of asyncssh, so the test checks
+    the value against the specification instead of against the same library
+    that produced it -- an agreement between a function and itself proves
+    nothing, and the format is the reason an operator can compare what this
+    shows against `ssh-keygen -lf` run on the host.
+    """
+    digest = hashlib.sha256(base64.b64decode(blob)).digest()
+    return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+
+
+class _FakeKeyscan:
+    """Stands in for the ssh-keyscan subprocess.
+
+    ssh-keyscan needs a host that answers, and the test addresses here are
+    TEST-NET-3 exactly so that nothing does. Faking the process keeps the
+    parsing, the fingerprinting and the ordering under test without a network.
+    """
+
+    def __init__(self, stdout: bytes, returncode: int = 0):
+        self._stdout = stdout
+        self.returncode = returncode
+
+    async def communicate(self):
+        return self._stdout, b""
+
+
+@pytest.fixture()
+def fake_keyscan(monkeypatch):
+    """Install canned ssh-keyscan output; returns the setter."""
+
+    def install(lines: str, returncode: int = 0):
+        async def fake_exec(*args, **kwargs):
+            return _FakeKeyscan(lines.encode(), returncode)
+
+        monkeypatch.setattr(
+            "backend.ssh_manager.asyncio.create_subprocess_exec", fake_exec
+        )
+
+    return install
+
+
+SCAN_HOST = "203.0.113.40"
+
+
+@pytest.fixture()
+def clean_host():
+    """No stored keys before or after -- these tests assert on storage."""
+    main.db.forget_known_host(SCAN_HOST, 22)
+    yield SCAN_HOST
+    main.db.forget_known_host(SCAN_HOST, 22)
+
+
+def test_scanning_a_host_stores_nothing(api_client, signed_in, fake_keyscan, clean_host):
+    """The bug, stated as a test.
+
+    scan_host_keys() called add_known_host() inside its parse loop, so merely
+    asking a host what keys it had was enough to start verifying every future
+    connection against them. Nothing else had to happen and no one had to
+    agree.
+    """
+    fake_keyscan(f"{SCAN_HOST} ssh-ed25519 {ED25519_BLOB}\n")
+
+    resp = api_client.post(
+        "/api/admin/known-hosts/scan", json={"hostname": SCAN_HOST, "port": 22}
+    )
+
+    assert resp.status_code == 200
+    assert len(resp.json()["keys"]) == 1
+    assert main.db.get_known_hosts(SCAN_HOST, 22) == [], \
+        "a scan must not pin anything -- that is the whole point of the review"
+
+
+def test_the_scan_reports_openssh_s_own_fingerprint(
+    api_client, signed_in, fake_keyscan, clean_host
+):
+    """An operator compares this against `ssh-keygen -lf` on the host itself.
+
+    A fingerprint in any other encoding is a number they have no way to check,
+    which is the same as showing them nothing.
+    """
+    fake_keyscan(f"{SCAN_HOST} ssh-ed25519 {ED25519_BLOB}\n")
+
+    key = api_client.post(
+        "/api/admin/known-hosts/scan", json={"hostname": SCAN_HOST, "port": 22}
+    ).json()["keys"][0]
+
+    assert key["fingerprint"] == _openssh_fingerprint(ED25519_BLOB)
+    assert key["fingerprint"].startswith("SHA256:")
+
+
+def test_the_scan_puts_the_strongest_key_first(
+    api_client, signed_in, fake_keyscan, clean_host
+):
+    """The key at the top of the review is the one most likely to be
+    negotiated, so it is the one worth reading first."""
+    fake_keyscan(
+        f"{SCAN_HOST} ssh-rsa {RSA_BLOB}\n"
+        f"{SCAN_HOST} ssh-ed25519 {ED25519_BLOB}\n"
+    )
+
+    keys = api_client.post(
+        "/api/admin/known-hosts/scan", json={"hostname": SCAN_HOST, "port": 22}
+    ).json()["keys"]
+
+    assert [k["key_type"] for k in keys] == ["ssh-ed25519", "ssh-rsa"]
+
+
+def test_an_unreadable_key_is_reported_without_a_fingerprint(
+    api_client, signed_in, fake_keyscan, clean_host
+):
+    """It is surfaced rather than dropped: a key that cannot be fingerprinted
+    cannot be reviewed, and the operator should know one was offered."""
+    fake_keyscan(
+        f"{SCAN_HOST} ssh-ed25519 {ED25519_BLOB}\n"
+        f"{SCAN_HOST} ssh-ed25519 bm90LWEta2V5\n"
+    )
+
+    keys = api_client.post(
+        "/api/admin/known-hosts/scan", json={"hostname": SCAN_HOST, "port": 22}
+    ).json()["keys"]
+
+    assert len(keys) == 2
+    assert sum(1 for k in keys if k["fingerprint"] is None) == 1
+
+
+def test_confirm_pins_exactly_the_keys_it_was_handed(api_client, signed_in, clean_host):
+    resp = api_client.post(
+        "/api/admin/known-hosts/confirm",
+        json={
+            "hostname": SCAN_HOST,
+            "port": 22,
+            "keys": [{"key_type": "ssh-ed25519", "host_key": ED25519_BLOB}],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stored"] == 1
+    assert resp.json()["keys"][0]["fingerprint"] == _openssh_fingerprint(ED25519_BLOB)
+
+    stored = main.db.get_known_hosts(SCAN_HOST, 22)
+    assert [(s["key_type"], s["host_key"]) for s in stored] == [
+        ("ssh-ed25519", ED25519_BLOB)
+    ]
+
+
+def test_confirm_does_not_re_scan_the_host(
+    api_client, signed_in, fake_keyscan, clean_host
+):
+    """The seam this flow turns on.
+
+    If confirm fetched the keys again it would pin whatever the host answered
+    with at that moment, not what the operator read and agreed to -- a swap
+    between the two would go in unseen and the review would be theatre. The
+    canned scan here offers an RSA key; the operator accepts an ed25519 one,
+    and that is what must be stored.
+    """
+    fake_keyscan(f"{SCAN_HOST} ssh-rsa {RSA_BLOB}\n")
+
+    api_client.post(
+        "/api/admin/known-hosts/confirm",
+        json={
+            "hostname": SCAN_HOST,
+            "port": 22,
+            "keys": [{"key_type": "ssh-ed25519", "host_key": ED25519_BLOB}],
+        },
+    )
+
+    stored = main.db.get_known_hosts(SCAN_HOST, 22)
+    assert [s["key_type"] for s in stored] == ["ssh-ed25519"]
+    assert RSA_BLOB not in [s["host_key"] for s in stored]
+
+
+def test_confirm_refuses_a_key_that_is_not_a_usable_public_key(
+    api_client, signed_in, clean_host
+):
+    """Base64 is not enough to be a key.
+
+    The model stops anything that could add a field to the known_hosts line;
+    this stops the rest. An unusable blob stored here would surface much later
+    as a connection failing for no stated reason.
+    """
+    resp = api_client.post(
+        "/api/admin/known-hosts/confirm",
+        json={
+            "hostname": SCAN_HOST,
+            "port": 22,
+            "keys": [{"key_type": "ssh-ed25519", "host_key": "bm90LWEta2V5"}],
+        },
+    )
+
+    assert resp.status_code == 400
+    assert main.db.get_known_hosts(SCAN_HOST, 22) == []
+
+
+def test_confirm_stores_nothing_when_any_key_in_the_batch_is_unusable(
+    api_client, signed_in, clean_host
+):
+    """All or nothing: a partial pin would leave the host trusted on a key the
+    operator was reviewing as a set."""
+    resp = api_client.post(
+        "/api/admin/known-hosts/confirm",
+        json={
+            "hostname": SCAN_HOST,
+            "port": 22,
+            "keys": [
+                {"key_type": "ssh-ed25519", "host_key": ED25519_BLOB},
+                {"key_type": "ssh-ed25519", "host_key": "bm90LWEta2V5"},
+            ],
+        },
+    )
+
+    assert resp.status_code == 400
+    assert main.db.get_known_hosts(SCAN_HOST, 22) == []
+
+
+@pytest.mark.parametrize(
+    "keys, label",
+    [
+        ([], "an empty list"),
+        ([{"key_type": "ssh-ed25519", "host_key": ED25519_BLOB}] * 9, "nine keys"),
+        ([{"key_type": "ssh ed25519", "host_key": ED25519_BLOB}], "a spaced algorithm"),
+        ([{"key_type": "ssh-ed25519", "host_key": "AAAA BBBB"}], "a spaced blob"),
+    ],
+)
+def test_confirm_refuses_a_malformed_key_list(
+    api_client, signed_in, clean_host, keys, label
+):
+    resp = api_client.post(
+        "/api/admin/known-hosts/confirm",
+        json={"hostname": SCAN_HOST, "port": 22, "keys": keys},
+    )
+    assert resp.status_code == 422, f"{label} produced {resp.status_code}"
+    assert main.db.get_known_hosts(SCAN_HOST, 22) == []
+
+
+def test_confirm_is_admin_only(api_client, clean_host):
+    """It writes what every future connection is verified against, so it sits
+    behind require_admin like the rest of the known-hosts routes."""
+    user_id = str(uuid.uuid4())
+    main.db.create_user(user_id, f"plain-{user_id[:8]}", "scrypt$1$1$1$00$00")
+    main.db.set_totp_secret(user_id, "A" * 32)
+    main.db.confirm_totp(user_id)
+    token, _ = create_session_token(main.db, user_id)
+    api_client.cookies.set("session", token)
+    try:
+        resp = api_client.post(
+            "/api/admin/known-hosts/confirm",
+            json={
+                "hostname": SCAN_HOST,
+                "port": 22,
+                "keys": [{"key_type": "ssh-ed25519", "host_key": ED25519_BLOB}],
+            },
+        )
+        assert resp.status_code == 403
+        assert main.db.get_known_hosts(SCAN_HOST, 22) == []
+    finally:
+        main.db.delete_user(user_id)
+
+
+def test_a_trailing_field_on_a_scanned_key_is_cut_off(
+    api_client, signed_in, fake_keyscan, clean_host
+):
+    """ssh-keyscan output is remote data, and the host chooses what is on the
+    line.
+
+    asyncssh reads `<type> <blob> <anything>` as a key with a comment, so a
+    host can append a field and still produce a valid fingerprint. The blob is
+    written into a known_hosts line, where a space starts a new field -- so the
+    extra token is dropped at the parse, which also keeps what the operator is
+    shown identical to what the confirm route will accept.
+    """
+    fake_keyscan(f"{SCAN_HOST} ssh-ed25519 {ED25519_BLOB} trailing-field\n")
+
+    key = api_client.post(
+        "/api/admin/known-hosts/scan", json={"hostname": SCAN_HOST, "port": 22}
+    ).json()["keys"][0]
+
+    assert key["host_key"] == ED25519_BLOB
+    assert " " not in key["host_key"]
+    assert key["fingerprint"] == _openssh_fingerprint(ED25519_BLOB)

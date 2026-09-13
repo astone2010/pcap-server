@@ -47,6 +47,33 @@ def host_key_strength(algorithm: str) -> int:
         return -1
 
 
+def host_key_fingerprint(key_type: str, host_key: str) -> str | None:
+    """OpenSSH's own SHA256 fingerprint for one host key, or None if it will
+    not parse.
+
+    The format is the point, not just the value. `SHA256:pqouMGbr5CN...` is
+    character-for-character what `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`
+    prints on the target, so an operator compares the two by eye with nothing
+    to convert in between. A fingerprint in any other encoding would be a
+    number the operator has no way to check, which is the same as showing
+    nothing.
+
+    None rather than raising, because one unparseable key among several must
+    not cost the operator their look at the rest. A key that cannot be
+    fingerprinted cannot be reviewed, so it is never offered for acceptance --
+    the confirm route refuses it on the way back in as well, rather than
+    trusting the UI to have filtered it.
+    """
+    try:
+        return asyncssh.import_public_key(f"{key_type} {host_key}").get_fingerprint()
+    except Exception:
+        # asyncssh raises several unrelated exception types for malformed
+        # input, and ssh-keyscan output is remote data -- anything that is not
+        # a usable key is reported as unverifiable rather than as a 500.
+        logger.warning("could not fingerprint a %s host key", key_type)
+        return None
+
+
 def weaker_host_key_than_available(negotiated: str, available: list[str]) -> str:
     """The strongest offered algorithm, when it beats the negotiated one.
 
@@ -199,7 +226,24 @@ class SSHManager:
         tmp.close()
         return tmp.name
 
-    async def scan_host_keys(self, hostname: str, port: int, user_id: str | None = None) -> list[dict]:
+    async def scan_host_keys(self, hostname: str, port: int) -> list[dict]:
+        """Ask a host what public keys it answers with. Stores NOTHING.
+
+        This used to store every key as it parsed it, which made scanning and
+        accepting one indivisible step: pressing "Trust host" pinned whatever
+        answered on that address, and the operator never saw what they had
+        just accepted. Real ssh prints a fingerprint and makes you type yes.
+
+        Storing is now store_host_keys(), reached only by
+        /api/admin/known-hosts/confirm carrying the keys the operator was
+        actually shown. A scan on its own can no longer change what this
+        server trusts, which is what makes the review real rather than
+        decorative -- a scan that stored on the way past would be pinning the
+        host before the question was asked.
+
+        Sorted strongest algorithm first, so the key most likely to be
+        negotiated is the one at the top of the review.
+        """
         proc = await asyncio.create_subprocess_exec(
             "ssh-keyscan", "-p", str(port), "-T", "5", hostname,
             stdout=asyncio.subprocess.PIPE,
@@ -217,10 +261,39 @@ class SSHManager:
             parts = line.split(None, 2)
             if len(parts) != 3:
                 continue
-            _, key_type, host_key = parts
-            self._db.add_known_host(hostname, port, key_type, host_key, user_id)
-            keys.append({"hostname": hostname, "port": port, "key_type": key_type, "host_key": host_key})
-        return keys
+            _, key_type, rest = parts
+            # Only the blob, never the rest of the line. ssh-keyscan output is
+            # remote data, and asyncssh parses `<type> <blob> <anything>` quite
+            # happily -- the trailing field is a comment as far as it is
+            # concerned, so a host can return one and still produce a valid
+            # fingerprint. That field would previously have been carried into
+            # the known_hosts line this key is written to, where a space
+            # starts a new field. Cutting it here also keeps what is displayed
+            # identical to what the confirm route will accept.
+            host_key = rest.split(None, 1)[0]
+            keys.append({
+                "hostname": hostname,
+                "port": port,
+                "key_type": key_type,
+                "host_key": host_key,
+                "fingerprint": host_key_fingerprint(key_type, host_key),
+            })
+        return sorted(keys, key=lambda k: host_key_strength(k["key_type"]), reverse=True)
+
+    def store_host_keys(
+        self, hostname: str, port: int, keys: list[dict], user_id: str | None = None
+    ) -> int:
+        """Pin exactly these keys for this endpoint.
+
+        The keys arrive from the operator who reviewed them, not from a fresh
+        scan. Re-scanning here would reopen the hole the review exists to
+        close: a key swapped between the moment it was displayed and the
+        moment it was accepted would be pinned with nobody having seen it, and
+        the review would be theatre.
+        """
+        for key in keys:
+            self._db.add_known_host(hostname, port, key["key_type"], key["host_key"], user_id)
+        return len(keys)
 
     async def _connect(self, server: ServerAuth) -> asyncssh.SSHClientConnection:
         key_path = self._key_path(server.ssh_key_name)

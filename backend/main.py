@@ -42,6 +42,7 @@ from backend.models import (
     CaptureStatus,
     CaptureView,
     CaptureViewRequest,
+    KnownHostConfirm,
     KnownHostEndpoint,
     ServerAuth,
     ServerInfo,
@@ -55,7 +56,7 @@ from backend.packet_parser import (
     stream_filtered_pcap,
 )
 from backend.localnet import SELF_CAPTURE_EXPLANATION, describe_if_local
-from backend.ssh_manager import SSHManager, resolve_key_path
+from backend.ssh_manager import SSHManager, host_key_fingerprint, resolve_key_path
 from backend.vault import CaptureVault, StartupRefused
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -726,10 +727,58 @@ async def admin_list_known_hosts(user: dict = Depends(require_admin)):
 
 @app.post("/api/admin/known-hosts/scan")
 async def admin_scan_host(req: KnownHostEndpoint, user: dict = Depends(require_admin)):
-    keys = await ssh_manager.scan_host_keys(req.hostname, req.port, user["id"])
+    """Ask the host for its keys and hand them back for review. Stores nothing.
+
+    This route used to scan and pin in one step, so "Trust host" accepted
+    whatever answered on the address and the operator never saw what they had
+    accepted. It is now the first half of a two-step flow: this returns each
+    key with its SHA256 fingerprint, and /known-hosts/confirm stores the ones
+    the operator agreed to.
+
+    Being non-mutating is the whole point, so it is worth saying plainly: a
+    scan can no longer change what this server trusts. Calling it is safe.
+    """
+    keys = await ssh_manager.scan_host_keys(req.hostname, req.port)
     if not keys:
         raise HTTPException(502, "no host keys found")
     return {"ok": True, "keys": keys}
+
+
+@app.post("/api/admin/known-hosts/confirm")
+async def admin_confirm_host(req: KnownHostConfirm, user: dict = Depends(require_admin)):
+    """Pin the keys an admin reviewed, exactly as they were shown.
+
+    Deliberately does NOT re-scan. The keys in the body are the ones that were
+    on screen when the operator said yes; fetching them again here would mean
+    a key could change between the review and the acceptance and be pinned
+    unseen, which is the hole this whole flow exists to close.
+
+    Every key is fingerprinted again on the way in. That is not distrust of
+    the client so much as a refusal to store anything unverifiable: a blob
+    that will not parse cannot have been reviewed, whatever the UI displayed,
+    and it would sit in known_hosts breaking connections with no explanation.
+    The fingerprints come back so the caller can report what was pinned
+    without inventing it.
+    """
+    stored = []
+    for key in req.keys:
+        fingerprint = host_key_fingerprint(key.key_type, key.host_key)
+        if not fingerprint:
+            raise HTTPException(400, f"{key.key_type} key is not a usable public key")
+        stored.append({"key_type": key.key_type, "fingerprint": fingerprint})
+
+    ssh_manager.store_host_keys(
+        req.hostname,
+        req.port,
+        [{"key_type": k.key_type, "host_key": k.host_key} for k in req.keys],
+        user["id"],
+    )
+    logger.info(
+        "admin %s pinned %d host key(s) for %s:%d: %s",
+        user["id"], len(stored), req.hostname, req.port,
+        ", ".join(k["fingerprint"] for k in stored),
+    )
+    return {"ok": True, "stored": len(stored), "keys": stored}
 
 
 @app.get("/api/admin/host-trust")

@@ -218,9 +218,14 @@ async def test_the_trust_host_button_is_wired_to_something(app_page):
     error, no feedback -- invisible to every API test in the repo, and to a
     browser test that only checked the button was present.
 
-    Asserting on the confirm() is deliberate. It fires on click, before any
-    network, so this pins the wiring itself rather than ssh-keyscan's behaviour
-    against an address that is guaranteed not to answer.
+    Asserting on the dialog is deliberate: it is the first thing a click can
+    produce that a test can see, so it pins the wiring itself.
+
+    Since the fingerprint review landed, the click scans first and the dialog
+    comes afterwards -- against this address, which is TEST-NET-3 and answers
+    nothing, that dialog is ssh-keyscan's failure reported back. Which dialog
+    it is does not matter here. That one arrives at all is the regression this
+    test exists for, and it costs the ssh-keyscan timeout to find out.
     """
     await _fill_add_form(app_page, HOST)
     await app_page.press("#new-srv-host", "Enter")
@@ -235,7 +240,9 @@ async def test_the_trust_host_button_is_wired_to_something(app_page):
     app_page.on("dialog", on_dialog)
     await app_page.click('#server-list [data-action="trust-server-host"]')
 
-    for _ in range(50):
+    # Generous: the scan has to time out against an address that never answers
+    # (ssh-keyscan -T 5) before the dialog can appear.
+    for _ in range(200):
         if asked:
             break
         await app_page.wait_for_timeout(100)
@@ -245,18 +252,33 @@ async def test_the_trust_host_button_is_wired_to_something(app_page):
 
 
 async def test_declining_the_trust_prompt_leaves_the_host_untrusted(app_page):
-    """Dismissing is a real answer: nothing is pinned and the warning stays."""
+    """Dismissing is a real answer: nothing is pinned and the warning stays.
+
+    Whichever dialog this address produces -- the fingerprint review on a host
+    that answers, the scan failure on one that does not -- dismissing it must
+    leave the host exactly as untrusted as it was. The accepting half needs a
+    host with real keys to review, so it is covered against the API in
+    test_servers.py rather than here.
+    """
     await _fill_add_form(app_page, HOST)
     await app_page.press("#new-srv-host", "Enter")
     await app_page.wait_for_selector('#server-list [data-action="trust-server-host"]')
 
+    seen: list[str] = []
+
     async def decline(dialog):
+        seen.append(dialog.message)
         await dialog.dismiss()
 
     app_page.on("dialog", decline)
     await app_page.click('#server-list [data-action="trust-server-host"]')
-    await app_page.wait_for_timeout(300)
 
+    for _ in range(200):
+        if seen:
+            break
+        await app_page.wait_for_timeout(100)
+
+    assert seen, "the click produced no dialog to decline"
     assert "Host not trusted" in await app_page.text_content("#server-list")
 
 

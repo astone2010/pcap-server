@@ -172,6 +172,51 @@ class KnownHostEndpoint(BaseModel):
         return validate_ssh_hostname(v)
 
 
+class KnownHostKey(BaseModel):
+    """One public key exactly as it was shown to the operator for review.
+
+    The confirm route stores what comes back in these fields rather than
+    re-scanning, so this model is the boundary between "a key an admin looked
+    at" and "a key this server will verify every future connection against".
+    It is deliberately strict about shape: a malformed blob would be written
+    into known_hosts and only surface later, as an unexplained connection
+    failure, at the point where the file is handed to ssh.
+    """
+
+    key_type: str = Field(min_length=1, max_length=64)
+    host_key: str = Field(min_length=1, max_length=8192)
+
+    @field_validator("key_type")
+    @classmethod
+    def validate_key_type(cls, v: str) -> str:
+        # The algorithm names OpenSSH actually emits: letters, digits, dash,
+        # dot, and the '@' of certificate types like
+        # ssh-ed25519-cert-v01@openssh.com.
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9@.\-]*", v):
+            raise ValueError("not a host key algorithm name")
+        return v
+
+    @field_validator("host_key")
+    @classmethod
+    def validate_host_key(cls, v: str) -> str:
+        # base64, and nothing that could add a field to the known_hosts line
+        # it is written into -- no whitespace, no newline.
+        if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", v):
+            raise ValueError("not a base64 host key blob")
+        return v
+
+
+class KnownHostConfirm(KnownHostEndpoint):
+    """The endpoint plus the reviewed keys, for /known-hosts/confirm.
+
+    Bounded at 8 keys because it is the operator's own review being sent back,
+    not a bulk import: a host answers with one key per algorithm it supports,
+    and OpenSSH ships five.
+    """
+
+    keys: list[KnownHostKey] = Field(min_length=1, max_length=8)
+
+
 class ServerAuth(BaseModel):
     hostname: str
     port: int = 22

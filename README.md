@@ -125,8 +125,20 @@ Open `http://localhost:8080`. The first user to register becomes the admin.
    host** button on the server itself. This has to happen before anything will
    connect: a host with no trusted keys is refused rather than connected to
    unverified, so **Test connection**, **Check prerequisites** and captures all
-   fail until it is done. Whatever answers on that address when you press it is
-   what gets pinned, so do it from a network you trust.
+   fail until it is done.
+
+   You are shown each key's SHA256 fingerprint and asked to accept before
+   anything is pinned. Compare them against the host itself first — on the
+   target, run:
+
+   ```bash
+   for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done
+   ```
+
+   The fingerprints are printed in OpenSSH's own format, so the two lists
+   should match character for character. Accepting without comparing pins
+   whatever answered on that address, which is the one thing host key
+   verification exists to prevent.
 4. **Test connection** and **Check prerequisites**, now that they can run.
 5. **Sort out capture privilege** if the check says it is missing. It prints the
    exact command for the host in front of you — see
@@ -506,6 +518,11 @@ Trust is stored per endpoint, not per server: several server entries can point
 at one host and they share a single trust decision. Establishing it is
 admin-only, since re-pinning a host decides what every user's connections to it
 are checked against.
+
+Establishing it is also a two-step review. Scanning a host asks it for its keys
+and stores nothing; the fingerprints are displayed, and only the keys the
+admin accepts are pinned — the ones that were on screen, not the result of a
+second scan, so a key cannot change between being read and being accepted.
 
 ### Signing in
 

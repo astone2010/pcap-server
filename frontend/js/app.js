@@ -473,16 +473,10 @@ function renderServerList() {
 async function trustServerHost(endpoint) {
     // Deliberately not adminTrustHost(): that reports into the Admin tab's
     // message element, which nobody standing on the Servers tab can see.
-    if (!confirm(`Trust the host keys ${endpoint} answers with?\n\n`
-        + "Whatever answers on that address right now is what gets pinned, and "
-        + "every later connection is checked against it. Do this only if you are "
-        + "confident nothing is impersonating the host.")) return;
     try {
-        const result = await api("/api/admin/known-hosts/scan", {
-            method: "POST",
-            body: JSON.stringify(splitEndpoint(endpoint)),
-        });
-        alert(`Stored ${result.keys.length} host key(s) for ${endpoint}. It can be used now.`);
+        const result = await reviewAndTrustHost(endpoint);
+        if (!result) return;   // reviewed and declined -- nothing was pinned
+        alert(`Pinned ${result.stored} host key(s) for ${endpoint}. It can be used now.`);
     } catch (e) {
         alert(`Could not trust ${endpoint}: ${e.message}`);
         return;
@@ -3274,7 +3268,7 @@ async function loadAdminKnownHosts() {
                     <td>${status}</td>
                     <td style="white-space:nowrap">
                         <button class="btn btn-sm btn-secondary" data-action="trust-host"
-                            data-id="${endpoint}">${trusted ? "Rescan" : "Trust keys"}</button>
+                            data-id="${endpoint}">${trusted ? "Review keys" : "Trust keys"}</button>
                         ${trusted ? `<button class="btn btn-sm btn-danger" data-action="forget-host"
                             data-id="${endpoint}">Forget</button>` : ""}
                     </td>
@@ -3304,19 +3298,73 @@ function splitEndpoint(endpoint) {
     return { hostname: endpoint.slice(0, i), port: parseInt(endpoint.slice(i + 1)) || 22 };
 }
 
+// The fingerprint review both trust paths go through.
+//
+// Pressing Trust used to be one step: scan, and whatever answered on that
+// address was pinned. The operator was shown nothing and asked only whether
+// they meant to press the button. Real ssh prints the fingerprint and makes
+// you type yes, because the fingerprint is the only part a human can check
+// against the host itself -- that check is the entire security value of host
+// key verification, and skipping it makes the whole mechanism ceremony.
+//
+// Returns the confirm response when keys were pinned, or null when the
+// operator declined. Throws on a failed request; the two callers report
+// errors in their own way, since they render into different places.
+async function reviewAndTrustHost(endpoint) {
+    const target = splitEndpoint(endpoint);
+    const scan = await api("/api/admin/known-hosts/scan", {
+        method: "POST",
+        body: JSON.stringify(target),
+    });
+
+    // A key that will not parse cannot be fingerprinted, so it cannot be
+    // reviewed -- it is reported and left out rather than quietly accepted on
+    // the strength of the others. The API refuses these on confirm too.
+    const usable = scan.keys.filter((k) => k.fingerprint);
+    const skipped = scan.keys.length - usable.length;
+    if (!usable.length) {
+        throw new Error(`${endpoint} offered no host key that could be read`);
+    }
+
+    const listed = usable.map((k) => `    ${k.key_type}\n    ${k.fingerprint}`).join("\n\n");
+    const note = skipped
+        ? `\n\n${skipped} further key(s) could not be read and will not be stored.`
+        : "";
+    const accepted = confirm(
+        `${endpoint} answered with ${usable.length} host key(s):\n\n${listed}${note}\n\n`
+        + "Check these against the host itself before accepting. On "
+        + `${target.hostname}, run:\n\n`
+        + "    for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done\n\n"
+        + "Accept these keys and verify every future connection against them?"
+    );
+    if (!accepted) return null;
+
+    // The reviewed keys are sent back rather than re-scanned, so what gets
+    // pinned is what was on screen a moment ago.
+    return await api("/api/admin/known-hosts/confirm", {
+        method: "POST",
+        body: JSON.stringify({
+            ...target,
+            keys: usable.map((k) => ({ key_type: k.key_type, host_key: k.host_key })),
+        }),
+    });
+}
+
 async function adminTrustHost(endpoint) {
     const msgEl = $("admin-host-msg");
     msgEl.className = "success-msg";
     msgEl.textContent = `Asking ${endpoint} for its host keys...`;
     try {
-        const result = await api("/api/admin/known-hosts/scan", {
-            method: "POST",
-            body: JSON.stringify(splitEndpoint(endpoint)),
-        });
+        const result = await reviewAndTrustHost(endpoint);
+        if (!result) {
+            msgEl.textContent = `Nothing pinned for ${endpoint} -- the keys were not accepted.`;
+            return;
+        }
         // Said plainly, because the rows that reappear look identical to ones
-        // that were never removed -- these were just fetched from the host.
+        // that were never removed -- these were just accepted from the host.
         msgEl.textContent =
-            `Fetched ${result.keys.length} key(s) from ${endpoint} and stored them now.`;
+            `Pinned ${result.stored} key(s) for ${endpoint}: `
+            + result.keys.map((k) => k.key_type).join(", ");
         loadAdminKnownHosts();
     } catch (e) {
         msgEl.className = "error-msg";
