@@ -1,6 +1,6 @@
 # Dev Skills gate state
-Track: work commit (0.1.0-dev.18 released; unreleased work on top)
-Version: 0.1.0-dev.18 (shipped)
+Track: release sequence — 0.1.0-dev.19
+Version: 0.1.0-dev.19
 Updated: 2026-09-13
 Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to.
         The harness assigns a fresh claude/* branch every session; that
@@ -39,6 +39,28 @@ deployed dev.17 carries a dead button, and a fix nobody can run is not a fix.
 📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
 🚀 SHIP       ✅ tag pushed by the user and confirmed deployed —
                 pcap.nscriven.net shows v0.1.0-dev.18.
+
+## 0.1.0-dev.19 — version bumped, TAG PENDING
+
+One fix: 4818f22, the caching and tab-refetch pair below. Cut immediately
+rather than held, because dev.18 structurally CANNOT deliver its own frontend
+fix to a browser that has already loaded the page — that is the bug.
+
+🔢 VERSION    ✅ APP_VERSION (backend/main.py) and the docker-compose image tag
+                both read 0.1.0-dev.19; CHANGELOG heading dated 2026-09-13. No
+                0.1.0-dev.18 left outside changelog history. v0.1.0-dev.18
+                confirmed tagged at 85d7c89 — no gap behind this release.
+🔨 BUILD      ✅ ./scripts/check.sh re-run AFTER the bump: 601 passed, 0
+                skipped, 2m59s.
+🔒 SECURITY   ✅ Cache-Control: no-cache is a weakening of CACHING only. No
+                change to auth, to input handling, or to what is served; the
+                CSP and its hash-pinned inline theme script are untouched.
+                pip-audit unchanged: backend/requirements.txt clean.
+📄 DOCS       ✅ CHANGELOG dated.
+📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
+🚀 SHIP       ⏳ bump commit pushed from this container. The tag is the user's
+                own action, handed over as a block. Stays ⏳ until
+                `git ls-remote --tags origin v0.1.0-dev.19` answers.
 
 ## RESOLVED — the untrusted-host contradiction
 
