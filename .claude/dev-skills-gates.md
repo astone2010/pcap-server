@@ -1,5 +1,5 @@
 # Dev Skills gate state
-Track: release sequence — 0.1.0-dev.20
+Track: release sequence — 0.1.0-dev.20 CLOSED. All six gates done.
 Version: 0.1.0-dev.20
 Updated: 2026-09-13 (session: dev-skills-loading-yow48d)
 Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to.
@@ -9,7 +9,7 @@ Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to
         admiring-wright-k20ptf explicitly. The clone landed on the canonical
         tip (66320f5) unaided for the first time.
 
-## 0.1.0-dev.20 — AWAITING COMMIT APPROVAL
+## 0.1.0-dev.20 — RELEASED (tag pushed by the user, 2026-09-13)
 
 The SSH host key fingerprint review: plan item 0, the last piece of the trust
 work dev.17-dev.19 ran through.
@@ -30,7 +30,12 @@ work dev.17-dev.19 ran through.
                 command; docs/architecture.md's stale fail-open paragraph
                 corrected as well.
 📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
-🚀 SHIP       ⬜ tag block to hand to the user once the commit is approved.
+🚀 SHIP       ✅ verified from the container: tag v0.1.0-dev.20 -> 7320eae on
+                the remote; Check run #54 green on that commit BEFORE the tag
+                went up; Release run #20 success; release published,
+                prerelease, body compares dev.19...dev.20. Image
+                ghcr.io/darthrater78/pcap-server:0.1.0-dev.20 built and pushed
+                by that run. NOT yet confirmed deployed by the user.
 
 ### The finding in my own diff, and why it mattered
 
