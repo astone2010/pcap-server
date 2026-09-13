@@ -1,6 +1,6 @@
 # Dev Skills gate state
-Track: release sequence — 0.1.0-dev.18
-Version: 0.1.0-dev.18
+Track: work commit (0.1.0-dev.18 released; unreleased work on top)
+Version: 0.1.0-dev.18 (shipped)
 Updated: 2026-09-13
 Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to.
         The harness assigns a fresh claude/* branch every session; that
@@ -19,7 +19,7 @@ Contents: f148595 (capture delete), fc727c9 (host key ordering),
 60acfe7 (fail-closed host trust, BREAKING), 1bf079b (bump).
 All six gates closed for dev.17. Do not re-run them.
 
-## 0.1.0-dev.18 — version bumped, TAG PENDING
+## 0.1.0-dev.18 — RELEASED (tag pushed by the user, 2026-09-13)
 
 One fix: f7d05b0, the Trust host button wiring. Cut on its own because the
 deployed dev.17 carries a dead button, and a fix nobody can run is not a fix.
@@ -37,45 +37,40 @@ deployed dev.17 carries a dead button, and a fix nobody can run is not a fix.
                 clean; the two findings are dev-toolchain only.
 📄 DOCS       ✅ CHANGELOG dated.
 📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
-🚀 SHIP       ⏳ bump commit pushed from this container. The tag is the user's
-                own action, handed over as a block. Stays ⏳ until
-                `git ls-remote --tags origin v0.1.0-dev.18` answers.
+🚀 SHIP       ✅ tag pushed by the user and confirmed deployed —
+                pcap.nscriven.net shows v0.1.0-dev.18.
 
-## 🚨 UNRESOLVED — start here
+## RESOLVED — the untrusted-host contradiction
 
-**An untrusted host connected successfully.** On the deployed dev.17, the
-Servers tab showed "Host not trusted — connections to it are refused" for
-serveradmin@10.0.0.230:22 while **Test connection on that same server returned
-"Connection successful / Host key: ssh-ed25519"**. Both cannot be true:
+Both halves are explained, and neither was the connection path.
 
-- /api/servers sets host_trusted from bool(db.get_known_hosts(hostname, port))
-  (main.py, list_servers)
-- _connect refuses when _get_known_hosts_file(hostname, port) returns None,
-  which is exactly when get_known_hosts returns no rows (ssh_manager.py)
+The user's decisive observation: add a server, trust it from Admin, come back
+to Servers — still "Host not trusted", and Test connection succeeds. So the
+host WAS trusted; /api/servers was not lying, the page was showing stale data.
 
-Same table, same key, opposite answers. The deployed image definitely contains
-the refusal — the tag, the release and the version badge all agree — so this is
-not a stale deployment. Ruled out already: testServer() overwrites its result
-element before each request, so it is not stale DOM text.
+1. The Servers tab never refetched. initTabs() refreshed only the admin tab on
+   activation; the server list was loaded at boot and after add/edit/remove.
+   Trusting in Admin and returning rendered activeServers as captured before
+   the trust existed. Fixed: the tab refetches on activation, and the open
+   server keeps its highlight (selection had lived only as a class on the
+   element the re-render replaces).
 
-Resolve it with one query against the live database before writing any code:
+2. The Trust host button stayed dead in dev.18 even though dev.18 contained
+   the wiring fix -- because the browser was still running dev.17's app.js.
+   StaticFiles sends ETag and Last-Modified and NO Cache-Control, so browsers
+   fall back to heuristic freshness (~10% of the file's age since
+   Last-Modified) and reuse app.js without revalidating. Fixed: frontend files
+   are served Cache-Control: no-cache, which is revalidate-not-restore -- the
+   ETag still stands, so a reload is a 304 with no body.
 
-    docker exec -it <container> sqlite3 /data/pcap.db \
-      "SELECT hostname, port, key_type FROM known_hosts;
-       SELECT name, hostname, port FROM active_servers;"
+The second one is the important finding and is not about this button: until
+now EVERY frontend fix in this project could silently fail to reach users, and
+the symptom is always "you shipped it and it still does not work."
 
-- Rows present for 10.0.0.230/22 -> the connection was correct and
-  /api/servers is misreporting. Suspect the hostname/port values differing
-  between the stored known_hosts row and the active_servers row (whitespace,
-  or a port stored as text).
-- No rows -> the refusal did not fire, and the next check is whether the
-  running code actually contains it:
-      docker exec <container> python -c "import backend.ssh_manager as m, \
-        inspect; print('no trusted host keys' in inspect.getsource(m))"
-
-Whichever way it lands, it needs a test that pins the two answers together:
-host_trusted and the connect decision must be derived from ONE function, not
-from two call sites that can drift.
+Note for the next session: anyone testing a frontend change against a
+deployment made before dev.19 should hard-reload once (Ctrl+Shift+R, or
+long-press reload on mobile). The no-cache header only governs fetches made
+after it ships.
 
 ## Reported by the user, NOT yet designed or built
 

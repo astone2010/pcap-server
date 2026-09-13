@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A released frontend fix actually reaches the browser.** `StaticFiles`
+  sends `ETag` and `Last-Modified` and no `Cache-Control` at all, and with no
+  `Cache-Control` a browser falls back to heuristic freshness -- roughly a
+  tenth of the file's age since `Last-Modified` -- and serves `app.js` from
+  its own cache without asking. So a deployment could run this release's
+  backend against the previous release's page, which from the outside is
+  indistinguishable from the fix not working. dev.18 shipped a repair for a
+  dead button and the button stayed dead for exactly this reason. Frontend
+  files are now served `Cache-Control: no-cache`, which means *revalidate*,
+  not *do not store*: the `ETag` still stands, so a reload costs one
+  conditional request answered `304` with no body.
+- **The server list refreshes when you come back to it.** Host trust is
+  changed on the Admin tab and displayed on the Servers tab, but the list was
+  only fetched at boot and after a server was added, edited or removed.
+  Trusting a host in Admin and returning showed it as still untrusted, from a
+  copy of the data taken before the trust existed -- the API had been correct
+  the whole time. The tab now refetches on activation, the way the Admin tab
+  already did, and the open server keeps its highlight across the refetch
+  (selection had lived only as a class on the element the re-render replaces).
+
 ## 0.1.0-dev.18 — 2026-09-13
 
 ### Fixed

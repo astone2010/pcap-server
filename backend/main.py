@@ -1407,6 +1407,33 @@ async def packet_detail(capture_id: str, frame_number: int, user: dict = Depends
 
 # --- static files (frontend) ---
 
+
+class RevalidatedStatic(StaticFiles):
+    """Serve the frontend with Cache-Control: no-cache.
+
+    StaticFiles sends ETag and Last-Modified and nothing else. With no
+    Cache-Control at all a browser falls back to heuristic freshness -- around
+    a tenth of the file's age since Last-Modified -- and serves app.js from its
+    own cache without asking us. The result is a deployment where the backend
+    is the new version and the page is the old one, which from the outside is
+    indistinguishable from the fix not working: a button that was repaired and
+    released still does nothing, because the browser is running last release's
+    script against this release's API.
+
+    That is not hypothetical. dev.18 shipped a fix for a dead button and the
+    button stayed dead for exactly this reason.
+
+    "no-cache" means revalidate before reuse, not "do not store". The ETag is
+    already being sent, so a reload costs one conditional request answered 304
+    with no body -- the file is still not re-downloaded unless it changed.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
+
 frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
 if frontend_dir.is_dir():
-    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+    app.mount("/", RevalidatedStatic(directory=str(frontend_dir), html=True), name="frontend")

@@ -258,3 +258,50 @@ async def test_declining_the_trust_prompt_leaves_the_host_untrusted(app_page):
     await app_page.wait_for_timeout(300)
 
     assert "Host not trusted" in await app_page.text_content("#server-list")
+
+
+async def test_returning_to_the_servers_tab_refetches_the_list(app_page):
+    """Host trust is changed on the Admin tab, and the server list displays it.
+
+    The list was only ever fetched at boot and after a server was added,
+    edited or removed -- so trusting a host in Admin and coming back here
+    rendered a copy of the data taken before the trust existed, and the host
+    still read as untrusted. The API was correct the whole time.
+    """
+    await _fill_add_form(app_page, HOST)
+    await app_page.press("#new-srv-host", "Enter")
+    await app_page.wait_for_selector(f"#server-list >> text={HOST}")
+
+    refetches: list[str] = []
+
+    def note(request):
+        if request.method == "GET" and request.url.rstrip("/").endswith("/api/servers"):
+            refetches.append(request.url)
+
+    app_page.on("request", note)
+
+    await app_page.click('.tab[data-tab="admin"]')
+    await app_page.click('.tab[data-tab="servers"]')
+
+    for _ in range(30):
+        if refetches:
+            break
+        await app_page.wait_for_timeout(100)
+
+    assert refetches, "returning to the Servers tab did not refetch /api/servers"
+
+
+async def test_a_refetch_keeps_the_open_server_highlighted(app_page):
+    """Selection lived only as a class on an element the refetch replaces."""
+    await _fill_add_form(app_page, HOST)
+    await app_page.press("#new-srv-host", "Enter")
+    await app_page.wait_for_selector(f"#server-list >> text={HOST}")
+    await app_page.click(f"#server-list .server-item")
+    await app_page.wait_for_selector("#server-list .server-item.active")
+
+    await app_page.click('.tab[data-tab="admin"]')
+    await app_page.click('.tab[data-tab="servers"]')
+    await app_page.wait_for_timeout(400)
+
+    assert await app_page.query_selector("#server-list .server-item.active"), \
+        "the open server lost its highlight when the list was refetched"

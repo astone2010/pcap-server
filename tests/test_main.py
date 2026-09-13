@@ -548,3 +548,26 @@ def test_an_unparseable_content_length_is_refused(secure_client, enrolled):
         headers={"Content-Type": "application/json", "Content-Length": "not-a-number"},
     )
     assert resp.status_code == 400
+
+
+# --- static assets must be revalidated ----------------------------------------
+#
+# StaticFiles sends ETag and Last-Modified and no Cache-Control. With no
+# Cache-Control a browser falls back to heuristic freshness and serves app.js
+# from its own cache without asking, so a released frontend fix reaches the
+# server and not the person using it. dev.18 shipped a fix for a dead button
+# and the button stayed dead for exactly that reason.
+
+
+@pytest.mark.parametrize("path", ["/js/app.js", "/css/style.css", "/"])
+def test_frontend_assets_must_be_revalidated(client, path):
+    resp = client.get(path)
+    assert resp.status_code == 200
+    assert resp.headers.get("cache-control") == "no-cache"
+
+
+@pytest.mark.parametrize("path", ["/js/app.js", "/"])
+def test_revalidation_is_still_cheap(client, path):
+    """no-cache means revalidate, not re-download. The ETag has to survive, or
+    every page load pays for the whole file again."""
+    assert client.get(path).headers.get("etag")

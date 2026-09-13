@@ -3,6 +3,8 @@
 const API = "";
 let currentUser = null;
 let activeServers = [];
+// DOM-only until now: re-rendering the list dropped the highlight with it.
+let selectedServerId = null;
 // Whether this page reached the server over a connection a capture may cross.
 let secureTransport = true;
 let knownUsernames = [];
@@ -398,6 +400,15 @@ function initTabs() {
                 loadAdminSSHKeys();
                 loadAdminKnownHosts();
             }
+            // The server list carries host trust state, and host trust is
+            // changed on the Admin tab next door. Without this the list was
+            // only ever fetched at boot and after a server was added, edited
+            // or removed -- so trusting a host in Admin and coming back here
+            // showed it as still untrusted, from a copy of the data taken
+            // before the trust existed.
+            if (tab.dataset.tab === "servers") {
+                loadServers();
+            }
         });
     });
 }
@@ -452,6 +463,11 @@ function renderServerList() {
         </div>`;
         })
         .join("");
+    // Re-applied after the innerHTML replacement above, which drops it.
+    if (selectedServerId) {
+        document.querySelector(`.server-item[data-id="${CSS.escape(selectedServerId)}"]`)
+            ?.classList.add("active");
+    }
 }
 
 async function trustServerHost(endpoint) {
@@ -477,6 +493,7 @@ async function trustServerHost(endpoint) {
 function selectServer(id) {
     const srv = activeServers.find((s) => s.id === id);
     if (!srv) return;
+    selectedServerId = id;
     document.querySelectorAll(".server-item").forEach((el) => el.classList.remove("active"));
     document.querySelector(`.server-item[data-id="${id}"]`)?.classList.add("active");
 
