@@ -1,12 +1,125 @@
 # Dev Skills gate state
-Track: release sequence — 0.1.0-dev.24 CLOSED. All six gates done.
-Version: 0.1.0-dev.24 (RELEASED 2026-09-13)
-Updated: 2026-09-13 (session: local CLI, Fedora, bash)
-Branch: claude/admiring-wright-k20ptf — canonical, in sync with origin at
-        27287cd. Working tree clean.
+Track: RELEASE SEQUENCE — 0.1.0-dev.25. Gates 1-4 PASSED, 5 awaiting the
+       user's push, 6 awaiting the user's tag.
+Version: 0.1.0-dev.25 (NOT yet released)
+Updated: 2026-09-13 (session: local CLI, Fedora 44, bash)
+Branch: claude/admiring-wright-k20ptf — canonical. Was in sync with origin at
+        0b98c8e; this release adds one commit on top.
 Environment: LOCAL Claude Code CLI — Claude PRESENTS git commands, the user
-        runs them (SKILL.md 5.8). Not a container; nothing is lost at session
-        end, but nothing is auto-committed either.
+        runs them (SKILL.md 5.8). Not a container.
+
+## 0.1.0-dev.25 tracker
+
+🔢 VERSION    ✅ 0.1.0-dev.25 in FIVE places, not three. backend/main.py:78,
+                docker-compose.yml:72, CHANGELOG heading, AND README.md:113
+                (Quick start curl) + README.md:147 (version table) +
+                README.md:163 (Upgrading curl).
+                ⚠️ THE README ONES ARE NEW AS OF THIS RELEASE. The no-clone
+                Quick start fetches docker-compose.yml from a TAG-pinned raw
+                URL, so the README now carries release tags. Any future bump
+                that misses them ships a Quick start pointing at the previous
+                release. `grep -rn "0\.1\.0-dev\.<prev>"` excluding .git,
+                .venv and CHANGELOG is the check.
+                v0.1.0-dev.24 confirmed tagged on the remote (ls-remote).
+                pyproject.toml is pytest config only, no [project] table, so
+                the repo-link requirement lands on backend/main.py REPO_URL +
+                release_notes_url, which exist.
+🔨 BUILD      ✅ ./scripts/check.sh on this host: 972 passed, 0 failed,
+                0 SKIPPED, 2m37s, exit 0. Python 3.12.14 selected by the
+                script itself. Baseline dev.24 was 905; +67 = the tests added
+                this session.
+                NOTE: check.sh RUNS FINE LOCALLY NOW. The dev.24 interpreter
+                fix works. The container workaround documented lower down is
+                no longer needed and should not be reached for by default --
+                see "Local vs container" below.
+🔒 SECURITY   ✅ 0 Critical, 0 High. Detail under SECURITY below.
+                📝 1 Medium SURFACED, awaiting the user's call: pytest 8.3.4
+                PYSEC-2026-1845. Dev-only, never shipped. See SECURITY below.
+📄 DOCS       ✅ CHANGELOG dated 2026-09-13; README gained "Filters that would
+                capture nothing", the rewritten Quick start, "Choosing a
+                version", "Upgrading", and "Running it without a reverse
+                proxy"; docs/architecture.md gained the bpf.py module row and
+                a "Filters that cannot match anything" design section.
+📦 RELEASE    ⏳ commit + push presented to the user, not yet run.
+                No PR: default branch out of scope by standing decision.
+🚀 SHIP       ⏳ tag block presented to the user. NOT ✅ until
+                `git ls-remote --tags origin v0.1.0-dev.25` confirms it and
+                the release run is green.
+
+### SECURITY detail — 0.1.0-dev.25
+
+NO runtime dependency change. backend/requirements.txt untouched.
+
+pip-audit: pytest 8.3.4, PYSEC-2026-1845, fixed in 9.0.3. "pytest through
+9.0.2 on UNIX relies on /tmp/pytest-of-{user} directories, allowing local
+users to cause DoS or possibly gain privileges."
+  * DEV-ONLY. pytest lives in backend/requirements-dev.txt; the Dockerfile
+    installs backend/requirements.txt ONLY, so it never ships in the image.
+  * Local attack vector on a developer or CI machine, not a production
+    exposure. Graded Medium and surfaced; the user's call.
+  * Fix would be 8.3.4 -> 9.0.3, a major bump needing pytest-asyncio
+    compatibility work. dev.24 set the precedent of keeping dependency bumps
+    out of a release's security gate; same call here.
+  * NOT present in dev.24's audit -- this advisory is new since then.
+
+New attack surface reviewed line by line (backend/bpf.py runs a subprocess):
+  * argv list via asyncio.create_subprocess_exec. NO shell, no shell=True.
+  * `--` before the expression. LOAD-BEARING, and verified by experiment:
+    without it `-r /etc/passwd` made tcpdump OPEN that file; with it the same
+    string is a syntax error. There is a test asserting the path never
+    appears in the response.
+  * binary from shutil.which("tcpdump"), a module constant -- never request
+    input.
+  * `-d` compiles and exits: no interface opened, no privilege needed, no
+    network touched.
+  * Auth required (Depends(get_current_user)) and rate limited
+    (filter_check_rate_limiter, sharing rate_limit_packets_per_min).
+  * Query length caps: bpf_filter 2000, interface 64.
+  * Only tcpdump's FIRST stderr line is returned, with the "tcpdump:" prefix
+    stripped. No stack traces, no paths.
+  * Frontend warning text set with textContent, never innerHTML.
+  * FIXED DURING THE GATE: asyncio.wait_for stops waiting but does not stop
+    the process, so a timed-out tcpdump was left running and unreaped -- once
+    per call on a keystroke-reachable endpoint. Now killed and awaited, same
+    shape as packet_parser's tshark teardown. Test covers it.
+
+Quality review of the changed code: worst-case CPU for the structural search
+measured at 6ms (64 candidate ports, unsatisfiable, which is the case that
+cannot short-circuit or hit the candidate guard). 200-port and deep-nesting
+inputs bail on the guard in ~1-6ms. No N+1, no blocking I/O on the loop, no
+unbounded cache, no nesting over 3 levels.
+
+### Local vs container — SETTLED 2026-09-13, do not re-litigate
+
+check.sh works locally. Verified this session: picks python3.12.14 itself,
+finds tshark/tcpdump/capinfos/docker/chromium, 972 collected, exit 0.
+
+Run the tests LOCALLY. What the container costs:
+  1. The skip count stops meaning anything -- and 0 SKIPPED is this repo's
+     signal that the browser suite actually ran. BOTH dev.24 false greens
+     were container artifacts that dropped all 93 browser tests silently.
+  2. Diagnosis speed. This session's one failure took ~3 minutes to isolate
+     locally by injecting a temporary test that hooked console messages,
+     dialogs and every fetch URL. Each such iteration is a rebuild in a
+     container, and the temptation is to guess instead.
+  3. Documented browser flakiness when two containers share the tree.
+The container's ONLY real advantage -- python fidelity to the Dockerfile --
+is what the dev.24 check.sh fix already provides, and the clean-room check is
+what CI does on every branch push for free. Keep the container recipe as a
+once-in-a-while tool for suspected host contamination, nothing more.
+
+### THIS SESSION'S REGRESSION — read before touching browser waits
+
+`page.wait_for_function("<bare expression>")` is a landmine in this repo.
+Playwright can only evaluate a bare expression string by building it into a
+function INSIDE the page, and this app's CSP is `script-src 'self'` with no
+'unsafe-eval'. It only bites when the predicate is FALSE on the first look and
+real polling begins.
+
+Three call sites had it and were passing purely because their condition was
+already true. Adding a filter-check round trip ahead of the capture POST made
+one of them poll, and it failed with a CSP error that said nothing about the
+real cause. All three now pass `"() => ..."` instead. Use the arrow form.
 
 ## DECIDED by the user, 2026-09-13 (this session) — do not re-open
 
@@ -55,40 +168,115 @@ Environment: LOCAL Claude Code CLI — Claude PRESENTS git commands, the user
   taken before the column exists will have it empty -- render those as
   "unknown", never as "no filter".
 
-## Current session tracker — 0.1.0-dev.24, release sequence
+## Current session tracker — 0.1.0-dev.25, NOT STARTED
 
-🔢 VERSION    ✅ APP_VERSION (backend/main.py:75) and the docker-compose image
-                tag both read 0.1.0-dev.24; CHANGELOG heading dated
-                2026-09-13. v0.1.0-dev.23 confirmed tagged on the remote.
-🔨 BUILD      ✅ ./scripts/check.sh on this host: 905 passed, 0 failed,
-                0 SKIPPED, 2m26s, exit 0. The project's own workflow, not a
-                substitute. Baseline at dev.23 was 890; +15 = the tests added
-                this session exactly.
+Nothing has been changed in this session yet. All six gates are ⬜ pending and
+none of dev.24's ✅ carries forward: a passed gate is a statement about a diff
+that no longer exists.
 
-                Two false greens were caught getting here, BOTH of which
-                reported success while silently excluding the entire browser
-                suite: the 3.12 container under --userns=keep-id (93 skips),
-                and check.sh before playwright had a chromium (93 skips again).
-                ALWAYS read the skip count. 905/0 is the number that means
-                the browser tests ran.
-🔒 SECURITY   ✅ pip-audit: "No known vulnerabilities found". NO dependency
-                change at all. Notes under SECURITY below.
-📄 DOCS       ✅ CHANGELOG dated; README gained "A live stream has to be
-                pointed at something", a line in the four-controls table and a
-                clause in the preview-limit settings row;
-                docs/architecture.md gained a design section and a
-                known-limits entry.
-📦 RELEASE    ✅ f659269 on the remote. No PR: default branch out of scope by
-                standing decision.
-🚀 SHIP       ✅ VERIFIED from the remote, not assumed: tag v0.1.0-dev.24 ->
-                f659269, matching the branch head exactly. Release run
-                34762829528 success; published as a prerelease
-                "v0.1.0-dev.24 (Dev)"; image pushed to
-                ghcr.io/darthrater78/pcap-server:0.1.0-dev.24 AND :dev moved
-                to it. 0 assets, same as dev.22/.23 -- this repo's norm.
-                Check run 34762586063 on the branch push also passed (4m45s),
-                so a clean checkout verified this commit independently.
-                NOT yet confirmed deployed.
+🔢 VERSION    ⬜
+🔨 BUILD      ⬜
+🔒 SECURITY   ⬜
+📄 DOCS       ⬜
+📦 RELEASE    ⬜
+🚀 SHIP       ⬜
+
+Session-start checks, 2026-09-13 (this session):
+- Environment: LOCAL Claude Code CLI, Fedora 44, bash. Claude PRESENTS git.
+- Remote: https://github.com/darthrater78/pcap-server
+- In sync: local head 0b98c8e == origin/claude/admiring-wright-k20ptf.
+- Unfinished-release check: CLEAN. Every CHANGELOG version through
+  0.1.0-dev.24 has a tag on the remote (v0.1.0-dev.24 confirmed via
+  git ls-remote). No stranded Gate 6.
+- CI: release.yml (tag push) + check.yml (build check). Local dev: scripts/check.sh.
+- NOTE: this state file is TRACKED in git, not gitignored. That is a deliberate
+  deviation from SKILL.md's local-session guidance and it is why the knowledge
+  below survives across sessions. Leave it tracked.
+
+## IN PROGRESS this session — 0.1.0-dev.25, uncommitted
+
+DONE (working tree, not committed, gates not yet run):
+- README **Quick start** rewritten around the published image. No clone: the
+  compose file is curl'd from a TAG-pinned raw.githubusercontent URL, which
+  keeps the file and the image version it names in step. Added "Choosing a
+  version" (pinned vs the floating `:dev`), "Upgrading", and an "If you would
+  rather clone" pointer to Development.
+  ⚠️ **NEW VERSION-CARRYING REFERENCE — Gate 1 must now update README.md.**
+  The Quick start curl URL and the Upgrading curl URL both name a release tag.
+  Version refs are now: backend/main.py APP_VERSION, docker-compose.yml image,
+  CHANGELOG heading, AND these two README URLs.
+- README **Running it without a reverse proxy**, placed before "Behind a
+  reverse proxy". Cross-linked from Requirements, Quick start, Traffic in
+  transit, and the proxy section itself.
+- frontend/js/app.js: **live-stream checkbox clears after a successful start.**
+  Cleared on success only (a failed start keeps the intent for the retry), and
+  updateLiveTargetNotice() is called by hand because a programmatic checkbox
+  change fires no `change` event. viewCapture still keys off body.live_stream,
+  which was read before the clear -- do not "simplify" that to read the box.
+
+### VERIFIED BY EXPERIMENT this session — the loopback exemption
+
+`_is_secure_transport` (backend/main.py:296) treats loopback as secure. On a
+containerised install with a PUBLISHED PORT this never fires. Ran the published
+image under rootless podman, `-p 18080:8080`, curled 127.0.0.1:18080:
+
+    secure_transport: false, read_only: true
+    container log peer: 10.0.0.56  (the gateway, not 127.0.0.1)
+
+With `--network=host`, the same curl:
+
+    secure_transport: true, read_only: false
+    container log peer: 127.0.0.1
+
+So browsing http://localhost:8080 ON the Docker host is still read-only. This
+is now documented. Docker's bridge behaves the same way (gateway 172.17.0.1).
+
+## QUEUED, asked for mid-session 2026-09-13 — not started
+
+- **Reject unsatisfiable BPF filter combinations.** Real report from the user:
+  `((port 88) and (port 464)) and (tcp port 445 or ... or tcp port 443) and
+  (port 53)` -> tcpdump: "expression rejects all packets". Built by repeatedly
+  choosing "...and this" in the capture filter library, which ANDs port-only
+  expressions that cannot both be true.
+  FINDINGS (verified with `tcpdump -d` in the published image):
+  * `tcpdump -d -y <dlt> <expr>` compiles WITHOUT capturing and prints
+    "expression rejects all packets" for the user's filter. Exit code and
+    stderr are usable as a check. The server image HAS tcpdump.
+  * BUT libpcap's optimizer is INCOMPLETE: `tcp port 80 and tcp port 443`
+    compiles happily and is not flagged. So tcpdump alone is necessary, not
+    sufficient.
+  * So it needs TWO layers: a structural port-set check (catches the class
+    libpcap misses, and can run in the frontend at combine time, before the
+    bad expression is ever in the box), plus a `tcpdump -d` pre-flight on the
+    server (catches syntax errors and everything libpcap CAN prove, on typed
+    filters too, not just library-built ones).
+  * applyBpfFilter/bpfMenuItems (frontend/js/app.js ~1217-1245) is where "and"
+    is chosen. Its own comments ALREADY name this hazard -- "`tcp port 80 and
+    tcp port 443` matches nothing at all" -- and the menu was the mitigation.
+    The menu is not enough; it offers the wrong answer as an equal choice.
+  * models.py validate_bpf (~line 374) only checks forbidden CHARACTERS.
+    Semantic validation would be new.
+  * DLT matters: the user's capture was `-i any` => LINUX_SLL2, the server's
+    local tcpdump would default to something else. Decide whether to pass
+    `-y LINUX_SLL2` for the any-interface case.
+
+## Gate 2 baseline — carry forward, do not lose
+
+The dev.24 run of `./scripts/check.sh` on this host: **905 passed, 0 failed,
+0 SKIPPED, 2m26s, exit 0.** That is the number to beat; dev.23's was 890.
+
+**ALWAYS read the skip count.** Two false greens were caught during dev.24,
+BOTH reporting success while silently excluding the entire browser suite: a
+3.12 container under `--userns=keep-id` (93 skips), and check.sh before
+playwright had a chromium (93 skips again). `0 SKIPPED` is what means the
+browser tests actually ran. A green with 93 skips is a failed gate.
+
+Release-verification norm for this repo: a release publishes as a prerelease
+"vX (Dev)", pushes `ghcr.io/darthrater78/pcap-server:<version>` and moves
+`:dev` to it, with **0 assets** — dev.22, .23 and .24 all did. 0 assets is
+correct here, not a broken upload.
+
+## 0.1.0-dev.24 — RELEASED, closed record
 
 ### scripts/check.sh CANNOT RUN ON THIS HOST — read before trusting Gate 2
 

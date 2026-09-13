@@ -89,25 +89,39 @@ the SSH client all live inside the image. It listens on port 8080.
 **In the browser:** anything current. There is no build step and no framework —
 the UI is plain HTML, CSS and JavaScript served by the app itself.
 
-**HTTPS is not required to start, but the app is read-only without it.** See
-[Traffic in transit](#traffic-in-transit).
+**HTTPS is not required to start, but the app is read-only without it** — and
+read-only is enough to block a first capture. See
+[Traffic in transit](#traffic-in-transit) and
+[Running it without a reverse proxy](#running-it-without-a-reverse-proxy).
 
 ## Quick start
 
+**There is nothing to clone and nothing to build.** The image is published, and
+`docker-compose.yml` is the entire install — one file, fetched straight from the
+release you intend to run.
+
 ```bash
-git clone https://github.com/darthrater78/pcap-server.git
-cd pcap-server
+# 1. Pick the install directory. This directory IS the install: it will hold
+#    your captures and the key that decrypts them, and every relative path in
+#    the compose file resolves against it. Anywhere you control is fine.
+sudo mkdir -p /opt/docker/pcap && sudo chown "$USER" /opt/docker/pcap
+cd /opt/docker/pcap
 
-# The bind-mounted directories, created next to docker-compose.yml.
-# Only ssh-keys/ is in the repo; the rest hold your data and are not.
-# Create them yourself so they belong to you rather than to root.
-mkdir -p data captures secrets
+# 2. Fetch the compose file for a specific release. Pinning it to the tag is
+#    what keeps the file and the image version it names in step with each
+#    other -- see "Choosing a version" below before substituting another tag.
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.25/docker-compose.yml
 
-# The master key. Generated once, before the first start -- the app refuses to
-# start without it rather than storing captures in the clear.
+# 3. Create the four bind-mounted directories. All four must exist before the
+#    first start: Docker would otherwise create them owned by root.
+mkdir -p ssh-keys data captures secrets
+
+# 4. The master key. Generated once, before the first start -- the app refuses
+#    to start without it rather than storing captures in the clear.
 openssl rand -base64 32 > secrets/master.key
 chmod 0400 secrets/master.key
 
+# 5. Start it.
 docker compose up -d
 docker compose logs pcap-server | grep -i encryption   # encryption enabled (key id ...)
 ```
@@ -121,7 +135,47 @@ that file is in, so run later `docker compose` commands from this directory too.
 Absolute paths are supported and documented in the comments at the top of
 `docker-compose.yml`.
 
-Open `http://localhost:8080`. The first user to register becomes the admin.
+Open `http://<host>:8080`. The first user to register becomes the admin — and
+expect the app to be **read-only** at this point, which is intended rather than
+broken. See [Running it without a reverse proxy](#running-it-without-a-reverse-proxy)
+for what that allows, what it refuses, and what to do about it.
+
+### Choosing a version
+
+| Tag | What it is |
+|---|---|
+| `v0.1.0-dev.25` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
+
+Pin a release unless you specifically want to track. The
+[releases page](https://github.com/darthrater78/pcap-server/releases) lists what
+is available; substitute that tag in the `curl` above and the compose file will
+name the matching image.
+
+### Upgrading
+
+Re-fetch the compose file at the tag you are moving to, then pull and
+recreate. The tag below is the current release; substitute a later one when
+there is one:
+
+```bash
+cd /opt/docker/pcap
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.25/docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+`data/`, `captures/`, `ssh-keys/` and `secrets/` are bind mounts and are
+untouched by this — the database migrates itself on start. Re-fetching the file
+does discard any local edits you made to it, so if you have customised it (an
+absolute path, `TRUST_PROXY_HEADERS`, a different published port), diff before
+overwriting rather than after.
+
+### If you would rather clone
+
+Cloning still works and is the right move if you intend to change the code —
+the repo carries the same `docker-compose.yml` plus the test suite and the
+Dockerfile. See [Development](#development). Running it needs nothing from the
+repo but that one file.
 
 ## Your first capture
 
@@ -370,6 +424,29 @@ Capturing *specific* traffic is the filter's job, not a flag's, and the filter
 takes full BPF syntax: `host 10.0.0.230`, `tcp port 443`,
 `port 53 and not host 8.8.8.8`, `net 192.168.1.0/24`, `vlan 100`, `icmp or arp`,
 `tcp[tcpflags] & tcp-syn != 0`, `less 128`.
+
+### Filters that would capture nothing
+
+Combining two library picks with **…and this** is the easy way to build a
+filter that matches nothing. A packet carries one source port and one
+destination port, so requiring two services is one condition more than there
+are slots for it, and requiring three is hopeless. The filter compiles,
+tcpdump runs for the full duration, and the capture comes back empty — which
+looks exactly like there having been no such traffic.
+
+pcap-server checks for this in two places. In the filter library the
+**…and this** option carries a warning the moment you open the menu, saying
+what is wrong and that `or` is probably what you want. And a capture whose
+filter cannot match anything asks for confirmation before it starts.
+
+Both are warnings, not refusals. An odd-looking filter you mean is still yours
+to run — press on and the capture starts.
+
+One case is worth knowing about because nothing else will ever flag it:
+`tcp port 80 and tcp port 443` is a perfectly valid filter. It matches a packet
+travelling from port 80 to port 443, so tcpdump accepts it without complaint.
+Traffic like that essentially does not exist, which is why pcap-server says so
+even though the compiler will not.
 
 Shell metacharacters are rejected in the filter, which is passed to tcpdump as a
 single quoted argument after `--`. `-z`, `-W`, `-G`, `-C`, `-r`, `-F`, `-V` and
@@ -624,7 +701,10 @@ Loopback counts as secure — a connection that never leaves the machine has no
 wire to read. `X-Forwarded-Proto` is honoured only when `TRUST_PROXY_HEADERS` is
 set, because any client can send it. See
 [Behind a reverse proxy](#behind-a-reverse-proxy) for the three settings that
-matter, including why proxy buffering must be off.
+matter, including why proxy buffering must be off, and
+[Running it without a reverse proxy](#running-it-without-a-reverse-proxy) for
+what the degraded mode actually allows — including why loopback does not rescue
+a containerised install.
 
 **pcap-server to the target** is SSH with keys only. `asyncssh.connect` is
 called with `password=None` and `passphrase=None` explicitly, so there is no
@@ -725,7 +805,7 @@ same-origin COOP and CORP. HSTS is sent only where TLS is genuinely in use.
 ## Operating it
 
 Day-to-day running: what to set, what the admin can change, and how to put it
-behind TLS.
+behind TLS — or what you give up by not.
 
 ### Environment variables
 
@@ -786,10 +866,107 @@ captures are — a key never exists as a plaintext file on disk, and one
 uploaded before encryption was enabled is sealed in place automatically the
 next time the container starts.
 
+### Running it without a reverse proxy
+
+You can run pcap-server with no proxy in front of it, and for a quick look at a
+capture that is a perfectly reasonable thing to do. Be clear about what you get,
+because it is a **degraded mode, not a normal one**, and the app will not
+pretend otherwise.
+
+**What still works over plain HTTP:** signing in, browsing the capture list,
+opening a capture in the Viewer, the protocol tree and hex dump, display
+filters, and saved views you already have.
+
+**What is refused:** everything that changes state or exports in bulk. Starting
+a capture. Adding or editing a server. Trusting a host's SSH keys. Uploading an
+SSH key. Saving a view. Every admin setting. Downloading a capture. Each refusal
+comes back as an explanation rather than a bare 403, and the app shows a banner
+saying why.
+
+In practice this means **a fresh plain-HTTP install cannot take its first
+capture**: step 3 of [Your first capture](#your-first-capture) is trusting the
+host's keys, and that is a state change. You can register the admin account and
+then go no further.
+
+**There is no flag to turn this off.** That is deliberate. A capture routinely
+contains credentials in cleartext, so handing one over an unencrypted connection
+puts the whole thing on the wire; and an SSH private key uploaded over plain
+HTTP is simply given away. Neither is a risk the app will let you accept by
+setting a variable.
+
+#### The one exception: a genuinely local connection
+
+Loopback counts as secure, because a connection that never leaves the machine
+has no wire to read. **This almost never fires for a containerised install**,
+and the reason catches people out: with a published port (`8080:8080`), the
+connection reaches the container from the Docker bridge gateway, not from
+`127.0.0.1`. As far as the app can tell — correctly — that packet crossed a
+network. Browsing `http://localhost:8080` **on the Docker host itself is still
+read-only.**
+
+Two ways to get a genuinely local connection, both without a proxy:
+
+**1. An SSH tunnel.** The honest answer, and the one to reach for. It is real
+encryption, not a bypass:
+
+```bash
+ssh -N -L 8080:localhost:8080 you@the-docker-host
+```
+
+Then browse `http://localhost:8080` on your own machine. Note this only helps if
+the app sees loopback at the other end — pair it with host networking below, or
+accept read-only.
+
+**2. Host networking.** Drop `ports:` from the compose file and add
+`network_mode: host`. The container then shares the host's network stack, a
+connection from the host arrives as real loopback, and the app is fully
+functional to anyone on that host. This also removes the container's network
+isolation, so it is a trade, not a free win — and it means anyone who can reach
+the host's port 8080 from elsewhere on the LAN still gets the read-only version,
+which is the correct outcome.
+
+#### What you are risking if you expose it anyway
+
+Putting a plain-HTTP pcap-server on a LAN and living with read-only is not
+harmless, even though the destructive operations are blocked:
+
+- **Session cookies cross the wire in the clear.** `COOKIE_SECURE=false` is
+  required for sign-in to work at all over HTTP, and it does what it says.
+  Anyone on the path can lift a session and read every capture you can read.
+- **Your password crosses in the clear at sign-in.** Sign-in is deliberately
+  allowed over HTTP, because refusing it would leave no way in at all rather
+  than a degraded one. That is a trade the app makes knowingly and tells you
+  about; it does not make the password any safer.
+- **Capture contents are readable to anyone watching.** The Viewer works, so
+  packet data — including whatever credentials the capture caught — is being
+  served unencrypted.
+- **TOTP does not save you here.** It authenticates the sign-in; it does nothing
+  about the session cookie that is then sent in the clear on every request.
+
+The short version: read-only over HTTP protects your *configuration and your
+keys*, not your *captures* and not your *session*. If the captures matter, put
+it behind TLS.
+
+#### What not to do
+
+Do not set `TRUST_PROXY_HEADERS=true` to unlock the app without an actual proxy.
+That variable does not mean "pretend this is secure" — it means "believe the
+`X-Forwarded-Proto` header", and **any client can send that header**. Setting it
+with the port published to a network hands full write access, key upload and
+capture download to anyone who can reach the port and type one extra header. It
+is strictly worse than the read-only mode it appears to fix, and it is why the
+variable exists as an opt-in at all rather than being on by default.
+
+If you want the app fully functional, the supported route is TLS in front of
+it. Caddy, Nginx Proxy Manager and Traefik each obtain and renew certificates
+themselves and need very little configuration — see below.
+
 ### Behind a reverse proxy
 
 Over plain HTTP pcap-server is read-only — see
-[Traffic in transit](#traffic-in-transit) and the banner the app shows. Putting it behind TLS restores full access. A worked nginx
+[Traffic in transit](#traffic-in-transit),
+[Running it without a reverse proxy](#running-it-without-a-reverse-proxy), and
+the banner the app shows. Putting it behind TLS restores full access. A worked nginx
 config is in [`docs/nginx.conf.example`](docs/nginx.conf.example), and there is a
 separate guide for **[Nginx Proxy Manager](docs/nginx-proxy-manager.md)**, which
 generates its own config and needs different steps. Three settings are

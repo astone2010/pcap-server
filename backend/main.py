@@ -40,9 +40,12 @@ from backend.capture import (
     LiveStreamLimitExceeded,
     LiveStreamNotTargeted,
 )
+from backend.bpf import check_filter
 from backend.crypto import CryptoError
 from backend.database import Database
 from backend.models import (
+    ANY_INTERFACE,
+    BPF_FORBIDDEN_CHARS,
     CaptureRename,
     CaptureRequest,
     CaptureStatus,
@@ -72,7 +75,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.24"
+APP_VERSION = "0.1.0-dev.25"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -95,6 +98,7 @@ async def _housekeeping() -> None:
             packet_rate_limiter.prune()
             capture_start_rate_limiter.prune()
             live_poll_rate_limiter.prune()
+            filter_check_rate_limiter.prune()
             if sessions or devices:
                 logger.info(
                     "housekeeping: removed %d expired session(s), %d expired device(s)",
@@ -173,6 +177,17 @@ capture_start_rate_limiter = SlidingWindowLimiter(
 # viewer's whole allowance and leave clicking a packet rate-limited.
 live_poll_rate_limiter = SlidingWindowLimiter(
     max_per_minute=db.get_setting_int("rate_limit_live_polls_per_min"),
+)
+
+# The filter check compiles an expression with tcpdump -- a short-lived
+# subprocess per call. Cheaper than a capture and far cheaper than a tshark
+# run, but it is still a process spawn driven by a keystroke-adjacent action,
+# so it gets a budget of its own rather than eating the capture-start one. It
+# shares that setting deliberately: the check exists to be called immediately
+# before a start, and giving it a separate admin knob would be one more number
+# to keep in step for no benefit.
+filter_check_rate_limiter = SlidingWindowLimiter(
+    max_per_minute=db.get_setting_int("rate_limit_packets_per_min"),
 )
 
 # A restart must not leave anyone signed in. Sessions live in SQLite on a
@@ -1162,6 +1177,58 @@ async def delete_ssh_key(key_name: str, user: dict = Depends(require_admin)):
         raise HTTPException(404, "key not found")
     path.unlink()
     return {"ok": True}
+
+
+# --- capture filter checking ---
+
+# Deliberately a GET, and deliberately not under /api/captures/.
+#
+# GET because it changes nothing: it compiles an expression and throws the
+# result away. That is not pedantry -- the read-only-over-HTTP middleware
+# refuses mutating calls, and a checker that vanished exactly when the app went
+# read-only would be missing from the one configuration where a wasted capture
+# is hardest to retry.
+#
+# Its own prefix because /api/captures/{capture_id} would otherwise match
+# `check-filter` as an id, leaving the routes ordered by declaration and a
+# reordering away from breaking quietly.
+@app.get("/api/bpf/check")
+async def check_bpf_filter(
+    bpf_filter: str = Query("", max_length=2000),
+    interface: str = Query(ANY_INTERFACE, max_length=64),
+    user: dict = Depends(get_current_user),
+):
+    """Advisory only. Never refuses a capture, and never blocks one either.
+
+    Everything here is a warning the operator can overrule, so a caller that
+    cannot reach this endpoint, or gets an error from it, should start the
+    capture anyway. Refusing on the checker's behalf would turn an advisory
+    into a gate that nobody asked for.
+    """
+    if not filter_check_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many filter checks, slow down")
+
+    # Reported rather than raised. These characters are refused outright when a
+    # capture actually starts (models.validate_bpf), but that refusal arrives
+    # as a 422 on the start button; saying so here means it is on screen while
+    # the field is still being edited.
+    bad = sorted({c for c in bpf_filter if c in BPF_FORBIDDEN_CHARS})
+    if bad:
+        return {"ok": False, "warning": {
+            "code": "bpf_invalid",
+            "message": "This filter contains characters that are not allowed.",
+            "detail": "Remove " + " ".join(f"`{c}`" for c in bad)
+                      + ". None of them mean anything in a BPF expression.",
+        }}
+
+    warning = await check_filter(bpf_filter, interface)
+    if warning is None:
+        return {"ok": True, "warning": None}
+    return {"ok": False, "warning": {
+        "code": warning.code,
+        "message": warning.message,
+        "detail": warning.detail,
+    }}
 
 
 # --- captures ---

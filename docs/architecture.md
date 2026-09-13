@@ -46,6 +46,7 @@ over an unencrypted connection.
 | `crypto.py` | The envelope format, sealing and opening |
 | `vault.py` | Key resolution, startup policy, plaintext migration |
 | `localnet.py` | Detecting that a capture target is the machine pcap-server runs on |
+| `bpf.py` | Deciding whether a capture filter can match anything, before the capture runs |
 
 There is no ORM, no service layer and no dependency-injection container. Routes
 call the managers directly, and `database.py` is the only module that writes
@@ -432,6 +433,64 @@ default gateway (on a Docker bridge network, that is the host), and the names
 Docker publishes for the host. What it cannot detect is the host's LAN address
 when the container has never been told what the host is called. So it reports
 what it found rather than claiming proof of non-locality.
+
+---
+
+## Filters that cannot match anything
+
+A capture filter that matches nothing does not announce itself. tcpdump starts,
+runs for its full duration, and comes back with zero packets — which reads
+exactly like "there was no such traffic". The operator learns nothing except
+that a capture window was spent, and on a production host that is not always
+cheap to repeat.
+
+The filters that go wrong this way are built rather than typed. The capture
+filter library offers **…and this** to combine two picks, and for a host row
+plus a protocol row `and` is correct. For two protocol rows it is not: a packet
+carries one source port and one destination port, so two services is one
+constraint more than there are slots to hold it. Three is hopeless.
+
+Two checks run, and they answer different questions.
+
+**`bpf.py`'s structural check** models the port constraints directly: which
+ports each `and` operand permits, on which of the two slots, under which
+protocol. It then searches for a single packet satisfying all of them — a
+protocol and two port values, so the whole search space is small enough to
+brute-force. It exists because **libpcap cannot answer the question that
+matters most**. `tcp port 80 and tcp port 443` compiles perfectly well, because
+it genuinely matches a packet running from port 80 to port 443; libpcap is
+right to accept it and will never object. Only a model of what was meant can
+say no such traffic exists.
+
+**The compile check** hands the expression to the real tcpdump with `-d`, which
+compiles and exits without opening an interface or needing any privilege. That
+is the authority on emptiness and the only thing that can speak to syntax,
+because it is the same compiler the target host will use.
+
+The structural model is **sound rather than complete**: it stays silent about
+anything it does not fully understand — a `not` anywhere, an operand that is
+not purely about ports, a named port whose number lives in `/etc/services` on
+the target. Every unparsed term is read as "constrains nothing", which can only
+make it quieter. That direction is deliberate. A warning that is wrong about a
+filter somebody meant teaches them to dismiss the next one, and the next one
+may be right.
+
+Neither check refuses a capture. Both warn, and the operator decides.
+
+The same model is implemented twice, in `bpf.py` and in `app.js`, and that is a
+cost paid for timing: the browser copy answers with no round trip, so the
+filter menu can carry its warning at the moment of the click rather than after
+a capture has been started. `bpf.py` is the authority — it also compiles. A
+browser test runs a shared corpus through both and fails if they disagree,
+because nothing else would notice them drifting apart.
+
+The check endpoint is a `GET` under `/api/bpf/`, for two reasons that are easy
+to get wrong. `GET` because it changes nothing, and because the
+read-only-over-HTTP middleware refuses mutating calls — a checker that vanished
+exactly when the app went read-only would be missing from the configuration
+where a wasted capture is hardest to retry. Its own prefix because
+`/api/captures/{capture_id}` would otherwise match `check-filter` as an id,
+leaving correctness dependent on route declaration order.
 
 ---
 

@@ -1224,6 +1224,205 @@ function applyBpfFilter(expr, mode) {
     onBpfFilterChanged();
 }
 
+// --- BPF combination checking -------------------------------------------
+//
+// A port-level model of a capture filter, used to answer one question before
+// the operator commits to it: would joining these two expressions with `and`
+// produce something that matches nothing?
+//
+// This is the same reasoning backend/bpf.py does, and the BACKEND IS THE
+// AUTHORITY -- it also compiles the expression with the real tcpdump, which
+// this cannot do. What this copy buys is timing: it runs with no round trip,
+// so the menu can carry the warning at the moment of the click rather than
+// after a capture has already been started and wasted.
+//
+// Keep the two in step. If the model changes here it changes there, and the
+// calibration cases in bpf.py's docstring are the shared spec.
+//
+// Sound, not complete: it stays quiet about anything it does not fully
+// understand, because a false warning on a filter somebody meant teaches them
+// to click through every warning after it.
+
+const BPF_PROTOCOLS = ["tcp", "udp", "sctp"];
+const BPF_MAX_CANDIDATE_PORTS = 64;
+
+function bpfTokenize(expr) {
+    return (expr || "").toLowerCase().match(/\(|\)|[^\s()]+/g) || [];
+}
+
+// Split on `ops` at paren depth zero. null when the parens do not balance --
+// tcpdump reports that far better than this can, so it is not our error.
+function bpfSplitTop(tokens, ops) {
+    const parts = [[]];
+    let depth = 0;
+    for (const tok of tokens) {
+        if (tok === "(") depth++;
+        else if (tok === ")") { depth--; if (depth < 0) return null; }
+        else if (depth === 0 && ops.includes(tok)) { parts.push([]); continue; }
+        parts[parts.length - 1].push(tok);
+    }
+    return depth === 0 ? parts : null;
+}
+
+// Drop brackets that wrap the WHOLE list. `(a) and (b)` also starts with `(`
+// and ends with `)`, so the partner has to be checked or the result is
+// nonsense.
+function bpfStripParens(tokens) {
+    while (tokens.length >= 2 && tokens[0] === "(" && tokens[tokens.length - 1] === ")") {
+        const inner = tokens.slice(1, -1);
+        let depth = 0, ok = true;
+        for (const tok of inner) {
+            if (tok === "(") depth++;
+            else if (tok === ")" && --depth < 0) { ok = false; break; }
+        }
+        if (!ok || depth !== 0) return tokens;
+        tokens = inner;
+    }
+    return tokens;
+}
+
+// `[proto] [src|dst] port N`, or null for anything else. null is returned
+// generously: every caller reads it as "constrains nothing", which can only
+// make the check quieter.
+function bpfParseAlternative(tokens) {
+    tokens = bpfStripParens(tokens);
+    if (!tokens.length) return null;
+    let proto = null, slots = ["src", "dst"], i = 0;
+    if (BPF_PROTOCOLS.includes(tokens[i])) proto = tokens[i++];
+    else if (["ip", "ip6", "arp", "rarp", "ether", "vlan", "mpls"].includes(tokens[i])) return null;
+    if (tokens[i] === "src" || tokens[i] === "dst") slots = [tokens[i++]];
+    if (i >= tokens.length) return null;
+    const keyword = tokens[i++];
+    const rest = tokens.slice(i);
+    if (keyword === "port" && rest.length === 1 && /^\d+$/.test(rest[0])) {
+        return { ports: new Set([parseInt(rest[0], 10)]), slots, proto };
+    }
+    if (keyword === "portrange" && rest.length === 1) {
+        const m = /^(\d+)-(\d+)$/.exec(rest[0]);
+        if (m) {
+            const lo = parseInt(m[1], 10), hi = parseInt(m[2], 10);
+            if (lo <= hi && hi - lo <= BPF_MAX_CANDIDATE_PORTS) {
+                const ports = new Set();
+                for (let p = lo; p <= hi; p++) ports.add(p);
+                return { ports, slots, proto };
+            }
+        }
+    }
+    // Named ports (`port domain`) are not resolved: the mapping lives in
+    // /etc/services on the TARGET, which the browser cannot read.
+    return null;
+}
+
+function bpfRender(tokens) {
+    return tokens.join(" ").replace(/\( /g, "(").replace(/ \)/g, ")").trim();
+}
+
+// Every port constraint an `and`-chain imposes, however it is bracketed.
+// Recursive because the filter library produces exactly that shape:
+// `((port 88) and (port 464)) and (...)` after three picks.
+function bpfCollect(tokens) {
+    tokens = bpfStripParens(tokens);
+    if (!tokens.length) return [];
+
+    // `or` binds loosest. A disjunction of port terms collapses into one
+    // constraint with several alternatives; anything else constrains nothing
+    // we can pin down, since satisfying either branch satisfies the whole.
+    const orGroups = bpfSplitTop(tokens, ["or", "||"]);
+    if (!orGroups) return [];
+    if (orGroups.length > 1) {
+        const alts = orGroups.map(bpfParseAlternative);
+        if (alts.length && alts.every((a) => a)) {
+            return [{ alternatives: alts, source: bpfRender(tokens) }];
+        }
+        return [];
+    }
+
+    const andGroups = bpfSplitTop(tokens, ["and", "&&"]);
+    if (!andGroups) return [];
+    if (andGroups.length > 1) return andGroups.flatMap(bpfCollect);
+
+    const stripped = bpfStripParens(tokens);
+    if (stripped.length !== tokens.length) return bpfCollect(stripped);
+
+    const alt = bpfParseAlternative(tokens);
+    return alt ? [{ alternatives: [alt], source: bpfRender(tokens) }] : [];
+}
+
+function bpfConstraints(expr) {
+    const tokens = bpfTokenize(expr);
+    if (!tokens.length) return null;
+    // `not` turns a constraint into its complement and this model has no
+    // representation for that. One anywhere is enough to stand down.
+    if (tokens.some((t) => t === "not" || t === "!")) return null;
+    return bpfCollect(tokens);
+}
+
+function bpfConstraintPorts(c) {
+    const out = new Set();
+    for (const alt of c.alternatives) for (const p of alt.ports) out.add(p);
+    return out;
+}
+
+function bpfHolds(c, proto, src, dst) {
+    return c.alternatives.some((alt) =>
+        (alt.proto === null || alt.proto === proto) &&
+        ((alt.slots.includes("src") && src !== null && alt.ports.has(src)) ||
+         (alt.slots.includes("dst") && dst !== null && alt.ports.has(dst))));
+}
+
+// Can one packet satisfy every constraint at once? A packet offers a protocol,
+// a source port and a destination port, so that is the whole search space. The
+// null candidate stands for "some other port entirely", which is what keeps
+// `port 80 and host X` satisfiable rather than forcing a named value.
+function bpfSatisfiable(constraints) {
+    if (!constraints.length) return true;
+    const candidates = new Set();
+    for (const c of constraints) for (const p of bpfConstraintPorts(c)) candidates.add(p);
+    if (candidates.size > BPF_MAX_CANDIDATE_PORTS) return true;
+    const values = [null, ...[...candidates].sort((a, b) => a - b)];
+    for (const proto of BPF_PROTOCOLS) {
+        for (const src of values) {
+            for (const dst of values) {
+                if (constraints.every((c) => bpfHolds(c, proto, src, dst))) return true;
+            }
+        }
+    }
+    return false;
+}
+
+function bpfPairwiseDisjoint(sets) {
+    for (let i = 0; i < sets.length; i++) {
+        for (let j = i + 1; j < sets.length; j++) {
+            for (const p of sets[i]) if (sets[j].has(p)) return false;
+        }
+    }
+    return true;
+}
+
+// null when there is nothing to say. Otherwise { code, message } -- the same
+// two codes backend/bpf.py uses, so the wording stays recognisable whichever
+// layer the operator meets first.
+function bpfCheckExpression(expr) {
+    const constraints = bpfConstraints(expr);
+    if (!constraints || constraints.length < 2) return null;
+
+    if (!bpfSatisfiable(constraints)) {
+        return {
+            code: "bpf_matches_nothing",
+            message: "matches nothing — a packet cannot be on all these ports at once",
+        };
+    }
+
+    const sets = constraints.map(bpfConstraintPorts).filter((s) => s.size);
+    if (sets.length >= 2 && bpfPairwiseDisjoint(sets)) {
+        return {
+            code: "bpf_cross_service_only",
+            message: "only matches traffic directly between these services — did you mean “or”?",
+        };
+    }
+    return null;
+}
+
 // The same four modes the display filter's right-click menu offers, for the
 // same reason: which combinator is wanted cannot be read off the click.
 //
@@ -1235,9 +1434,25 @@ function applyBpfFilter(expr, mode) {
 // not announce itself: the capture just runs and comes back empty.
 function bpfMenuItems(expr) {
     const show = expr.length > 46 ? expr.slice(0, 45) + "\u2026" : expr;
+    // The check runs on the expression that CHOOSING `and` would actually
+    // produce, not on the two halves separately. That matters once a filter
+    // has been built up: `(A) and (B)` may be fine while `((A) and (B)) and
+    // (C)` is not, and only the assembled string can tell you which.
+    const box = $("cap-bpf");
+    const andWarning = bpfCheckExpression(combineBpf(box ? box.value : "", expr, "and"));
     return [
         { label: `Replace with: ${show}`, run: () => applyBpfFilter(expr, "replace") },
-        { label: "  \u2026and this", hint: "and", run: () => applyBpfFilter(expr, "and") },
+        // Still clickable when it is flagged. A warning the operator can
+        // overrule is a warning they will read; one that takes the option away
+        // is one they will resent the first time it is wrong about a filter
+        // they meant. The wording carries the reason so the choice is informed
+        // rather than merely permitted.
+        {
+            label: "  \u2026and this",
+            hint: "and",
+            warn: andWarning ? andWarning.message : "",
+            run: () => applyBpfFilter(expr, "and"),
+        },
         { label: "  \u2026or this", hint: "or", run: () => applyBpfFilter(expr, "or") },
         { label: "  Replace with NOT this", hint: "not", run: () => applyBpfFilter(expr, "not") },
     ];
@@ -1259,6 +1474,48 @@ function useLibraryFilter(expr, el, ev) {
     // which fires no click at all.
     if (ev) ev.stopPropagation();
     openFilterMenu(ev ? ev.clientX : 0, ev ? ev.clientY : 0, bpfMenuItems(expr));
+}
+
+// True to go ahead. Asks only when there is something to say.
+//
+// Two checks stand behind this and they answer different questions. The local
+// one (bpfCheckExpression) reasons about ports and catches the filter that is
+// valid but useless -- `tcp port 80 and tcp port 443` compiles perfectly well
+// and matches only traffic running from one to the other. The server one
+// compiles the expression with the real tcpdump, which is the same verdict the
+// target host will reach, and is the only thing that can speak to syntax.
+//
+// The server is asked first because it is the authority, and a network failure
+// is not an answer: if it cannot be reached, the local check still runs and
+// the capture still starts. A checker that could block a capture by being
+// unavailable would be worse than no checker.
+async function confirmBpfFilter(expr, iface) {
+    if (!expr || !expr.trim()) return true;
+
+    let warning = null;
+    try {
+        const res = await api("/api/bpf/check?bpf_filter="
+            + encodeURIComponent(expr) + "&interface=" + encodeURIComponent(iface));
+        warning = res && res.warning;
+    } catch (e) {
+        // Deliberately silent. The operator asked to start a capture, not to
+        // hear about the filter checker.
+    }
+    if (!warning) {
+        const local = bpfCheckExpression(expr);
+        if (local) warning = { code: local.code, message: local.message, detail: "" };
+    }
+    if (!warning) return true;
+
+    const lead = warning.code === "bpf_matches_nothing"
+        ? "This capture would almost certainly come back empty."
+        : "This filter may not capture what you expect.";
+    return confirm(
+        lead + "\n\n" + warning.message
+        + (warning.detail ? "\n\n" + warning.detail : "")
+        + "\n\nFilter:\n" + expr.trim()
+        + "\n\nStart the capture anyway?"
+    );
 }
 
 // --- capture ---
@@ -1470,6 +1727,17 @@ async function startCapture() {
         return;
     }
 
+    // A filter that matches nothing does not announce itself: the capture runs
+    // for its full duration and comes back empty, which reads exactly like
+    // "there was no such traffic". This is the last moment it can be caught
+    // before that happens. It is a warning, not a refusal -- an odd-looking
+    // filter someone means is still theirs to run.
+    if (!await confirmBpfFilter($("cap-bpf").value,
+                                $("cap-interface").value || ANY_INTERFACE)) {
+        $("cap-bpf").focus();
+        return;
+    }
+
     const body = {
         server_id: serverId,
         interface: $("cap-interface").value || ANY_INTERFACE,
@@ -1486,6 +1754,21 @@ async function startCapture() {
 
     try {
         const started = await api("/api/captures", { method: "POST", body: JSON.stringify(body) });
+        // Live stream is a per-capture decision, not a preference, so it does
+        // not survive the capture that used it. Leaving it ticked means the
+        // NEXT capture silently streams too -- and since a stream costs an
+        // open SFTP channel plus a whole-buffer tshark run on every poll, and
+        // is capped far lower than ordinary captures (max_live_streams,
+        // default 2), an accidental one can refuse a capture somebody meant to
+        // take. Cleared only on success: if the start failed, the operator is
+        // about to retry and should not have to re-tick it.
+        //
+        // The notice under the field is driven by this checkbox and follows it
+        // via a `change` listener, which does NOT fire for a programmatic
+        // change -- so it is updated by hand here rather than left stale,
+        // pointing at a stream that is no longer being asked for.
+        $("cap-live").checked = false;
+        updateLiveTargetNotice();
         await loadCaptures();
         // Straight into the Viewer. Ticking "Live stream" and then having to
         // find the capture in a list and press View is the same two clicks the
@@ -3102,6 +3385,15 @@ function openFilterMenu(x, y, items) {
             item.run();
         });
         menu.appendChild(row);
+        // The reason goes UNDER the option rather than in a title attribute:
+        // a tooltip that needs a hover to appear is one nobody reads before
+        // clicking, which is the only moment it is any use.
+        if (item.warn) {
+            const note = document.createElement("div");
+            note.className = "filter-menu-warn";
+            note.textContent = item.warn;
+            menu.appendChild(note);
+        }
     }
     document.body.appendChild(menu);
     // Placed after insertion so the real size is known and the menu can be

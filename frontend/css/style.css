@@ -879,6 +879,22 @@ body {
 
 .filter-menu-item:hover .filter-menu-hint { color: var(--accent-fg); }
 
+/* The reason an option is flagged, sitting under the option itself. The menu
+   is `white-space: pre` and deliberately narrow, so this one row opts back
+   into wrapping rather than forcing the whole menu wide enough for a
+   sentence. */
+.filter-menu-warn {
+    max-width: 260px;
+    margin: -2px 2px 4px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+    color: var(--warning);
+    font-size: 0.6875rem;
+    line-height: 1.35;
+    white-space: normal;
+}
+
 .filter-menu-sep {
     height: 1px;
     margin: 4px 2px;

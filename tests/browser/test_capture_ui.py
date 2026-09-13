@@ -440,3 +440,122 @@ async def test_the_ntlmssp_display_fields_are_offered_too(app_page):
         "ntlmssp.ntlmserverchallenge",
     ):
         assert name in fields, name
+
+
+# --- warning about a combination that will not match anything ---------------
+#
+# The menu already existed to avoid guessing the combinator. It was not enough:
+# it offered `and` as an equal-weight choice even where `and` is provably
+# wrong, and a filter that matches nothing does not announce itself -- the
+# capture runs for its full duration and comes back empty, which reads exactly
+# like "there was no such traffic".
+
+
+async def _menu_warning(page):
+    return await page.eval_on_selector_all(
+        "#filter-menu .filter-menu-warn", "els => els.map(e => e.textContent)"
+    )
+
+
+async def test_and_is_flagged_when_it_would_match_nothing(app_page):
+    """Two services on one packet needs two port slots and a coincidence."""
+    await _capture_tab(app_page)
+    await app_page.fill("#cap-bpf", "port 88")
+    await _open_library(app_page)
+    await app_page.fill("#filter-library-search", "kerberos password change")
+
+    await _pick_library_row(app_page)
+
+    await app_page.wait_for_selector("#filter-menu")
+    warnings = await _menu_warning(app_page)
+    assert warnings, "combining two different services with `and` should be flagged"
+    assert "or" in warnings[0].lower(), "the warning has to say what to do instead"
+
+
+async def test_the_flagged_option_is_still_clickable(app_page):
+    """A warning the operator can overrule is one they will read.
+
+    Taking the option away would make the check something to resent the first
+    time it is wrong about a filter they meant.
+    """
+    await _capture_tab(app_page)
+    await app_page.fill("#cap-bpf", "port 88")
+    await _open_library(app_page)
+    await app_page.fill("#filter-library-search", "kerberos password change")
+    second = await _pick_library_row(app_page)
+
+    await app_page.wait_for_selector("#filter-menu")
+    await app_page.click("#filter-menu .filter-menu-item:has-text('and this')")
+
+    assert await app_page.input_value("#cap-bpf") == f"(port 88) and ({second})"
+
+
+async def test_or_is_never_flagged(app_page):
+    """`or` is the answer the warning points at, so it cannot carry one itself."""
+    await _capture_tab(app_page)
+    await app_page.fill("#cap-bpf", "port 88")
+    await _open_library(app_page)
+    await app_page.fill("#filter-library-search", "kerberos password change")
+    await _pick_library_row(app_page)
+
+    await app_page.wait_for_selector("#filter-menu")
+    labels = await _menu_labels(app_page)
+    warn_count = len(await _menu_warning(app_page))
+    assert any("or this" in label for label in labels)
+    assert warn_count == 1, "only the `and` option should be carrying a warning"
+
+
+async def test_a_harmless_combination_carries_no_warning(app_page):
+    """A host row and a protocol row is exactly what `and` is for."""
+    await _capture_tab(app_page)
+    await app_page.fill("#cap-bpf", "host 10.0.0.1")
+    await _open_library(app_page)
+    await app_page.fill("#filter-library-search", "kerberos")
+
+    await _pick_library_row(app_page)
+
+    await app_page.wait_for_selector("#filter-menu")
+    assert await _menu_warning(app_page) == []
+
+
+async def test_the_browser_check_agrees_with_the_python_one(app_page):
+    """The two copies of the port model must not drift.
+
+    backend/bpf.py is the authority -- it also compiles the expression with the
+    real tcpdump, which the browser cannot do. The browser copy exists only for
+    timing: it answers with no round trip, so the menu can carry the warning at
+    the moment of the click. That is worth having only while the two agree, and
+    nothing else in the suite would notice them diverging.
+    """
+    from backend import bpf
+
+    corpus = [
+        "port 88 and port 464",
+        "tcp port 80 and tcp port 443",
+        "port 88 and port 464 and port 53",
+        "tcp port 80 and udp port 53",
+        "src port 80 and src port 443",
+        "((port 88) and (port 464)) and (tcp port 445 or tcp port 135) and (port 53)",
+        "(tcp port 445 or tcp port 135 or tcp port 389) and (port 464)",
+        "port 88 or port 389",
+        "host 10.0.0.1 and tcp port 445",
+        "host 10.0.0.1 and (tcp port 445 or port 88)",
+        "not (tcp port 22 and host 10.0.0.1)",
+        "",
+        "tcp",
+        "net 192.168.1.0/24",
+        "(port 80 or host 10.0.0.1) and port 443",
+        "port 88 and port 88",
+        "tcp port 445 or port 137 or port 138 or tcp port 139",
+        "portrange 1-100 and port 500 and port 600",
+        "port domain and port http and port https",
+    ]
+
+    in_browser = await app_page.evaluate(
+        "exprs => exprs.map(e => { const w = bpfCheckExpression(e); return w ? w.code : null; })",
+        corpus,
+    )
+    in_python = [(w.code if (w := bpf.structural_check(e)) else None) for e in corpus]
+
+    mismatches = [(e, js, py) for e, js, py in zip(corpus, in_browser, in_python) if js != py]
+    assert not mismatches, f"browser and server models disagree: {mismatches}"

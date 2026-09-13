@@ -108,7 +108,14 @@ async def test_starting_a_capture_sends_the_live_flag(app_page):
     # reaching the body, not the rule.
     await app_page.fill("#cap-bpf", "tcp port 443")
     await app_page.click("#btn-start-capture")
-    await app_page.wait_for_function("window.__sentBody !== null")
+    # An arrow function, not a bare expression. Playwright can only evaluate
+    # a bare expression string by building it into a function INSIDE the page,
+    # which this app's CSP forbids (`script-src 'self'` with no 'unsafe-eval').
+    # That only bites when the predicate is false on the first look and real
+    # polling starts -- which is exactly what happened when the capture start
+    # grew a filter-check round trip ahead of the POST. The bare form had been
+    # passing purely because the body was already there by the time it ran.
+    await app_page.wait_for_function("() => window.__sentBody !== null")
 
     body = await app_page.evaluate("window.__sentBody")
     assert body["live_stream"] is True
@@ -382,10 +389,10 @@ async def test_leaving_the_viewer_stops_the_polling(app_page):
         }"""
     )
     await app_page.click("[data-action='view-capture']")
-    await app_page.wait_for_function("window.__polls > 0")
+    await app_page.wait_for_function("() => window.__polls > 0")
 
     await app_page.click(".tab[data-tab='capture']")
-    await app_page.wait_for_function("typeof liveTimer !== 'undefined' && liveTimer === null")
+    await app_page.wait_for_function("() => typeof liveTimer !== 'undefined' && liveTimer === null")
     assert await app_page.evaluate("inLiveView()") is False
 
 

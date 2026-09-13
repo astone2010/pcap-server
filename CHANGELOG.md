@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.1.0-dev.25 — 2026-09-13
+
+### Added
+
+- **A capture filter that cannot match anything is now caught before the
+  capture runs.** Joining two library picks with **…and this** is how it
+  happens: a packet has one source port and one destination port, so two
+  services is one constraint more than there are slots to hold it. The filter
+  compiles, tcpdump starts, and the capture comes back empty — which reads
+  exactly like "there was no such traffic".
+
+  Two checks stand behind this, and they catch different things. The browser
+  reasons about the ports directly, so the **…and this** option in the filter
+  menu carries its warning at the moment of the click, with no round trip. The
+  server compiles the expression with the real tcpdump before the capture
+  starts, which is the same verdict the target host will reach and the only
+  thing that can speak to syntax.
+
+  Both are advisory. A filter that looks empty but is deliberate is still
+  yours to run — the warning says what is wrong and what to do instead, and
+  the capture starts if you say so.
+
+  The two also answer different questions. `tcp port 80 and tcp port 443`
+  compiles perfectly well, because it does match a packet running from port 80
+  to port 443; libpcap is right to accept it and will never object. Only a
+  model of what was meant can say that no such traffic exists, which is why
+  the port reasoning is not simply a tcpdump wrapper.
+
+### Changed
+
+- **The Live stream tickbox now clears once a capture has started.** It is a
+  per-capture decision rather than a preference, and leaving it ticked meant
+  the next capture streamed too — which matters because a live stream is
+  capped far lower than an ordinary capture (two at a time by default), so an
+  accidental one can refuse a capture somebody meant to take. A failed start
+  leaves it ticked, since the next thing to happen is a retry.
+
+- **The README's Quick start no longer clones the repository.** The image is
+  published and `docker-compose.yml` is the whole install, so the first step
+  is now fetching that one file from a release tag — which is what keeps the
+  file and the image version it names in step with each other. Cloning is
+  still documented for anyone who wants to change the code.
+
+  Also new: **Choosing a version**, on pinning a release against tracking the
+  floating `:dev` tag, and **Upgrading**.
+
+- **The README now explains running without a reverse proxy**, rather than
+  only how to set one up. What still works over plain HTTP, what is refused,
+  and — the part that catches people out — why browsing `http://localhost:8080`
+  on the Docker host is *still* read-only: with a published port the
+  connection reaches the container from the bridge gateway, not from loopback,
+  so the loopback exemption never fires. Host networking or an SSH tunnel are
+  the two ways to get a genuinely local connection.
+
+  It also says plainly what read-only over HTTP does and does not protect.
+  It protects your configuration and your SSH keys; it does not protect your
+  session cookie, your password at sign-in, or the contents of a capture you
+  view. And it explains why `TRUST_PROXY_HEADERS=true` is not a way to unlock
+  the app without a proxy: the header it tells the app to believe is one any
+  client can send.
+
+### Fixed
+
+- Three browser tests waited on a bare JavaScript expression, which Playwright
+  can only evaluate by building it into a function inside the page — something
+  this app's Content Security Policy forbids. They passed only while their
+  condition was already true on the first look; the first one to need real
+  polling failed with a CSP error rather than a useful message. All three now
+  pass a function.
+
 ## 0.1.0-dev.24 — 2026-09-13
 
 ### Changed
