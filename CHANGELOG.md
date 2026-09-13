@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.1.0-dev.23 — 2026-09-13
+
+### Added
+
+- **Live streaming.** Tick **Live stream** on the capture form and the Viewer
+  opens on the capture as it records, rows appearing as packets are taken.
+  Until now a capture was invisible until it finished: `tcpdump -w` writes on
+  the remote host, and nothing but a running packet count crossed the wire
+  before the transfer.
+
+  **It is the same viewer, with the same display filter.** The filter box, its
+  autocomplete, the view flags, name resolution and saved views all behave
+  exactly as they do on a stored capture, because the live routes call the same
+  `get_packet_list` and `get_packet_detail` over a different `PcapSource`.
+  There is one filtering implementation, not a cut-down second one for live
+  captures — a filter can be applied, and saved as a view, while the capture is
+  still running.
+
+  **A live stream is still an ordinary capture.** The authoritative pcap still
+  accumulates on the target and is still fetched and sealed when the capture
+  ends, so nothing about storage changes and closing the browser loses nothing.
+  Stopping it takes it through the same stopping/transferring/completed states
+  as any capture, after which the Viewer reopens it from the saved file, keeping
+  the display filter you were watching through. It stays marked **live stream**
+  in the capture list afterwards.
+
+  Two limits apply, because a live stream costs more than an ordinary capture
+  while it runs. **Max simultaneous live streams** (2) bounds concurrent live
+  captures — each holds an SFTP channel open on the target and costs a tshark
+  run over the whole buffer per poll — and does not block ordinary captures.
+  **Live stream preview limit** (16 MB) bounds the buffer; at the cap the
+  preview freezes and says so, while the capture keeps running and is saved in
+  full. Freezing was chosen over a rolling window because dropping the oldest
+  packets renumbers frames, which breaks the detail pane and the saved views
+  taken during the capture.
+
+  Two things had to be got right for any of it to work, both measured against
+  the real tools rather than assumed. A partially written *sealed* capture
+  cannot be read at all — the truncation check refuses it outright, which is
+  deliberate and was not weakened — so the live bytes are a pass-through and
+  never become a file on the data volume. And tshark exits non-zero on a
+  capture cut mid-packet, which is the same signal that means "your display
+  filter was refused"; since a live read lands mid-record constantly, every
+  poll with a filter applied would otherwise have blamed the operator's
+  perfectly good filter. pcap-server walks the pcap record headers itself and
+  hands tshark only whole records.
+
+  A live capture is also given `-U`, so tcpdump writes each packet as it
+  arrives instead of a buffer at a time. It changes when bytes reach the file,
+  not which bytes — the saved capture is byte-identical either way.
+
+### Changed
+
+- **The saved-view chips are readable.** They were set at `0.75rem` — 12px,
+  smaller than everything around them — for labels an operator typed themselves
+  and reads at a glance while packets scroll. They are now the same size as the
+  app's own content text, with the padding and the action glyphs scaled to
+  match; the download, edit and delete buttons on a chip were a few pixels of
+  click target sitting next to each other. A browser test now asserts the chip
+  is no smaller than a capture's name, so a later tidy-up cannot quietly shrink
+  it again.
+
 ## 0.1.0-dev.22 — 2026-09-13
 
 ### Fixed
