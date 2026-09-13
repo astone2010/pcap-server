@@ -1,6 +1,6 @@
 # Dev Skills gate state
-Track: work commit
-Version: 0.1.0-dev.16 (shipped) — unreleased work on top, no bump yet
+Track: release sequence — 0.1.0-dev.17
+Version: 0.1.0-dev.17
 Updated: 2026-09-13
 Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to.
         The harness assigns a fresh claude/* branch every session; that
@@ -8,105 +8,87 @@ Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to
         have now pushed to the harness name first and had to be corrected.
         Fast-forward onto admiring-wright-k20ptf instead.
 
-## 0.1.0-dev.16 — RELEASED AND VERIFIED, nothing outstanding
+## What is in 0.1.0-dev.17
 
-Verified from this container on 2026-09-13:
-- tag v0.1.0-dev.16 -> 55ad719 on the remote, exactly the branch head
-- Release workflow run #16 success; image pushed to
-  ghcr.io/darthrater78/pcap-server:0.1.0-dev.16 and :dev moved forward
-- GitHub release published, prerelease, body compares dev.15...dev.16
-- Check runs #41, #42 and #43 all success
+Three commits, all pushed, each green on CI before the bump:
 
-All six gates for dev.16 closed. Do not re-run them.
+- f148595 Delete a running capture the way Stop stops one (Check #43)
+- fc727c9 Prefer a trusted host's strongest key (Check #44)
+- 60acfe7 Refuse a host whose keys are not trusted (Check #45) — BREAKING
 
-## Committed since dev.16, pushed, CI green
+BREAKING in this release: a server whose host has never been scanned stops
+working until an admin trusts it. Accepted by the user; the project is still
+in development.
 
-- f148595 "Delete a running capture the way Stop stops one". delete() awaits
-  the cancelled monitor before touching the row (it was resurrecting the row
-  via the monitor's finally -> _persist -> INSERT OR REPLACE), interrupts
-  tcpdump, clears the remote pcap over the capture's own connection, closes
-  the session, and returns what it did. Frontend gained a running-aware
-  prompt, a busy button, an error path and a remote-path fallback message.
-  Check run #43 success.
+## Gates — release sequence, 0.1.0-dev.17
 
-## What is in the working tree now
+🔢 VERSION    ✅ APP_VERSION (backend/main.py:68) and the docker-compose image
+                tag both read 0.1.0-dev.17; the CHANGELOG "Unreleased" heading
+                became "0.1.0-dev.17 — 2026-09-13". release_notes_url is built
+                from APP_VERSION so it follows automatically. Grepped: no
+                0.1.0-dev.16 left outside CHANGELOG history. v0.1.0-dev.16
+                confirmed tagged on the remote — no gap behind this release.
+🔨 BUILD      ✅ ./scripts/check.sh re-run AFTER the bump: 591 passed, 0
+                skipped, 2m43s. The session-start hook installs tshark and
+                capinfos, so the 21 that skip in a bare container ran too.
+                Browser suites ran (chromium present).
+🔒 SECURITY   ✅ Each of the three commits was reviewed against
+                SECURITY_REFERENCE.md as it was written; the bump itself adds
+                no code. pip-audit re-run this session: backend/requirements.txt
+                clean, no known vulnerabilities. Two findings remain in the dev
+                toolchain only (pytest 8.3.4 PYSEC-2026-1845, setuptools 79.0.1
+                PYSEC-2026-3447) — neither ships in the container. dev.17 is
+                itself mostly a security release: it closes a fail-open host
+                key default and a stale-row/remote-file leak on capture delete.
+📄 DOCS       ✅ CHANGELOG dated, with a Changed section marking the breaking
+                change rather than burying it under Fixed. README summary line,
+                first-capture ordering and Security section all updated in
+                60acfe7; the Known Hosts panel hint too.
+📦 RELEASE    ➖ N/A — no PR. The default branch is out of scope by the user's
+                standing decision from earlier sessions.
+🚀 SHIP       ⏳ version-bump commit pushed from this container. The tag is NOT
+                and is the user's own action — handed over as a block. Stays ⏳
+                until `git ls-remote --tags origin v0.1.0-dev.17` answers.
 
-Option 1 (fail closed) on host key trust, approved by the user for a
-development-stage project. Nothing committed yet — awaiting approval.
+## The plan for what is left before 1.0
 
-- backend/ssh_manager.py: _connect refuses before opening a socket when no
-  keys are stored, naming the host and where to trust it. known_hosts is never
-  None now (that is asyncssh's "disable validation" value). The
-  HostKeyNotVerifiable message no longer says "scan the host key first" — it
-  could only ever fire for a MISMATCH, never for the no-keys case it named.
-- backend/main.py: /api/servers reports host_trusted per row.
-- frontend/js/app.js: the server list shows "Host not trusted — connections
-  are refused", with an inline Trust host button for admins and an ask-an-
-  admin line otherwise. trustServerHost() rather than adminTrustHost(),
-  because the latter reports into the Admin tab's message element.
-- frontend/index.html + README.md: the "an unverified host still connects"
-  claim is now false and is corrected in both. README's first-capture steps
-  reordered so trusting the host comes BEFORE Test connection, which can no
-  longer run without it. The Security section explains the asyncssh
-  known_hosts=None trap and why trust is endpoint-scoped and admin-owned.
-- tests: 7 new (3 fail-closed in test_ssh_manager.py, 4 host_trusted in
-  test_servers.py, including one pinning that two servers on one host share a
-  single decision and one that port 22's keys do not vouch for port 2222).
+Ordered by value, with the reasoning, so a later session does not re-derive it.
+Agreed with the user on 2026-09-13.
 
-BREAKING for any deployment with servers whose hosts were never scanned: they
-stop working until an admin trusts them. Accepted by the user — still in
-development.
+1. LICENSE. README says "See repository for license details" and there is no
+   licence file. A true 1.0 blocker, one file, and blocked ONLY on the user's
+   choice of licence. Nothing else can be called 1.0 while the repo makes a
+   claim it does not honour.
+2. Pin GitHub Actions to commit SHAs. softprops/action-gh-release@v2 runs in
+   the release job holding contents: write, and actions/checkout@v4,
+   docker/*-action@v3/v6 are all floating tags. A moved tag on any of them
+   rewrites releases and publishes images. This is the supply-chain item that
+   already has write access to the repo — it outranks the pip-audit rows.
+   Mechanical and verifiable from here.
+3. /api/ssh-keys authorization. It is get_current_user, not require_admin: any
+   authenticated user can use any stored SSH key against any host they name.
+   Same family as the fail-open dev.17 just closed — trust is now enforced on
+   WHICH host, but not on WHO may use which key against it. Needs a decision
+   from the user on the intended model before code.
+4. Dockerfile digest pinning, plus cap_drop and no-new-privileges in compose.
+   Minimal caps for the entrypoint are CHOWN, FOWNER, SETUID, SETGID. Cannot
+   be verified in this container (no Docker) — do it where it can be run, or
+   unverified hardening ships an image that will not start.
+5. pytest 8 -> 9 (PYSEC-2026-1845). LAST, and its own session.
+   pytest-asyncio 0.25.2 requires pytest<9, so this is a forced coordinated
+   bump into pytest-asyncio 1.x, which changed fixture-loop semantics and
+   dropped the event_loop fixture. pyproject sets asyncio_mode = "auto" across
+   591 mostly-async tests: expect a broad reshuffle, not a version string.
+   Dev-only — it does not ship.
+   setuptools PYSEC-2026-3447 rides along or is ignored: the project never
+   declares setuptools, it is the venv's bootstrap tool.
 
-## Gates
+Also open, smaller: dev.14's release body still compares against dev.8
+(cosmetic). docker-compose ships COOKIE_SECURE=false with the port published
+on all interfaces — documented in the file, but it is the insecure default.
 
-🔢 VERSION    ⬜ not owed on a work commit; a bump to dev.17 is the user's call
-🔨 BUILD      ✅ ./scripts/check.sh — 591 passed, 0 skipped, 2m39s. tshark and
-                capinfos are installed by the session-start hook, so the 21
-                that skip in a bare container ran here too.
-🔒 SECURITY   ✅ This IS the security change: it closes a fail-open default.
-                Reviewed for the obvious own-goal — no chicken and egg, since
-                scan_host_keys() uses ssh-keyscan as a subprocess and never
-                goes through _connect(). host_trusted on /api/servers reveals
-                only whether a host the caller already configured is trusted,
-                which Test connection would tell them anyway; establishing
-                trust is still require_admin.
-📄 DOCS       ✅ CHANGELOG (a Changed section, marked breaking), README summary
-                + first-capture order + Security section, and the Known Hosts
-                hint in index.html.
-📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
-🚀 SHIP       ⬜ not owed on a work commit.
-
-## Raised this session, not changed
-
-- An unverified host still connects, unverified. _get_known_hosts_file returns
-  None when no keys are stored, and asyncssh treats known_hosts=None as
-  "disable host key validation" -- not "use the default file". So a host that
-  has never been scanned gets no verification at all and is handed the SSH
-  key. Documented behaviour (README line 127, and the Known Hosts hint say so
-  out loud) and a deliberate TOFU-on-demand design, but it is fail-open in the
-  one place the security rules say fail closed. A 1.0 call for the user.
-- The HostKeyNotVerifiable message says "Scan the host key first via Admin >
-  Known Hosts", but that exception can only fire when keys ARE stored and do
-  not match -- the no-keys case never raises it. The message describes the one
-  situation it is never shown for.
-- README line 56 says "SSH host keys are verified per host", which line 127
-  then qualifies. The summary overstates the default.
-
-## Carried over from dev.16, still open
-
-- No LICENSE file, while README says "See repository for license details".
-- Dockerfile base image not digest-pinned; compose has no cap_drop /
-  no-new-privileges. Needs a real Docker host to verify.
-- Actions pinned to @v4/@v3, not SHAs; softprops/action-gh-release holds
-  contents: write.
-- pytest 8.3.4 PYSEC-2026-1845 — dev-only; fix is pytest 9, a major bump that
-  drags pytest-asyncio.
-- /api/ssh-keys is get_current_user, not require_admin: any user can use any
-  stored key against any host they name. Design decision, worth a 1.0 call.
-- dev.14's release body still compares against dev.8 (cosmetic).
-
-Stale branches on origin that are the USER'S to delete, never Claude's:
-claude/nifty-lamport-aul3v3 (duplicate of 45cf119).
+Stale branch on origin that is the USER'S to delete, never Claude's:
+claude/nifty-lamport-aul3v3 (a duplicate of 45cf119).
 
 ## Branch note — READ THIS FIRST
 
