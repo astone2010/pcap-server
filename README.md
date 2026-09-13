@@ -391,6 +391,10 @@ under the BPF field on the Capture tab — a searchable list grouped by protocol
 which fills the field above it when you choose one. The Viewer has a full
 display-filter cheatsheet behind **Filter help**.
 
+The library stays open while you choose, and shows the expression as it is
+being built, so several filters can be picked in a row without reopening the
+list or looking away from it. **Clear** on that bar starts over.
+
 Choosing a second capture filter while the field already holds one asks how to
 combine them — **…and this**, **…or this**, or replace — rather than guessing.
 Neither guess is safe: two protocol rows almost always mean `or`, since
@@ -558,9 +562,13 @@ argument list immediately before execution. Under sudo those turn a capture into
 command execution or arbitrary file reads as root. Nothing user-supplied reaches
 tcpdump as a flag, which is precisely why this is checked rather than assumed.
 
-Filters are validated before they travel. The capture filter rejects shell
-metacharacters and is passed after `--` as a single argument, so a filter can
-never become part of the command. SSH usernames are constrained to characters
+Filters are validated before they travel. The capture filter rejects `;`, `$`,
+a backtick and a backslash — none of which mean anything in BPF — and is passed
+after `--` as a single shell-quoted argument, so a filter can never become part
+of the command. `&` and `|` are allowed, because they are BPF's own bitwise
+operators and every `tcpflags` or byte-offset filter needs them; the quoting is
+what makes them safe, and the character check is the second line under it
+rather than the only one. SSH usernames are constrained to characters
 sudoers gives no meaning to, so a username can never widen the sudoers rule the
 prerequisite check prints for you to paste as root.
 

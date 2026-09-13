@@ -865,24 +865,44 @@ async def test_delete_survives_a_process_that_has_already_exited(manager):
 # --- why the composed BPF filter uses the keywords ----------------------------
 
 
-def test_the_bpf_validator_refuses_the_c_operators_but_takes_the_keywords():
-    """The reason combineBpf() in the frontend composes with `and`/`or`.
+def test_the_bpf_validator_takes_both_spellings_of_the_combinators():
+    """Both work now, and the composed filter uses the words by choice.
 
-    The capture command is assembled as a string and run through the remote
-    shell, so `&` and `|` are refused outright by the request model. libpcap
-    accepts both spellings for the same expression, so composing with the
-    words costs nothing and composing with the operators would produce a
-    filter the API rejects -- which the operator would meet as a validation
-    error on a filter the UI had just built for them.
+    This test used to assert that `||` was REFUSED, which was true and was the
+    stated reason combineBpf() composes with `and`/`or`. The ban went too far:
+    it also refused `&`, which every tcpflags filter needs, so the app was
+    offering eight filters its own API rejected. `&` and `|` are allowed now --
+    the expression is a single shell-quoted argument, where neither can break
+    out -- and the reason for the keywords is the weaker one it should always
+    have been: they are how the library and the man page write BPF, and a
+    composed filter should look like the rows it was composed from.
     """
-    composed = "(tcp port 80) or (tcp port 443)"
-    assert CaptureRequest(server_id="s1", interface="eth0", bpf_filter=composed)
+    for composed in (
+        "(tcp port 80) or (tcp port 443)",
+        "(tcp port 80) || (tcp port 443)",
+        "tcp[tcpflags] & tcp-syn != 0",
+    ):
+        assert CaptureRequest(server_id="s1", interface="eth0", bpf_filter=composed)
 
+
+@pytest.mark.parametrize(
+    "char, expr",
+    [
+        (";", "tcp port 80; rm -rf /"),
+        ("$", "tcp port $(whoami)"),
+        ("`", "tcp port `id`"),
+        ("\\", "tcp port 80 \\"),
+    ],
+)
+def test_the_shell_metacharacters_are_still_refused(char, expr):
+    """Narrowing the ban to `&` and `|` must not have opened the rest.
+
+    None of these mean anything in BPF, so refusing them costs nothing and
+    keeps a second line of defence underneath _shell_quote rather than
+    resting the whole case on it.
+    """
     with pytest.raises(ValidationError):
-        CaptureRequest(
-            server_id="s1", interface="eth0",
-            bpf_filter="(tcp port 80) || (tcp port 443)",
-        )
+        CaptureRequest(server_id="s1", interface="eth0", bpf_filter=expr)
 
 
 def test_parentheses_survive_the_trip_to_tcpdump(manager):

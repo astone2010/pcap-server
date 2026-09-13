@@ -316,6 +316,12 @@ def assert_no_forbidden_flags(args: list[str]) -> None:
         raise ValueError(f"refusing to run tcpdump with privilege-escalating flags: {found}")
 
 
+# Module level rather than a class attribute: pydantic claims any name starting
+# with an underscore on a BaseModel as a private attribute, so the constant
+# came back as a ModelPrivateAttr rather than the string.
+BPF_FORBIDDEN_CHARS = ";$`\\"
+
+
 class CaptureRequest(BaseModel):
     server_id: str
     interface: str = "any"
@@ -332,10 +338,27 @@ class CaptureRequest(BaseModel):
             raise ValueError("invalid interface name")
         return v
 
+    # `&` and `|` are BPF's own bitwise operators and the library cannot do
+    # without them: every tcpflags filter needs `&`, `(tcp-syn|tcp-fin|tcp-rst)`
+    # needs both, and a fragment test is `ip[6] & 0x20`. They were banned with
+    # the shell metacharacters, which left the app offering eight filters its
+    # own API refused -- the whole TCP-behaviour group, and one of the worked
+    # examples on the Capture tab.
+    #
+    # They are safe to allow because the expression never reaches the remote
+    # shell as bare text. It is one argv element, quoted by _shell_quote before
+    # the command string is assembled, and inside single quotes a `&` is a
+    # `&`. It also sits after `--`, so it cannot be read as an option, and the
+    # dangerous tcpdump flags are refused separately by
+    # assert_no_forbidden_flags.
+    #
+    # The rest of the list stays. `;` and backtick and `$` have no meaning in
+    # BPF at all, so refusing them costs nothing and keeps a second line of
+    # defence under the quoting rather than relying on it alone.
     @field_validator("bpf_filter")
     @classmethod
     def validate_bpf(cls, v: str) -> str:
-        if any(c in v for c in ";|&$`\\"):
+        if any(c in v for c in BPF_FORBIDDEN_CHARS):
             raise ValueError("BPF filter contains disallowed characters")
         return v
 
