@@ -1,13 +1,73 @@
 # Dev Skills gate state
-Track: release sequence — 0.1.0-dev.20 CLOSED. All six gates done.
-Version: 0.1.0-dev.20
+Track: release sequence — 0.1.0-dev.21
+Version: 0.1.0-dev.21
 Updated: 2026-09-13 (session: dev-skills-loading-yow48d)
 Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to.
         The harness assigns a fresh claude/* branch every session; that
-        assignment is NOT the branch this project uses. This session's harness
-        name was claude/dev-skills-loading-yow48d and the user confirmed
-        admiring-wright-k20ptf explicitly. The clone landed on the canonical
-        tip (66320f5) unaided for the first time.
+        assignment is NOT the branch this project uses. Confirmed explicitly by
+        the user this session.
+
+## 0.1.0-dev.21 — AWAITING COMMIT APPROVAL
+
+Multiple BPF entries: composing a second capture filter instead of replacing
+the first. The design question left open at the end of the previous session is
+now DECIDED by the user — see below.
+
+🔢 VERSION    ✅ APP_VERSION (backend/main.py:69) and the docker-compose image
+                tag both read 0.1.0-dev.21; CHANGELOG heading dated
+                2026-09-13. v0.1.0-dev.20 confirmed tagged at 7320eae — no gap
+                behind this release.
+🔨 BUILD      ✅ ./scripts/check.sh re-run AFTER the bump: 625 passed, 0
+                skipped, 2m51s. 10 of those are new.
+🔒 SECURITY   ✅ pip-audit on backend/requirements.txt: no known
+                vulnerabilities (deps untouched this release). The diff is
+                frontend composition plus tests: no new route, no new input
+                path, no change to what is trusted. The composed string lands
+                in bpf_filter, which validate_bpf already checks, and
+                openFilterMenu sets row.textContent rather than innerHTML.
+📄 DOCS       ✅ CHANGELOG dated; README's filter-library passage now covers
+                composition and says why neither combinator is defaulted.
+📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
+🚀 SHIP       ⬜ tag block to hand to the user once the commit is approved.
+
+### DECIDED by the user, 2026-09-13 — do not re-open
+
+Reuse the display filter's menu model for BPF picks: Replace / …and this /
+…or this / Replace with NOT this. The three alternatives put to them and
+rejected were a fixed " and " append, inferring the combinator from the
+library group, and a multi-select compose-once flow.
+
+The evidence that settled it: the library is mostly port and protocol rows,
+where a second pick means `or` (`tcp port 80 and tcp port 443` matches
+nothing), while a host row plus a protocol row means `and`. No fixed default
+is safe, and a BPF filter matching nothing is silent — the capture runs to
+its full duration and comes back empty.
+
+### Two findings from building it
+
+1. **The dismiss handler closed the menu on the click that opened it.** The
+   document-level click handler at app.js:3534 closes #filter-menu on any
+   click outside it, and at that instant the menu does not exist yet. The
+   display filter never hit this because its menu opens from a contextmenu
+   event, which fires no click. Fixed with stopPropagation on the opening
+   click. Six browser tests caught it; it would have been invisible to every
+   API test.
+2. **A mislabelled item in the display filter's own menu.** "…and not
+   selected" called combineFilter's `not` mode, which ignores the current
+   expression and replaces it with the negation — Wireshark's "Not Selected".
+   Relabelled to match the behaviour. Behaviour unchanged.
+
+### Corrected mid-session, recorded so it is not re-derived
+
+Parenthesised BPF filters are NOT broken. capture.py:310 joins the command
+with no quoting, but that string is only the `command` field stored and
+displayed on the capture record. The executed command is assembled separately
+in ssh_manager.run_tcpdump (line ~453) and quotes every argument with
+_shell_quote, so the filter arrives at tcpdump as one word. I claimed the
+opposite mid-session before tracing the second path.
+
+Real but minor, and NOT fixed: the displayed `command` is not shell-safe, so
+it differs from what actually ran and would fail if pasted into a terminal.
 
 ## 0.1.0-dev.20 — RELEASED (tag pushed by the user, 2026-09-13)
 

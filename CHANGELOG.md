@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.1.0-dev.21 — 2026-09-13
+
+### Added
+
+- **Capture filters can be built up from more than one pick.** Both insertion
+  paths -- the filter library's Use button and the "Try:" chips -- assigned to
+  the BPF field, so a second choice wiped the first and a filter like "this
+  host, but only its SMB traffic" could not be assembled from the library at
+  all. It had to be typed by hand.
+
+  A pick into an empty field still just fills it. A pick into a field that
+  already holds an expression offers the same four modes the display filter's
+  right-click menu has: replace, `…and this`, `…or this`, or replace with the
+  negation.
+
+  It asks rather than defaulting because neither default is safe. The library
+  is mostly port and protocol rows, where a second pick means `or` --
+  `tcp port 80 and tcp port 443` matches nothing -- while a host row combined
+  with a protocol row means `and`. A capture filter that matches nothing does
+  not announce itself: the capture runs to its full duration and comes back
+  empty, which looks exactly like a quiet network.
+
+  Both sides are parenthesised. `a and b or c` parses as `(a and b) or c`, so
+  appending without parentheses rebinds an expression already in the box.
+  Composition uses BPF's `and`/`or`/`not` keywords rather than `&&`/`||`,
+  because the capture request validator refuses `&` and `|` -- the command is
+  assembled as a string for the remote shell. libpcap accepts both spellings,
+  so the words cost nothing.
+
+  The display filter's chips are unchanged. It already has composition on the
+  right-click menu over a packet field, and its chips are worked examples --
+  somewhere to start rather than something to build onto.
+
+### Fixed
+
+- The display filter's right-click menu had an item labelled "…and not
+  selected" that did not do that. `combineFilter`'s `not` mode ignores the
+  current expression and replaces it with the negation, which is Wireshark's
+  "Not Selected". Relabelled to match its behaviour; nothing about what it
+  does has changed.
+
 ## 0.1.0-dev.20 — 2026-09-13
 
 ### Changed
