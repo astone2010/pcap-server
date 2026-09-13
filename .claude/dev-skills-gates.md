@@ -1,13 +1,220 @@
 # Dev Skills gate state
-Track: release sequence — 0.1.0-dev.21
-Version: 0.1.0-dev.21
+Track: release sequence — 0.1.0-dev.22
+Version: 0.1.0-dev.22
 Updated: 2026-09-13 (session: dev-skills-loading-yow48d)
-Branch: claude/admiring-wright-k20ptf — CANONICAL, and the only one to push to.
-        The harness assigns a fresh claude/* branch every session; that
-        assignment is NOT the branch this project uses. Confirmed explicitly by
-        the user this session.
+Branch: claude/admiring-wright-k20ptf — CANONICAL, confirmed by the user.
 
-## 0.1.0-dev.21 — AWAITING COMMIT APPROVAL
+## 0.1.0-dev.22 — COMMITTED, awaiting the tag
+
+Three commits: eaeb7ce (validator), 4cdbe11 (frontend), 0637263 (bump).
+
+Four things, never committed separately because the first was still awaiting
+approval when the rest were asked for:
+
+1. The filter library stays open while you choose, with a live preview bar
+   ("choose more than one value from the bpf library without leaving the
+   screen").
+2. Fragment filters in the capture library.
+3. NTLMSSP: a display-filter protocol plus four fields, and a transports row
+   on the capture side.
+4. The Viewer's display filter moved below the capture name.
+
+And the bug that fell out of (2) — see THE VALIDATOR, below.
+
+🔢 VERSION    ✅ APP_VERSION (backend/main.py:69) and the docker-compose image
+                tag both read 0.1.0-dev.22; CHANGELOG heading dated
+                2026-09-13. v0.1.0-dev.21 confirmed tagged at 30ddcfb.
+🔨 BUILD      ✅ ./scripts/check.sh re-run AFTER the bump: 825 passed, 0
+                skipped, 3m51s. The jump is mostly parametrised: every library
+                expression is now one test against the validator and one
+                against tcpdump -d.
+🔒 SECURITY   ✅ pip-audit clean, deps untouched. The preview writes with
+                textContent, never innerHTML, which matters because the value
+                is arbitrary operator-typed text. This release DOES change a
+                security control — validate_bpf — deliberately and with the
+                user's decision; reasoning under THE VALIDATOR below.
+📄 DOCS       ✅ CHANGELOG dated; README's filter-library passage covers the
+                stay-open behaviour and Clear.
+📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
+🚀 SHIP       ⏳ committed and pushed; tag block handed to the user.
+
+### THE VALIDATOR — a control was deliberately narrowed
+
+validate_bpf banned `;` `|` `&` `$` backtick and backslash. `&` and `|` are
+BPF's own bitwise operators, so the ban refused every tcpflags and
+byte-offset filter — the entire TCP-behaviour group in the library (5 rows),
+one of the Capture tab's worked-example chips, and both new fragment rows.
+Eight filters the app offered and the API rejected. Each half was correct on
+its own terms, which is why nothing caught it.
+
+DECIDED by the user: allow `&` and `|`, keep `;` `$` backtick backslash.
+
+Why that is safe: the expression never reaches the remote shell as bare text.
+It is one argv element, quoted by _shell_quote (single quotes, embedded quotes
+escaped) before the command string is assembled in run_tcpdump, and it sits
+after `--` so it cannot be read as an option. assert_no_forbidden_flags guards
+the dangerous tcpdump flags separately. The character check is the second line
+under the quoting, not the only one.
+
+The two alternatives put to the user and declined: drop the filters from the
+library, or replace the blacklist with a `tcpdump -d` compile check (strongest
+validation, but a subprocess per request and tcpdump must be present wherever
+the API runs — NOT verified, and still worth considering later).
+
+The real fix for the class of bug is tests/test_filter_library.py: it reads
+FILTER_LIBRARY and BPF_SUGGESTIONS out of app.js and puts every expression
+through BOTH gates. A guard test asserts the regex actually matched something,
+so it cannot pass vacuously.
+
+### Corrected as part of this
+
+Three places asserted the old ban and are now false. All updated:
+- the combineBpf comment in app.js
+- test_the_composed_filter_never_uses_the_c_operators' docstring
+- README's "rejects shell metacharacters" paragraph
+The keyword composition STAYS, but the reason is now the weaker, honest one:
+the library and the man page write BPF with the words.
+
+### NTLMSSP — what was asked for vs what is possible
+
+Asked for as a protocol in the capture library and the AD group. There is no
+BPF filter for NTLMSSP: it has no port, and it rides inside SMB/RPC/LDAP/HTTP
+at an offset that moves with the enclosing protocol, while BPF matches fixed
+offsets. Delivered as: a display-filter protocol and four fields (where it
+genuinely works, verified against `tshark -G fields`), plus an AD-group
+capture row recording the transports, labelled so it does not read as an NTLM
+capture filter.
+
+### DECIDED by the user, 2026-09-13
+
+Stay-open with a live preview, NOT checkboxes-and-Apply. Batch multi-select
+was offered again here and declined again — the per-pick combinator menu from
+dev.21 stays, because inferring one combinator for a whole batch is the
+silent-wrong-filter risk that menu exists to avoid.
+
+### Why the collapse existed, and what replaced it
+
+The library closed itself on every pick deliberately: the field it fills sits
+above the list, so the collapse was the only evidence the click had landed.
+Removing it without replacing that feedback would have been a regression. The
+preview bar is the replacement, and it READS the field rather than tracking
+clicks, so a typed edit or a manual clear keeps it honest.
+
+Also dropped: the focus jump into the field. Both it and the collapse moved
+the page out from under someone part-way through choosing several filters.
+
+### The friction, measured
+
+tests/browser/test_capture_ui.py used to reopen the library between picks in
+every composition test — the friction was plain from inside the test suite
+before anyone complained about it. With the reopens gone the file runs in 77s
+instead of 228s.
+
+### Checked, not a bug
+
+`.filter-preview { display: flex }` would normally outrank the `hidden`
+attribute, which comes only from the UA stylesheet. style.css:82 already
+carries `[hidden] { display: none !important }` with a comment about exactly
+this trap, so hiding works and the test covering it passes for the right
+reason.
+
+## NEXT, DESIGNED NOT BUILT — live packet streaming in the viewer
+
+Asked for as "is it possible to stream the packets live as they're captured in
+the viewer". Answer: yes, but it is a capture-pipeline change, not a UI one.
+Comparable in size to the fingerprint review or larger. Nothing is built.
+
+### What happens today
+
+tcpdump -w <remote_path> writes ON THE REMOTE HOST. No capture bytes come back
+during the run. When it finishes: status -> TRANSFERRING, fetch_file SFTPs it
+down in 64KB chunks sealing into the vault as it lands, then the viewer runs
+tshark against the sealed file through PcapSource, which decrypts in flight so
+no plaintext ever exists as a file.
+
+The only live signal that exists is a COUNT: tcpdump -v reports packets-so-far
+on stderr, _pump_stderr parses it into info.packet_count (capture.py:118, the
+_LiveCount callback), and the UI polls every 3s via refreshRunningCaptures.
+So the "something is happening" plumbing is there; the packets are not.
+
+### Three things verified in the container on 2026-09-13 — do not re-derive
+
+1. **tshark reads a growing pcap.** Truncated one mid-record: it emitted every
+   COMPLETE packet on stdout, then warned "appears to have been cut short in
+   the middle of a packet" and EXITED 2. So a live reader must accept exit 2
+   with that message as normal. Cheap to do: packet_parser._run already
+   returns (stdout, stderr, returncode) to its caller rather than raising —
+   only the live path needs the carve-out. NOTE the strict path at
+   packet_parser.py:324 raises DisplayFilterError on any non-zero.
+
+2. **A partially written SEALED capture cannot be read at all.** Cryptor
+   .open_stream raises `CryptoError: truncated: incomplete chunk` at 25%, 50%
+   and 90% of a sealed file — it refuses rather than yielding the complete
+   chunks it holds. That is deliberate truncation detection and should NOT be
+   weakened casually. This kills the obvious "just read the partial file"
+   design.
+
+3. **-U is allowed.** FORBIDDEN_TCPDUMP_FLAGS is {-z, --postrotate-command,
+   -W, -G, -C, -r, -F, -V, -Z}. Without -U tcpdump buffers, so the remote file
+   lags a buffer behind — on a quiet link, many seconds.
+
+### The recommended shape: a PASS-THROUGH, not a read of stored data
+
+Do not try to read the partial stored file (finding 2). Instead:
+
+    remote growing file --(incremental SFTP from a byte offset)--> tshark in
+    flight --> rows --> browser
+
+The authoritative pcap keeps accumulating remotely and is fetched and sealed
+at the end EXACTLY as now. Storage model unchanged, no plaintext on the data
+volume (which is the whole point of PcapSource's design), crypto keeps its
+strict truncation check.
+
+Keeping the remote file as the source of truth also preserves what the current
+design deliberately buys: a dropped SSH connection mid-capture loses nothing.
+A `tcpdump -U -w -` stdout stream would be simpler to plumb and would delete
+the TRANSFERRING phase, but it throws that away — if the connection drops, the
+capture is gone. Rejected for that reason, not for difficulty.
+
+### Work breakdown
+
+1. Add -U to build_command_args. One line, plus a test.
+2. Incremental read: a method alongside fetch_file that SFTP-reads from a byte
+   offset on a RUNNING capture and does not seal. Returns bytes + new offset.
+3. A live source: feed (pcap global header + accumulated records) to tshark.
+   The 24-byte global header must be sent ONCE at the front of every spawn —
+   tshark needs it to know the link type.
+4. The viewer's status gate: it opens COMPLETED captures only. Needs a defined
+   live mode, and a decision about what happens when the capture ends (switch
+   to the sealed file seamlessly, or make the operator reopen).
+5. Transport: NO WebSocket exists anywhere. StreamingResponse is used twice
+   (main.py:1260, 1390), so SSE is a short step. But polling with an offset
+   cursor matches refreshRunningCaptures and adds no new transport at all —
+   recommend starting there and only adding SSE if it is visibly laggy.
+
+### Open decisions — put these to the user BEFORE building
+
+- **Display filters in a live view at all in v1?** Either re-run tshark with
+  the filter on every poll (simple, costs a tshark spawn per poll per viewer),
+  or filter client-side over what has arrived (cheap, but the filter language
+  is tshark's and reimplementing any of it in JS is a trap). Recommend: no
+  display filter in v1, "All packets" only, and say so in the UI.
+- **Re-running tshark over a growing file is O(n) per poll.** Fine for
+  moderate captures, wasteful for large ones. The alternative is a long-lived
+  `tshark -T ek` streaming NDJSON, which changes the parser model
+  substantially. Recommend the simple version first with a packet cap.
+- **How many concurrent live viewers?** Each costs an SSH channel and a tshark.
+  max_concurrent_captures already exists as a precedent for capping this.
+
+### What NOT to do
+
+- Do not weaken Cryptor.open_stream's truncation check to make a partial
+  sealed file readable. It is an anti-tamper property and the pass-through
+  design does not need it.
+- Do not write a plaintext partial capture to the data volume. PcapSource's
+  module docstring exists precisely to say that never happens.
+
+## 0.1.0-dev.21 — RELEASED (tag pushed by the user, 2026-09-13)
 
 Multiple BPF entries: composing a second capture filter instead of replacing
 the first. The design question left open at the end of the previous session is
@@ -28,7 +235,9 @@ now DECIDED by the user — see below.
 📄 DOCS       ✅ CHANGELOG dated; README's filter-library passage now covers
                 composition and says why neither combinator is defaulted.
 📦 RELEASE    ➖ N/A — no PR. Default branch out of scope by standing decision.
-🚀 SHIP       ⬜ tag block to hand to the user once the commit is approved.
+🚀 SHIP       ✅ verified from the container: tag v0.1.0-dev.21 -> 30ddcfb on
+                the remote; Check #57 green on the branch commit, Check #58 and
+                Release run #21 green on the tag.
 
 ### DECIDED by the user, 2026-09-13 — do not re-open
 
