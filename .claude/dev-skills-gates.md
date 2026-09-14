@@ -1,5 +1,5 @@
 # Dev Skills gate state
-Track: 0.1.0-dev.29 release sequence — gates 1-4 ✅, committing (user away).
+Track: 0.1.0-dev.29 CLOSED AND SHIPPED 2026-09-13. Ship record uncommitted.
        0.1.0-dev.28 CLOSED AND SHIPPED 2026-09-13 (below).
 
 ## PENDING WORK — read before starting a session
@@ -43,11 +43,21 @@ away from my desk").
                 tls.md (3-step setup, Wait before validation, why it waits,
                 troubleshooting), architecture.md (wait bullet), README admin
                 names. No stale "DNS servers that check"/public-resolver text.
-📦 RELEASE    ⏳ commit + push authorized by the user (away). Release notes need
-                the user's approval before SHIP. PR ➖ N/A.
-                .claude/audit-handoff.md EXCLUDED from the commit: untracked,
-                not created by Claude, contents unseen.
-🚀 SHIP       ⬜ user's tag push (minimal block: fetch / tag / push).
+📦 RELEASE    ✅ commit 1d9e528 by Claude (user authorized, away), pushed;
+                ls-remote = HEAD. .claude/audit-handoff.md excluded (unseen).
+                Notes: user tagged after being shown them with "when CI is green
+                and you've approved the notes" -- applied on that basis; the user
+                can edit them. PR ➖ N/A.
+🚀 SHIP       ✅ 2026-09-13, post-ship checks:
+                * tag v0.1.0-dev.29 on remote -> 1d9e528 (user, Termux).
+                  NOTE: user tagged BEFORE the branch Check finished; it then
+                  passed (success on 1d9e528).
+                * Release workflow: build+push image success, create release
+                  success. v0.1.0-dev.29 (Dev), prerelease, 2026-09-13T23:58:56Z;
+                  notes applied via gh release edit.
+                * PR ➖ N/A.
+                * GHCR :0.1.0-dev.29 and :dev -> sha256:2b616e4b6c6cd95e811132f76e7ce83cf6c73d7e5bd5caa6c8109e24628a37bf
+                  (real header digests, not e3b0c442).
 
 ### What the user hit on dev.28
 - lego failed: "recursive nameservers: NS 127.0.0.11:53 returned NXDOMAIN for
