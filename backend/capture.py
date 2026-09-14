@@ -19,7 +19,7 @@ from backend.models import (
 )
 from backend.livestream import LiveBuffer
 from backend.packet_parser import get_packet_count
-from backend.ssh_manager import SSHManager
+from backend.ssh_manager import MAX_INTERFACE_INDEXES, SSHManager
 
 logger = logging.getLogger(__name__)
 
@@ -684,6 +684,13 @@ class CaptureManager:
         pump = asyncio.create_task(
             _pump_stderr(process, stderr, _LiveCount(info, self._persist))
         )
+        # Alongside the capture rather than before it: a start that waited on
+        # one more SSH round trip would be slower for a table that is only
+        # needed once someone reads the packets.
+        names = (
+            asyncio.create_task(self._record_interface_names(info, server))
+            if info.interface == ANY_INTERFACE else None
+        )
         try:
             await self._await_exit(process, pump, monitor_timeout)
 
@@ -711,6 +718,8 @@ class CaptureManager:
             _discard_partial(local_path)
         finally:
             pump.cancel()
+            if names is not None:
+                names.cancel()
             # The live buffer goes with the capture, on every path. It is up to
             # megabytes of packet data held only to be looked at, and the viewer
             # moves to the sealed file from here -- keeping it would be holding
@@ -723,6 +732,28 @@ class CaptureManager:
                 await capture.close()
             self._persist(info)
             self._tasks.pop(capture_id, None)
+
+    async def _record_interface_names(self, info: CaptureInfo, server: ServerInfo) -> None:
+        """Merge the host's current interface table into the capture's.
+
+        Never fails the capture: without the table the packets are all still
+        there, and the viewer shows interface indexes instead of names. Where
+        an index was reused by a different interface, the later reading wins.
+        """
+        try:
+            table = await self._ssh.interface_indexes(server)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("could not read interface names for capture %s: %s", info.id, exc)
+            return
+        if not isinstance(table, dict) or not table:
+            return
+        merged = {**info.interface_names, **table}
+        # Two readings can each be at the cap; the latest one alone is then
+        # the better table to keep.
+        info.interface_names = merged if len(merged) <= MAX_INTERFACE_INDEXES else table
+        self._persist(info)
 
     async def _await_exit(self, process: object, pump: asyncio.Task, timeout: float) -> None:
         """Wait for tcpdump to finish, then let the rest of its stderr land."""
@@ -751,6 +782,11 @@ class CaptureManager:
         """Bring the pcap back, tidy the remote host, and record size and count."""
         cryptor = self._vault.cryptor if self._vault else None
         await self._ssh.fetch_file(server, remote_path, local_path, cryptor=cryptor)
+
+        if info.interface == ANY_INTERFACE:
+            # Again at the end: anything created during the capture -- a
+            # container's veth, a VPN tunnel -- only exists in this reading.
+            await self._record_interface_names(info, server)
 
         try:
             await self._ssh.delete_remote_file(server, remote_path)

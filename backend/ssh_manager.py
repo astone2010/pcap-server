@@ -448,6 +448,18 @@ class SSHManager:
         names = sorted(n.strip() for n in result.stdout.splitlines() if n.strip())
         return ["any"] + names
 
+    async def interface_indexes(self, server: ServerAuth) -> dict[int, str]:
+        """The host's interface index -> name table, as of now.
+
+        A capture on "any" is Linux cooked v2, which records each packet's
+        interface by index only, and an index means nothing off the host that
+        assigned it. Read from sysfs, so no privileges are needed.
+        """
+        conn = await self._connect(server)
+        async with conn:
+            result = await conn.run(_IFINDEX_SCRIPT, check=False, timeout=10)
+        return parse_interface_indexes(result.stdout or "")
+
     async def check_prerequisites(self, server: ServerAuth) -> dict:
         """Run the read-only probe and return validated facts plus a checklist.
 
@@ -627,7 +639,8 @@ echo "PATHVAL=$PATH"
 echo "ONPATH=$(command -v tcpdump 2>/dev/null)"
 for p in /usr/sbin/tcpdump /sbin/tcpdump /usr/bin/tcpdump /bin/tcpdump \
          /usr/local/sbin/tcpdump /usr/local/bin/tcpdump; do
-    if [ -x "$p" ]; then echo "FOUND=$p"; fi
+    if [ -x "$p" ]; then echo "FOUND=$p";
+    elif [ -e "$p" ]; then echo "NOEXEC=$p $(stat -c %G "$p" 2>/dev/null)"; fi
 done
 echo "SUDO=$(command -v sudo 2>/dev/null)"
 if sudo -n true 2>/dev/null; then echo "SUDO_NOPASSWD=yes"; else echo "SUDO_NOPASSWD=no"; fi
@@ -639,6 +652,7 @@ if [ -z "$TD" ]; then
 fi
 if [ -n "$TD" ]; then
     echo "VERSION=$("$TD" --version 2>&1 | head -1)"
+    echo "TDMODE=$(stat -c '%a %G' "$TD" 2>/dev/null)"
     # Same sbin fallback as tcpdump above: getcap is installed into /sbin on
     # Debian and Ubuntu, which a non-login SSH session for a non-root user
     # does not have on PATH. Trusting command -v alone reported "getcap is not
@@ -661,12 +675,47 @@ if [ -w /tmp ]; then echo "TMPWRITE=yes"; else echo "TMPWRITE=no"; fi
 echo "PROBE_COMPLETE"
 """
 
+_IFINDEX_SCRIPT = r"""
+for d in /sys/class/net/*; do
+    [ -r "$d/ifindex" ] && echo "$(cat "$d/ifindex" 2>/dev/null) ${d##*/}"
+done
+"""
+
+# Linux caps an interface name at 15 bytes. Hosts with thousands of container
+# veths exist, but not tens of thousands; past that the table is truncated
+# rather than stored whole, since a hostile host could print forever.
+_IFACE_NAME = re.compile(r"[A-Za-z0-9_.@+-]{1,15}")
+MAX_INTERFACE_INDEXES = 4096
+
+
+def parse_interface_indexes(raw: str) -> dict[int, str]:
+    """`<index> <name>` lines into a table. Anything else is dropped, not trusted."""
+    table: dict[int, str] = {}
+    for line in raw.splitlines():
+        index, _, name = line.strip().partition(" ")
+        if not re.fullmatch(r"[0-9]{1,10}", index) or not _IFACE_NAME.fullmatch(name):
+            continue
+        number = int(index)
+        if 0 < number < 2**32:
+            table[number] = name
+            if len(table) >= MAX_INTERFACE_INDEXES:
+                break
+    return table
+
+
 # Anything parsed out of the probe came from the remote host, so it is
 # untrusted. The discovered path in particular ends up in the tcpdump command,
 # and a compromised or hostile host could answer with
 # "FOUND=/bin/sh -c curl|sh". Absolute path, no metacharacters, and the binary
 # must actually be called tcpdump.
 _SAFE_PATH = re.compile(r"^/[A-Za-z0-9._/-]{1,255}$")
+
+
+# `stat -c '%a %G'` on the binary, and a group name on its own. Both are printed
+# into commands for the operator, so anything that is not plainly a mode and a
+# group name is dropped rather than shown.
+_GROUP_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,31}")
+_MODE_GROUP = re.compile(r"([0-7]{3,4}) ([A-Za-z0-9_][A-Za-z0-9._-]{0,31})")
 
 
 def _is_safe_tcpdump_path(path: str) -> bool:
@@ -686,6 +735,7 @@ def parse_prereq_output(raw: str) -> dict:
         "on_path": "", "tcpdump_path": "", "version": "", "caps": "",
         "caps_unavailable": False, "sudo_present": False, "sudo_nopasswd": False,
         "selinux": "", "tmp_writable": None, "path_env": "",
+        "tcpdump_mode": "", "tcpdump_group": "", "noexec_path": "", "noexec_group": "",
     }
     in_osrel = False
     for line in raw.splitlines():
@@ -720,6 +770,15 @@ def parse_prereq_output(raw: str) -> dict:
             facts["sudo_nopasswd"] = value == "yes"
         elif key == "VERSION":
             facts["version"] = value
+        elif key == "TDMODE":
+            match = _MODE_GROUP.fullmatch(value)
+            if match:
+                facts["tcpdump_mode"], facts["tcpdump_group"] = match.groups()
+        elif key == "NOEXEC" and not facts["noexec_path"]:
+            path, _, group = value.partition(" ")
+            if _is_safe_tcpdump_path(path):
+                facts["noexec_path"] = path
+                facts["noexec_group"] = group if _GROUP_NAME.fullmatch(group) else ""
         elif key == "CAPS":
             facts["caps"] = value
         elif key == "CAPS_UNAVAILABLE":
@@ -788,7 +847,9 @@ def getcap_install_hint(os_release: dict) -> str:
 
 
 def evaluate_prereqs(facts: dict, use_sudo: bool, username: str = "") -> list[dict]:
-    """One entry per check: status ok | warn | fail, plus what to run on a miss.
+    """One entry per check: status ok | warn | fail | info, plus what to run on a miss.
+
+    info is an option the operator may take, never something wrong.
 
     Remediation is always text for the operator. Nothing here executes it.
     """
@@ -809,6 +870,9 @@ def evaluate_prereqs(facts: dict, use_sudo: bool, username: str = "") -> list[di
     path = facts["tcpdump_path"]
     if path:
         add("tcpdump installed", "ok", f"{path}" + (f" — {facts['version']}" if facts["version"] else ""))
+    elif facts["noexec_path"]:
+        checks.append(_unrunnable_tcpdump(facts, username))
+        return checks
     else:
         add("tcpdump installed", "fail", "Not found on PATH or in the usual sbin directories.",
             install_hint(facts["os_release"]))
@@ -825,42 +889,9 @@ def evaluate_prereqs(facts: dict, use_sudo: bool, username: str = "") -> list[di
             f"({facts['path_env'] or 'unknown'}). Captures will use the full path, so this is "
             f"informational — but a plain `tcpdump` command would fail here.")
 
-    # Privilege to capture: root, file capabilities, or passwordless sudo.
-    uid, groups = facts["uid"], facts["groups"]
-    caps = facts["caps"]
-    has_caps = "cap_net_raw" in caps.lower()
-    sudo_group = next((g for g in groups if g in ("sudo", "wheel", "admin")), "")
+    checks += _privilege_checks(facts, use_sudo, username)
 
-    if uid == 0:
-        add("Capture privilege", "ok", "Connecting as root.")
-    elif has_caps:
-        add("Capture privilege", "ok", f"File capabilities set on tcpdump ({caps}) — no sudo needed.")
-    elif use_sudo and facts["sudo_nopasswd"]:
-        add("Capture privilege", "ok", "Passwordless sudo works for this user.")
-    elif use_sudo and facts["sudo_present"]:
-        add("Capture privilege", "fail",
-            "This server is set to use sudo, but `sudo -n` failed — sudo is installed and is "
-            "demanding a password. pcap-server runs non-interactively and cannot supply one."
-            + (f" This user is in: {sudo_group}." if sudo_group else
-               " This user is in none of sudo/wheel/admin."),
-            f"Grant passwordless sudo for tcpdump only — not NOPASSWD: ALL:\n"
-            f"{_sudoers_remedy(path, username)}\n"
-            f"Or avoid sudo altogether:\n"
-            f"  sudo setcap cap_net_raw,cap_net_admin+eip {path}")
-    elif use_sudo:
-        add("Capture privilege", "fail",
-            "This server is set to use sudo, but sudo is not installed on the host.",
-            f"Either install sudo, or grant the capability directly and untick sudo:\n"
-            f"  sudo setcap cap_net_raw,cap_net_admin+eip {path}")
-    else:
-        add("Capture privilege", "fail",
-            "Not root, tcpdump has no cap_net_raw, and this server is not set to use sudo. "
-            "tcpdump needs privileges to open a capture device.",
-            f"Preferred — grant the capability, no sudo required:\n"
-            f"  sudo setcap cap_net_raw,cap_net_admin+eip {path}\n"
-            f"Or tick 'Run tcpdump with sudo' on this server and add:\n"
-            f"{_sudoers_remedy(path, username)}")
-
+    uid, has_caps = facts["uid"], _has_caps(facts)
     if facts["caps_unavailable"] and not has_caps and uid != 0:
         getcap_hint = getcap_install_hint(facts["os_release"])
         add("Capability check", "warn",
@@ -869,7 +900,7 @@ def evaluate_prereqs(facts: dict, use_sudo: bool, username: str = "") -> list[di
             "sudo at all. Captures are unaffected either way -- this check just cannot tell "
             "you which privilege route is already in place.",
             (f"To let this check read capabilities:\n  {getcap_hint}\n"
-             f"Only needed for the check itself -- setcap works without it."
+             f"The same package provides setcap, which granting the capability needs."
              if getcap_hint else ""))
 
     # Writable /tmp for the intermediate pcap.
@@ -889,6 +920,159 @@ def evaluate_prereqs(facts: dict, use_sudo: bool, username: str = "") -> list[di
         add("SELinux", "ok", facts["selinux"])
 
     return checks
+
+
+def _check(name: str, status: str, detail: str, fix: str = "") -> dict:
+    return {"name": name, "status": status, "detail": detail, "fix": fix}
+
+
+def _has_caps(facts: dict) -> bool:
+    return "cap_net_raw" in facts["caps"].lower()
+
+
+def _caps_refused(facts: dict) -> bool:
+    """The probe's `tcpdump --version` was refused by the kernel.
+
+    execve fails with EPERM when a file's capabilities exceed the caller's
+    bounding set, so tcpdump never ran and could not have reported a version.
+    """
+    return "operation not permitted" in facts["version"].lower()
+
+
+# Groups whose membership grants far more than running one binary. A host that
+# answers with one of these as tcpdump's group -- misconfigured, or saying so on
+# purpose -- must not get "add this account to root" printed back as the fix.
+_PRIVILEGED_GROUPS = frozenset({"root", "wheel", "sudo", "admin", "adm", "shadow", "disk", "docker"})
+
+
+def _unrunnable_tcpdump(facts: dict, username: str) -> dict:
+    """tcpdump is on the host, but this account may not execute it.
+
+    The group-limited setup this check recommends looks exactly like this to an
+    account left out of the group, and "not installed" would send the operator
+    to install a package that is already there.
+    """
+    path, group = facts["noexec_path"], facts["noexec_group"]
+    who = username or "<user>"
+    if group and group not in _PRIVILEGED_GROUPS:
+        return _check("tcpdump installed", "fail",
+                      f"{path} exists, but this user cannot run it — it is limited to the "
+                      f"{group} group, and {username or 'this user'} is not in it.",
+                      f"  sudo usermod -aG {group} {who}")
+    return _check("tcpdump installed", "fail",
+                  f"{path} exists, but this user cannot run it"
+                  + (f" — it is limited to the {group} group, which grants far more than "
+                     f"capturing. Give tcpdump a group of its own instead:" if group else "."),
+                  _setcap_remedy(path, username))
+
+
+def _privilege_checks(facts: dict, use_sudo: bool, username: str) -> list[dict]:
+    """Whether a capture will get the privilege it needs, and any better route.
+
+    Checked in the order a capture actually runs: with sudo ticked the command
+    is `sudo -n tcpdump`, so capabilities on the binary cannot rescue a sudo
+    that asks for a password -- sudo fails before tcpdump ever starts.
+    """
+    path, caps, uid = facts["tcpdump_path"], facts["caps"], facts["uid"]
+    has_caps = _has_caps(facts)
+    if has_caps and _caps_refused(facts):
+        # Before root and sudo: the kernel refuses the exec for them too, since
+        # root's permitted set is capped by the same bounding set.
+        return [_check(
+            "Capture privilege", "fail",
+            f"tcpdump has file capabilities ({caps}), but this host refuses to run it with "
+            "them — it failed with \"Operation not permitted\". That happens when a binary "
+            "carries a capability the host does not allow, usually cap_net_admin in a "
+            "container. A capture needs only cap_net_raw:",
+            f"  sudo setcap cap_net_raw=eip {path}")]
+    if uid == 0:
+        checks = [_check("Capture privilege", "ok", "Connecting as root.")]
+    elif use_sudo:
+        checks = _sudo_checks(facts, path, username, has_caps)
+    elif has_caps:
+        checks = [_check("Capture privilege", "ok",
+                         f"File capabilities set on tcpdump ({caps}) — no sudo needed.")]
+    else:
+        checks = [_check(
+            "Capture privilege", "fail",
+            "Not root, tcpdump has no cap_net_raw, and this server is not set to use sudo. "
+            "tcpdump needs privileges to open a capture device.",
+            f"Preferred — grant the capability, no sudo required:\n"
+            f"{_setcap_remedy(path, username)}\n"
+            f"Or tick 'Run tcpdump with sudo' on this server and add:\n"
+            f"{_sudoers_remedy(path, username)}")]
+
+    # Capabilities on a binary anyone can execute hand packet capture to every
+    # account on the host, which is a wider grant than the one-user sudoers rule.
+    mode = facts["tcpdump_mode"]
+    if has_caps and uid != 0 and mode and int(mode, 8) & 0o001:
+        checks.append(_check(
+            "Who can capture", "info",
+            f"tcpdump carries capabilities and is executable by every account on this host "
+            f"(mode {mode}), so any local user can capture traffic. Limit it to a group:",
+            _setcap_remedy(path, username)))
+    return checks
+
+
+def _sudo_checks(facts: dict, path: str, username: str, has_caps: bool) -> list[dict]:
+    untick = ("tcpdump already has file capabilities, so this server does not need sudo. "
+              "Untick 'Run tcpdump with sudo' on this server (Edit).")
+    if facts["sudo_nopasswd"]:
+        offer = (_check("Capture without sudo", "info", untick) if has_caps else _check(
+            "Capture without sudo", "info",
+            "Optional. Captures run through sudo today. File capabilities let tcpdump "
+            "capture on its own, limited to members of a pcap group, so this account "
+            "needs no sudo rule at all.",
+            _setcap_remedy(path, username,
+                           then="Then untick 'Run tcpdump with sudo' on this server.")))
+        return [_check("Capture privilege", "ok", "Passwordless sudo works for this user."), offer]
+
+    suffix = f" {untick}" if has_caps else ""
+    if facts["sudo_present"]:
+        sudo_group = next((g for g in facts["groups"] if g in ("sudo", "wheel", "admin")), "")
+        return [_check(
+            "Capture privilege", "fail",
+            "This server is set to use sudo, but `sudo -n` failed — sudo is installed and is "
+            "demanding a password. pcap-server runs non-interactively and cannot supply one."
+            + (f" This user is in: {sudo_group}." if sudo_group else
+               " This user is in none of sudo/wheel/admin.")
+            + suffix,
+            "" if has_caps else
+            f"Grant passwordless sudo for tcpdump only — not NOPASSWD: ALL:\n"
+            f"{_sudoers_remedy(path, username)}\n"
+            f"Or avoid sudo altogether, then untick sudo on this server:\n"
+            f"{_setcap_remedy(path, username)}")]
+    return [_check(
+        "Capture privilege", "fail",
+        "This server is set to use sudo, but sudo is not installed on the host." + suffix,
+        "" if has_caps else
+        f"Grant the capability directly, then untick sudo on this server:\n"
+        f"{_setcap_remedy(path, username)}")]
+
+
+def _setcap_remedy(tcpdump_path: str, username: str = "", then: str = "") -> str:
+    """File capabilities on tcpdump, limited to a pcap group.
+
+    Plain `setcap` on a world-executable binary lets every account on the host
+    capture. cap_net_raw alone, because it is all a capture needs, and a file
+    capability the host's bounding set does not allow makes the binary fail to
+    execute at all -- cap_net_admin inside a default container, for one. The group and mode narrow that to the accounts added to it. Order
+    matters: changing a file's group clears its capabilities, so setcap runs
+    last. A package upgrade replaces the binary and loses all three.
+    """
+    return (
+        f"  sudo groupadd -f pcap\n"
+        f"  sudo usermod -aG pcap {username or '<user>'}\n"
+        f"  sudo chgrp pcap {tcpdump_path}\n"
+        f"  sudo chmod 750 {tcpdump_path}\n"
+        f"  sudo setcap cap_net_raw=eip {tcpdump_path}\n"
+        + (f"{then}\n" if then else "")
+        + "cap_net_raw is all a capture needs. To add cap_net_admin as well (wireless "
+        "monitor mode, changing interface settings), use cap_net_raw,cap_net_admin=eip -- "
+        "but where this host does not allow cap_net_admin, as in many containers, "
+        "tcpdump then refuses to start at all.\n"
+        + "A tcpdump package upgrade usually replaces the binary and undoes these; run Check prerequisites again after one."
+    )
 
 
 def _sudoers_line(tcpdump_path: str, username: str = "") -> str:

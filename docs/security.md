@@ -156,8 +156,10 @@ second scan, so a key cannot change between being read and being accepted.
 ## What runs on the target host
 
 One command: `tcpdump -w <file> -v` plus the interface, packet cap, snap length
-and your filter, wrapped in `timeout`. Nothing is installed and nothing is
-changed. The prerequisite probe is read-only; its one privileged call is
+and your filter, wrapped in `timeout`. Around it are reads that need no
+privilege: the interface list from `/sys/class/net` for the picker, and for a
+capture on `any` the interface index table, so the Viewer can name the
+interface each packet crossed. Nothing is installed and nothing is changed. The prerequisite probe is read-only; its one privileged call is
 `sudo -n true`, which asks whether sudo would work without doing anything.
 
 `-z`, `-Z`, `-W`, `-G`, `-C`, `-r`, `-F` and `-V` are refused on the fully built
@@ -207,4 +209,7 @@ same-origin COOP and CORP. HSTS is sent only where TLS is genuinely in use.
   container, so it guards against the common mistakes rather than proving
   non-locality.
 - Passwordless sudo on the target is a privilege boundary you are choosing to
-  open. The `setcap` route avoids it entirely and is preferred.
+  open. The `setcap` route avoids it entirely and is preferred — on a tcpdump
+  limited to a `pcap` group, since a capability on a binary anyone can run lets
+  every account on that host capture, and with `cap_net_raw` only, which is all
+  a capture needs. The prerequisite check prints it that way.

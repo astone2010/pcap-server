@@ -32,11 +32,8 @@ only reach over SSH.
 **The longer documents.** This page is the tour; each of these is one subject in
 full, for when you need it.
 
-
-Add severs easily from the main page
-
 <img width="2550" height="853" alt="image" src="https://github.com/user-attachments/assets/2f33e3e5-d2bb-4fa0-9d36-8f72687861fb" />
-Validate SSH key with Test Connection and perform a prerequite check
+Validate SSH key with Test Connection and perform a prerequisite check
 
 <img width="1333" height="388" alt="image" src="https://github.com/user-attachments/assets/a24074a5-d314-4461-849d-7cbcda455cc5" />
 Full capture page allows for viewing, pcap sanitization, and/or download. Supports live captures. 
@@ -55,7 +52,7 @@ Wireshark like actions in the browser for quick analysis.
 Robust encryption and security for data moving and at rest
 
 <img width="1293" height="459" alt="image" src="https://github.com/user-attachments/assets/dfb547f3-adcc-4f40-8567-63c1e2e15c71" />
-ACME/Cerbot Integration
+ACME/Certbot Integration
 
 <img width="2550" height="853" alt="image" src="https://github.com/user-attachments/assets/dbb3a01e-81ad-4f7c-9f96-b4f2779481f5" />
 For those who hate eyes, a "Flash-bang" theme. 
@@ -232,7 +229,7 @@ cd /opt/docker/pcap
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.31/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.32/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -333,7 +330,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.31` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.32` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -349,7 +346,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcap
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.31/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.32/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -412,12 +409,23 @@ Everything a machine needs before you can capture from it — SSH access, a
 server, how to check one before you rely on it, and the three ways to grant
 capture privilege.
 
-The short version: **prefer a file capability** —
-`sudo setcap cap_net_raw,cap_net_admin+eip $(command -v tcpdump)` — over
-passwordless sudo. It grants one binary the two capabilities it needs, rather
-than granting a user the right to run a program as root. pcap-server's
-prerequisite check prints the exact command for the host in front of you, and
-never installs or changes anything itself.
+The short version: **prefer a file capability over passwordless sudo**, on a
+tcpdump only a `pcap` group can run:
+
+```bash
+sudo groupadd -f pcap && sudo usermod -aG pcap <ssh-user>
+sudo chgrp pcap /usr/sbin/tcpdump && sudo chmod 750 /usr/sbin/tcpdump
+sudo setcap cap_net_raw=eip /usr/sbin/tcpdump   # last: chgrp clears it
+```
+
+It grants one binary the one capability capturing needs, rather than granting a
+user the right to run a program as root, and the group keeps other accounts on the
+host from capturing with it. pcap-server's prerequisite check prints these
+commands with the real path and username for the host in front of you — on a
+server already using sudo too — and never installs or changes anything itself.
+Some guides add `cap_net_admin` as well; a capture does not need it, and where a
+host does not allow it (many containers) tcpdump will not start at all — see
+[docs/target-hosts.md](docs/target-hosts.md).
 
 ## Taking a capture
 
@@ -536,6 +544,17 @@ panel, the line above the filter box names the **server, the interface and the
 capture filter** the packets are coming from — which is the question a packet
 table cannot answer, and matters most during a live stream, when a filter
 narrower than you remember looks exactly like a quiet network.
+
+### Which interface a packet crossed
+
+A capture on `any` has an **Interface** column: the interface each packet went
+through and which way — `eth0 out`, `docker0 in`, `bcast` for broadcast. The
+file itself only numbers interfaces, so pcap-server reads the host's names when
+the capture starts and again when it ends. Hover a cell for the number, and
+filter on it with `sll.ifindex == 3`. An interface that existed only in the
+middle of a capture shows as `#3`, and an older tcpdump that writes the first
+cooked format records no interface at all, so the column shows just the
+direction. Captures on a named interface have no such column.
 
 ### The two filters
 

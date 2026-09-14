@@ -660,6 +660,15 @@ body {
     overflow-wrap: anywhere;
 }
 
+.server-item .server-os {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 1px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .server-warn {
     display: flex;
     flex-wrap: wrap;
@@ -771,6 +780,8 @@ body {
     color: var(--text-primary);
     overflow-wrap: anywhere;
 }
+
+.server-facts dd .fact-unknown { font-family: inherit; color: var(--text-muted); }
 
 .server-detail-actions .btn-quiet { margin-left: auto; }
 
@@ -1274,6 +1285,8 @@ body {
 .col-src { width: 140px; }
 .col-dst { width: 140px; }
 .col-mac { width: 130px; }
+.col-iface { width: 130px; }
+.col-iface .iface-dir { color: var(--text-muted); }
 .col-proto { width: 70px; }
 .col-len { width: 60px; }
 .col-info { width: auto; }
@@ -2057,7 +2070,12 @@ body {
 .prereq-row.ok .prereq-icon { color: var(--success, #3fb950); }
 .prereq-row.warn .prereq-icon { color: var(--warning); }
 .prereq-row.fail .prereq-icon { color: var(--danger); }
+.prereq-row.info .prereq-icon { color: var(--accent); }
 
+/* min-width: a flex item is otherwise at least as wide as its widest child, and
+   a fix command in a white-space: pre block pushed the whole row -- its text
+   included -- past the edge of a phone instead of scrolling inside the block. */
+.prereq-row > div { min-width: 0; }
 .prereq-name { font-weight: 600; color: var(--text-primary); }
 .prereq-detail { color: var(--text-secondary); line-height: 1.5; }
 

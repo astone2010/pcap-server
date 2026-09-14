@@ -911,3 +911,77 @@ def test_a_trailing_field_on_a_scanned_key_is_cut_off(
     assert key["host_key"] == ED25519_BLOB
     assert " " not in key["host_key"]
     assert key["fingerprint"] == _openssh_fingerprint(ED25519_BLOB)
+
+
+# --- the host's OS, as the prerequisite check last read it ----------------------
+
+
+def test_update_server_keeps_the_os_for_the_same_endpoint(db):
+    """A rename or a new key is the same machine; only a new endpoint is not."""
+    user_id = _user(db)
+    db.add_active_server("s1", user_id, "n", "10.0.0.1", 22, "root", "k", False)
+    db.set_active_server_os("s1", user_id, "Rocky Linux 9.4 (Blue Onyx)")
+
+    db.update_active_server("s1", user_id, "renamed", "10.0.0.1", 22, "admin", "k2", True)
+    assert db.get_active_server("s1", user_id)["os_name"] == "Rocky Linux 9.4 (Blue Onyx)"
+
+
+@pytest.mark.parametrize("hostname,port", [("10.0.0.2", 22), ("10.0.0.1", 2222)])
+def test_update_server_clears_the_os_when_the_endpoint_changes(db, hostname, port):
+    user_id = _user(db)
+    db.add_active_server("s1", user_id, "n", "10.0.0.1", 22, "root", "k", False)
+    db.set_active_server_os("s1", user_id, "Debian GNU/Linux 12 (bookworm)")
+
+    db.update_active_server("s1", user_id, "n", hostname, port, "root", "k", False)
+    assert db.get_active_server("s1", user_id)["os_name"] == ""
+
+
+def _probe_result(pretty_name: str | None, complete: bool = True) -> dict:
+    os_release = {} if pretty_name is None else {"PRETTY_NAME": pretty_name}
+    return {
+        "facts": {"complete": complete, "os_release": os_release},
+        "checks": [],
+        "tcpdump_path": "",
+    }
+
+
+def test_prereq_check_records_the_os_and_the_server_list_returns_it(api_client, signed_in, monkeypatch):
+    server_id = _add_server(signed_in, "os-probe.example")
+
+    async def fake_probe(server):
+        return _probe_result("Ubuntu 24.04.1 LTS")
+    monkeypatch.setattr(main.ssh_manager, "check_prerequisites", fake_probe)
+
+    res = api_client.post(f"/api/servers/{server_id}/prereq-check")
+    assert res.status_code == 200
+    assert res.json()["os"] == "Ubuntu 24.04.1 LTS"
+    row = next(r for r in api_client.get("/api/servers").json() if r["id"] == server_id)
+    assert row["os_name"] == "Ubuntu 24.04.1 LTS"
+
+
+def test_an_unfinished_probe_leaves_the_recorded_os_alone(api_client, signed_in, monkeypatch):
+    server_id = _add_server(signed_in, "os-cut-short.example")
+    main.db.set_active_server_os(server_id, signed_in, "Alpine Linux v3.20")
+
+    async def fake_probe(server):
+        return _probe_result(None, complete=False)
+    monkeypatch.setattr(main.ssh_manager, "check_prerequisites", fake_probe)
+
+    api_client.post(f"/api/servers/{server_id}/prereq-check")
+    assert main.db.get_active_server(server_id, signed_in)["os_name"] == "Alpine Linux v3.20"
+
+
+def test_a_client_cannot_set_the_os_through_the_server_form(api_client, signed_in, monkeypatch):
+    server_id = _add_server(signed_in, "os-form.example")
+    monkeypatch.setattr(main, "_reject_self_target", lambda hostname: _noop())
+    monkeypatch.setattr(main, "_require_key", lambda name: None)
+    res = api_client.put(f"/api/servers/{server_id}", json={
+        "hostname": "os-form.example", "username": "alice", "ssh_key_name": "k",
+        "os_name": "<img src=x onerror=alert(1)>",
+    })
+    assert res.status_code == 200
+    assert res.json()["os_name"] == ""
+
+
+async def _noop():
+    return None

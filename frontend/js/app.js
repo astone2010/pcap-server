@@ -678,6 +678,7 @@ function renderServerList() {
             <div class="server-item-body">
                 <div class="name">${escHtml(s.name || s.hostname)}</div>
                 <div class="detail">${escHtml(s.username)}@${escHtml(s.hostname)}:${escHtml(s.port)}</div>
+                ${s.os_name ? `<div class="server-os">${escHtml(s.os_name)}</div>` : ""}
                 ${warning}
             </div>
         </div>`;
@@ -747,6 +748,7 @@ function selectServer(id) {
                 <div><dt>Username</dt><dd>${escHtml(srv.username)}</dd></div>
                 <div><dt>SSH key</dt><dd>${escHtml(srv.ssh_key_name)}</dd></div>
                 <div><dt>sudo</dt><dd>${srv.use_sudo ? "yes &mdash; tcpdump runs under sudo" : "no"}</dd></div>
+                <div><dt>OS</dt><dd id="server-os">${serverOsFact(srv)}</dd></div>
             </dl>
             <div class="form-actions server-detail-actions">
                 <button class="btn btn-sm btn-primary" data-action="capture-from-server" data-id="${sid}"
@@ -760,6 +762,14 @@ function selectServer(id) {
             <div id="prereq-result"></div>
         </div>
     `;
+}
+
+// Read off the host by the last prerequisite check, so it can be missing or out
+// of date; it says where to get it rather than leaving a blank.
+function serverOsFact(srv) {
+    return srv.os_name
+        ? escHtml(srv.os_name)
+        : '<span class="fact-unknown">not checked yet &mdash; Check prerequisites reads it</span>';
 }
 
 // The step that used to mean leaving this tab, finding the same server again in
@@ -784,12 +794,17 @@ async function prereqCheck(id) {
         const res = await api(`/api/servers/${id}/prereq-check`, { method: "POST" });
         renderPrereqs(box, res);
         await loadServers();
+        // Only the OS fact, not a re-render of the pane: that would throw away
+        // the results just drawn above it.
+        const srv = activeServers.find((x) => x.id === id);
+        const os = $("server-os");
+        if (srv && os && selectedServerId === id) os.innerHTML = serverOsFact(srv);
     } catch (e) {
         box.innerHTML = `<div class="prereq-error">${escHtml(e.message)}</div>`;
     }
 }
 
-const PREREQ_ICON = { ok: "\u2713", warn: "!", fail: "\u2717" };
+const PREREQ_ICON = { ok: "\u2713", warn: "!", fail: "\u2717", info: "i" };
 
 function renderPrereqs(box, res) {
     box.textContent = "";
@@ -834,7 +849,10 @@ function renderPrereqs(box, res) {
         if (c.fix) {
             const fixLabel = document.createElement("div");
             fixLabel.className = "prereq-fix-label";
-            fixLabel.textContent = "Run this on the host yourself:";
+            // An info row is an option, not a fault, and should not read like one.
+            fixLabel.textContent = c.status === "info"
+                ? "If you want it, run this on the host yourself:"
+                : "Run this on the host yourself:";
             const fix = document.createElement("pre");
             fix.className = "prereq-fix";
             fix.textContent = c.fix;
@@ -1143,7 +1161,7 @@ async function removeServer(id) {
     $("server-form-area").innerHTML = SERVERS_WELCOME;
 }
 
-const SUDO_HINT = "Needed when the SSH user isn't root. Requires passwordless sudo scoped to tcpdump on that host — not blanket NOPASSWD: ALL. Check prerequisites prints the exact rule.";
+const SUDO_HINT = "Only when the SSH user isn't root and tcpdump has no file capabilities (cap_net_raw), which let it capture without sudo. Needs passwordless sudo scoped to tcpdump on that host — not blanket NOPASSWD: ALL. Check prerequisites prints the commands for either.";
 
 function sudoOption(id, checked) {
     return `
@@ -3508,25 +3526,56 @@ function formatLocalTime(epochSeconds) {
 function packetColumns() {
     const flags = getSelectedFlags();
     const showMac = flags.includes("-e");
+    // Only a capture on "any" says which interface each packet crossed; on a
+    // named interface the column would repeat the one name on every row.
+    const capture = captures.find((c) => c.id === viewingCaptureId);
+    const showIface = Boolean(capture && capture.interface === ANY_INTERFACE);
     document.querySelectorAll(".col-mac").forEach((el) => { el.hidden = !showMac; });
+    document.querySelectorAll(".col-iface").forEach((el) => { el.hidden = !showIface; });
     applyTimeColumnWidth(flags);
     return {
         flags,
         showMac,
         localTime: flags.includes("-tz"),
-        span: showMac ? 9 : 7,
+        span: 7 + (showMac ? 2 : 0) + (showIface ? 1 : 0),
         mac: showMac ? "" : " hidden",
+        iface: showIface ? "" : " hidden",
     };
 }
 
+// The kernel's packet type, as get_packet_list names it: short in the cell,
+// spelled out on hover.
+const PACKET_DIRECTION = {
+    in: ["in", "received by this host"],
+    out: ["out", "sent by this host"],
+    broadcast: ["bcast", "broadcast"],
+    multicast: ["mcast", "multicast"],
+    "other-host": ["other", "addressed to another host (seen in promiscuous mode)"],
+};
+
+function interfaceCellHtml(p) {
+    const [short, long] = PACKET_DIRECTION[p.direction] || ["", ""];
+    const parts = [];
+    if (p.interface) {
+        parts.push(p.interface.startsWith("#")
+            ? `interface index ${p.ifindex} (its name was not recorded)`
+            : `${p.interface} (index ${p.ifindex})`);
+    }
+    if (long) parts.push(long);
+    if (p.ifindex) parts.push(`filter: sll.ifindex == ${p.ifindex}`);
+    const dir = short ? ` <span class="iface-dir">${escHtml(short)}</span>` : "";
+    return `<span title="${escHtml(parts.join(" \u2014 "))}">${escHtml(p.interface)}${dir}</span>`;
+}
+
 function packetRowHtml(p, cols) {
-    const { localTime, mac } = cols;
+    const { localTime, mac, iface } = cols;
     return `
             <tr class="${packetClass(p)}" data-frame="${p.number}">
                 <td class="col-no">${p.number}</td>
                 <td class="col-time" title="${escHtml(localTime ? LOCAL_ZONE : p.timestamp)}">${escHtml(localTime ? formatLocalTime(p.timestamp) : p.timestamp)}</td>
                 <td class="col-src" title="${escHtml(p.source)}">${escHtml(p.source)}</td>
                 <td class="col-dst" title="${escHtml(p.destination)}">${escHtml(p.destination)}</td>
+                <td class="col-iface"${iface}>${interfaceCellHtml(p)}</td>
                 <td class="col-mac"${mac}>${escHtml(p.src_mac || "")}</td>
                 <td class="col-mac"${mac}>${escHtml(p.dst_mac || "")}</td>
                 <td class="col-proto">${escHtml(p.protocol)}</td>

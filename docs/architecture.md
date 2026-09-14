@@ -76,6 +76,7 @@ browser  ──POST /api/captures──▶  CaptureManager.start()
                                         ▼
                                   _monitor() task
                                     ├── reads stderr as it arrives  ──▶ live packet count
+                                    ├── on `any`: reads the interface index table (again after exit)
                                     ├── waits for exit (with its own backstop timeout)
                                     ├── SFTP fetch, sealed chunk by chunk on arrival
                                     ├── deletes the remote /tmp file
@@ -465,6 +466,27 @@ cooked header records the sender's address but no destination, so that column is
 genuinely empty there; on a capture from a named interface both are real, which
 is where the flag earns its place.
 
+### Interface column
+
+`tcpdump -i any` writes Linux cooked v2 on current tcpdump, and that header
+records, for each packet, the index of the interface it crossed
+(`sll.ifindex`) and the kernel's packet type (`sll.pkttype`: in, out,
+broadcast, multicast, to another host). It does not record a name, and an index
+means nothing off the host that assigned it. So a capture on `any` also reads
+`/sys/class/net/*/ifindex` from the target — no privilege needed — once as it
+starts and once after tcpdump exits, merged, because an interface created during
+the capture (a container's veth) only exists in the second reading. The table is
+stored in `captures.interface_names` as JSON and the Viewer shows `eth0 out`
+rather than `2`. Neither reading can fail a capture: without the table the
+column shows `#2`. Where one index was reused by a different interface between
+the two readings, the later name wins.
+
+Remote output is hostile input here as well: a line must be an ASCII index and
+an interface-name-shaped name of at most 15 characters, and the table stops at
+4,096 entries. Cooked v1, which older tcpdump writes, has a packet type but no
+index, so the column shows only the direction. The column is hidden for a named
+interface, where it would repeat one name on every row.
+
 ### Timestamps
 
 The viewer can render a packet's time in the reader's own time zone. tshark
@@ -783,8 +805,12 @@ subprocess handling get driven in a real browser against a real server.
 - Self-capture detection cannot see the host's LAN address from inside a bridged
   container.
 - Passwordless sudo for `tcpdump` on the target is a privilege boundary the
-  operator chooses to open. Use a dedicated account for it. The `setcap` route
-  avoids sudo entirely and is preferred.
+  operator chooses to open. Use a dedicated account for it. The `setcap` route,
+  on a tcpdump limited to a `pcap` group, avoids sudo entirely and is preferred.
+  A package upgrade usually undoes it.
+- Interface names on an `any` capture come from the target's table at the start
+  and end of the capture. An interface that came and went entirely between the
+  two shows as its index.
 - The single-writer SQLite database is fine for the concurrency this tool sees
   and would not be for much more.
 - Sanitizing finds what Wireshark dissects into a field. A credential in a JSON

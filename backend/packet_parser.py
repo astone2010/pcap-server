@@ -228,6 +228,7 @@ async def get_packet_list(
     display_filter: str = "",
     view_flags: list[str] | None = None,
     resolve_names: bool = False,
+    interface_names: dict[int, str] | None = None,
 ) -> list[PacketSummary]:
     flags = set(view_flags or [])
     time_field = "frame.time_relative"
@@ -248,6 +249,9 @@ async def get_packet_list(
         "-e", "_ws.col.Destination",
         "-e", "frame.protocols",
         "-e", "frame.len",
+        # Before Info, so the one free-text column stays last but for the MACs.
+        "-e", "sll.ifindex",
+        "-e", "sll.pkttype",
         "-e", "_ws.col.Info",
     ]
     if show_mac:
@@ -278,7 +282,7 @@ async def get_packet_list(
     packets = []
     for line in stdout.decode(errors="replace").splitlines():
         parts = line.split("\t")
-        if len(parts) < 7:
+        if len(parts) < 9:
             continue
         num = int(parts[0])
         if num <= offset:
@@ -287,6 +291,8 @@ async def get_packet_list(
             break
 
         protocol = parts[4].split(":")[-1] if parts[4] else "?"
+        # Empty unless the capture is Linux cooked v2, which is "any".
+        ifindex = int(parts[6]) if parts[6].isascii() and parts[6].isdigit() else 0
         packets.append(PacketSummary(
             number=num,
             timestamp=parts[1] if show_time else "",
@@ -294,12 +300,25 @@ async def get_packet_list(
             destination=parts[3] or "N/A",
             protocol=protocol.upper(),
             length=int(parts[5]) if parts[5] else 0,
-            info=parts[6],
-            src_mac=_mac(parts, 7, 9) if show_mac else "",
-            dst_mac=_mac(parts, 8) if show_mac else "",
+            info=parts[8],
+            src_mac=_mac(parts, 9, 11) if show_mac else "",
+            dst_mac=_mac(parts, 10) if show_mac else "",
+            interface=_interface(ifindex, interface_names or {}),
+            ifindex=ifindex,
+            direction=_SLL_DIRECTION.get(parts[7], ""),
         ))
 
     return packets
+
+
+# The kernel's PACKET_* types as tshark prints sll.pkttype under -T fields.
+_SLL_DIRECTION = {"0": "in", "1": "broadcast", "2": "multicast", "3": "other-host", "4": "out"}
+
+
+def _interface(ifindex: int, names: dict[int, str]) -> str:
+    if not ifindex:
+        return ""
+    return names.get(ifindex) or f"#{ifindex}"
 
 
 def _mac(parts: list[str], *indexes: int) -> str:

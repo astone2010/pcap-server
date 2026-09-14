@@ -33,7 +33,9 @@ command for you to run yourself.
 
 It checks the OS, whether tcpdump is installed and where, whether tcpdump is on
 the SSH session's PATH, whether capture privilege exists, whether `/tmp` is
-writable, and the SELinux mode.
+writable, and the SELinux mode. The OS it finds is kept on the server and shown
+in the server list and its details; run the check again after upgrading a host
+to refresh it. Changing a server's hostname or port clears it.
 
 Two findings are worth knowing about in advance:
 
@@ -41,9 +43,13 @@ Two findings are worth knowing about in advance:
   from PATH for non-root users.** A bare `tcpdump` then fails with "command not
   found" on a host where it is plainly installed. The check records the absolute
   path and captures use it, so this resolves itself once you have run the check.
-- **`setcap` beats sudo.** `sudo setcap cap_net_raw,cap_net_admin+eip
-  /usr/sbin/tcpdump` lets an unprivileged user capture with no sudo at all, and
-  it works the same on every distribution. The check recommends this first.
+- **`setcap` beats sudo.** A file capability on tcpdump lets an unprivileged
+  user capture with no sudo at all, and it works the same on every
+  distribution. The check recommends it first, and offers it as an option on a
+  server where sudo already works. When tcpdump already has the capability but
+  the server is still set to use sudo, it says to untick sudo — and it checks
+  sudo first in that case, because a capture then runs `sudo -n tcpdump` and a
+  sudo that wants a password fails before the capability can matter.
 
 There are no per-distribution templates, and deliberately so: tcpdump is libpcap
 everywhere, so its flags and filter syntax are identical across distributions.
@@ -60,20 +66,51 @@ before reaching for sudo, since it grants far less.
 
 ### Preferred: a file capability, no sudo at all
 
-`cap_net_raw`/`cap_net_admin` on the tcpdump binary itself lets that one user
-capture without being root or touching sudo at all:
+`cap_net_raw` on the tcpdump binary itself lets it capture
+without being root or touching sudo at all. On its own, though, that lets
+**every** account on the host capture, since anyone can run tcpdump. Limit the
+binary to a group first:
 
 ```bash
-sudo setcap cap_net_raw,cap_net_admin+eip /usr/sbin/tcpdump   # use your host's real path
+sudo groupadd -f pcap
+sudo usermod -aG pcap pcapuser                 # the SSH user this server logs in as
+sudo chgrp pcap /usr/sbin/tcpdump              # use your host's real path
+sudo chmod 750 /usr/sbin/tcpdump
+sudo setcap cap_net_raw=eip /usr/sbin/tcpdump
 ```
+
+**The order matters:** changing a file's group clears its capabilities, so
+`setcap` goes last. The group takes effect at the account's next login, which
+for pcap-server is the next SSH connection. Then untick **Run tcpdump with
+sudo** on the server if it was ticked.
 
 Run **Servers → Check prerequisites** in the UI first — it discovers the
 actual tcpdump path on that host (it's `/usr/sbin/tcpdump` on some distros,
-`/usr/bin/tcpdump` on others) and gives you the exact command to run, along
-with whether the capability is already set. This is a one-time step per host
-and survives a tcpdump package upgrade being reapplied by the package
-manager's postinst on most distros; verify with `getcap $(which tcpdump)`
-after a package update if you want to be sure.
+`/usr/bin/tcpdump` on others) and prints these commands with that path and the
+server's username, along with whether the capability is already set. When
+tcpdump carries the capability but anyone can run it, the check says so. When
+the SSH user is not in the group, the check reports that tcpdump is there but
+this user cannot run it, rather than that it is missing.
+
+**`cap_net_admin` is optional, and can stop tcpdump starting.** Many guides set
+`cap_net_raw,cap_net_admin=eip`. A capture — on `any` or a named interface, in
+promiscuous mode — needs only `cap_net_raw`; `cap_net_admin` is for things
+pcap-server never asks tcpdump to do, such as wireless monitor mode. It is
+also not always allowed: the kernel refuses to run a binary whose file
+capabilities include one outside the host's capability bounding set, which is
+the default inside many containers and LXC guests. tcpdump then fails with
+"Operation not permitted" before it prints anything. If you want it anyway:
+
+```bash
+sudo setcap cap_net_raw,cap_net_admin=eip /usr/sbin/tcpdump
+```
+
+and run **Check prerequisites** — it reports a tcpdump the host will not run
+with its capabilities, and the command to narrow them.
+
+**Re-check after upgrading tcpdump.** A package upgrade usually replaces the
+binary, and the new one has neither the capability nor the group and mode.
+`getcap /usr/sbin/tcpdump` prints nothing when the capability is gone.
 
 ### If setcap isn't available: passwordless sudo, scoped to tcpdump only
 

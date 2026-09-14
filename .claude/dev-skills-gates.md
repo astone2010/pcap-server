@@ -1,5 +1,78 @@
 # Dev Skills gate state
 
+## 0.1.0-dev.32 — opened 2026-09-14 (local CLI, Fedora 44, bash, dev-skills 2.18.0)
+Track: release sequence 0.1.0-dev.32. Branch = origin 1478ff5 (tag v0.1.0-dev.31).
+2026-09-14: user pushed README gallery 83d7783 + bc07bbc; 83d7783 carried sensitive
+images. User: "I dont want the images from 83d7783 in the history". Rebuilt locally
+as ONE commit 5e93b75 (tree == bc07bbc, parent 1478ff5, user as author); dev.32 work
+reapplied uncommitted on top. Force push (with lease on bc07bbc) handed to the user.
+User force-pushed 2026-09-14: ls-remote = 5e93b75; 83d7783 not in remote branch history.
+Model: Opus 5 — user approved staying on it for dev.32 only.
+Scope (user 2026-09-14):
+ 1. Prereq check offers file capabilities on sudo hosts (sudo-ok row gets an
+    optional drop-sudo fix; caps set + sudo ticked -> suggest unticking; sudo
+    hint in the server form mentions caps; upgrades drop caps note).
+    User choice: GROUP-RESTRICTED setcap (pcap group, chgrp, chmod 750, setcap).
+ 2. OS distro (PRETTY_NAME) persisted on prereq check (os_name column, cleared
+    on host edit), shown in details facts AND sidebar (user choice).
+ 4. ADDED (user 2026-09-14): interface names for "any" captures -- record host
+    ifindex->name table at capture start, Interface column in the Viewer.
+ 3. Question answered, no change: interface picker = live SSH ls /sys/class/net
+    on every loadInterfaces (page load, server dropdown change, loadServers,
+    Capture from this server); no cache.
+
+Implementation DONE (uncommitted): ssh_manager (probe NOEXEC/TDMODE, privilege
+order sudo-first when ticked, info rows, _setcap_remedy group-limited,
+interface_indexes + parse_interface_indexes), capture.py _record_interface_names
+(start task + end in _collect), captures.interface_names + active_servers.os_name
+migrations, prereq route persists OS (complete probes only), packet_parser
+sll.ifindex/pkttype, PacketSummary interface/ifindex/direction, UI: OS in sidebar
++ facts, info status, Interface column, sudo hint, .prereq-row>div min-width fix.
+Tests: test_ssh_manager (+caps/ifindex, real sh probe), test_packet_parser (SLL2),
+test_servers (os), test_capture (names), browser/test_interface_os_ui.
+Screenshots dark/light 1440/400 checked.
+Docs + CHANGELOG dev.32 written.
+
+🔢 VERSION    ✅ 0.1.0-dev.32 in all seven refs: backend/main.py:93,
+                docker-compose.yml:96, README.md:206/307/323,
+                docs/reverse-proxy.md:117/372. v0.1.0-dev.31 on remote -> 1478ff5.
+                REPO_URL + release_notes_url present.
+🔨 BUILD      ✅ pre-Gate-3-fix run: check.sh 1427 passed exit 0; podman build ok;
+                in-image (Debian 13, dash, tcpdump 4.99.5, --cap-add NET_ADMIN,NET_RAW):
+                printed remedy applied as root -> alice (pcap group) captures on any
+                with no sudo, LINUX_SLL2 confirmed; bob gets NOEXEC fix; packets map
+                to lo/in via recorded table. App image: new markup served, /api/servers
+                401, fresh-DB migrations (interface_names, os_name), 0 tracebacks.
+                dev.31-schema DB migrates cleanly.
+                FINAL (after Gate 3 fixes): check.sh 1431 passed, exit 0; podman build
+                localhost/pcap-server:0.1.0-dev.32 ok; in-image remedy/probe/capture
+                re-verified, same results.
+                FINAL after raw-only change: check.sh 1435 passed exit 0; podman build ok;
+                in-image with --cap-add NET_RAW only: printed remedy (cap_net_raw=eip)
+                -> alice captures any, bob NOEXEC fix, lo/in mapping.
+🔒 SECURITY   ✅ 0 Critical, 0 High. User: "ok on the review" (2026-09-14).
+                NET_ADMIN decision (user): cap_net_raw=eip default; cap_net_admin offered
+                with the refuses-to-start caveat. Added _caps_refused -> fail row before
+                root/sudo (verified: root exec EPERM with net_admin outside bounding set;
+                raw-only runs). README gallery typos + orphan caption fixed. pip-audit clean, no new deps.
+                Fixed in Gate 3: privileged-group advice guard (_PRIVILEGED_GROUPS),
+                evaluate_prereqs split (_privilege_checks/_sudo_checks/_unrunnable_tcpdump),
+                ifindex parsed once, getcap-hint "setcap works without it" was false.
+                FINDING for user (not changed): cap_net_admin unnecessary -- cap_net_raw
+                alone captured any + named iface (promisc) in-image; NET_ADMIN in file
+                caps makes tcpdump unexecutable where the bounding set lacks it (EPERM
+                seen in default rootless podman). User referenced net_admin+net_raw.
+📄 DOCS       ✅ CHANGELOG dev.32 (Added/Changed/Fixed/Documentation). README: short
+                version commands, Which interface a packet crossed. target-hosts.md:
+                group-limited setcap, order, re-check after upgrade (removed false
+                "survives upgrade" claim), OS recorded, sudo-first order. architecture.md:
+                lifecycle diagram, Interface column section, known limits. security.md:
+                target-side reads, group-limited setcap. Stale-claim grep clean.
+📦 RELEASE    ⬜
+🚀 SHIP       ⬜
+
+## 0.1.0-dev.31 (previous)
+
 ## Current session — opened 2026-09-13 (local CLI, Fedora 44, bash, dev-skills 2.18.0)
 Track: release sequence 0.1.0-dev.31 — packet sanitizer. IMPLEMENTATION DONE
 (uncommitted), gates not yet run. Version not bumped.
@@ -58,8 +131,19 @@ User: "Run the gates" (2026-09-13). Not commit approval.
                 + TOC + What it does + limits sentence; architecture.md section,
                 modules, storage, known limits, roadmap; security.md; operating.md
                 rotation note. Roadmap sanitizer entries removed.
-📦 RELEASE    ⬜ branch = origin 212936f (fetched). Needs commit approval.
-🚀 SHIP       ⬜
+📦 RELEASE    ⏳ commit 1478ff5 approved by user ("Commit"), executed by Claude,
+                pushed; ls-remote = 1478ff5. PR ➖ N/A (branch canonical, as
+                dev.27-30). Low findings: user proceeded to commit without
+                objection. Release notes drafted and shown. CI Check run
+                34799467956 success on 1478ff5.
+🚀 SHIP       ⏳ checked 2026-09-14 (new session, local CLI, bash):
+                * tag v0.1.0-dev.31 on remote -> 1478ff5 (user).
+                * Release run 34800153617 success; tag Check run 34800153624
+                  success. v0.1.0-dev.31 (Dev), prerelease, 2026-09-14T02:44:31Z.
+                * GHCR :0.1.0-dev.31 and :dev -> sha256:c4b027be28909dcb13f551ad3ee2c873d954eda81eae51d6455df79ff88efa6b
+                * PR ➖ N/A.
+                * Notes applied via gh release edit 2026-09-14 (user: "yes").
+                dev.31 CLOSED AND SHIPPED.
 
 ## 0.1.0-dev.30 tracker (previous session)
 Track: 0.1.0-dev.30 CLOSED AND SHIPPED 2026-09-13 (UI refresh, HTTPS docs). Ship record uncommitted.

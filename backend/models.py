@@ -275,6 +275,9 @@ class ServerAuth(BaseModel):
 
 class ServerInfo(ServerAuth):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    # PRETTY_NAME from the host's /etc/os-release, as of the last prerequisite
+    # check. Set by the server, never by a client: ServerAuth has no such field.
+    os_name: str = ""
     added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -527,6 +530,14 @@ class CaptureInfo(BaseModel):
     # unfiltered, which is the safe direction -- see the migration in
     # database.py.
     bpf_filter: str = ""
+    # The target's interface index -> name table, for a capture on "any" only.
+    # That capture is Linux cooked v2, which tags each packet with the index of
+    # the interface it crossed and never its name; the names exist only on the
+    # host, so they are read from it at the start and again at the end (a
+    # container started mid-capture brings a new interface). Empty for a named
+    # interface, a capture that predates the column, or a host that could not
+    # be asked -- the viewer then shows the bare index.
+    interface_names: dict[int, str] = Field(default_factory=dict)
     status: CaptureStatus
     started_at: datetime | None = None
     stopped_at: datetime | None = None
@@ -548,6 +559,13 @@ class PacketSummary(BaseModel):
     info: str
     src_mac: str = ""
     dst_mac: str = ""
+    # Linux cooked captures ("any") only. interface is the name the capture's
+    # own table gives the packet's interface index, or "#<index>" without one;
+    # empty on cooked v1, which records no index. direction is the kernel's
+    # packet type: in, out, broadcast, multicast or other-host.
+    interface: str = ""
+    ifindex: int = 0
+    direction: str = ""
 
 
 class PacketField(BaseModel):

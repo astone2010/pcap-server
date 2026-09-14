@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import uuid
@@ -12,6 +13,23 @@ from pathlib import Path
 # fill the volume a capture database shares, not to ration a feature.
 MAX_CUSTOM_FILTERS_PER_USER = 200
 MAX_VIEWS_PER_CAPTURE = 50
+
+
+def _interface_names(stored: str) -> dict[str, str]:
+    """A capture's stored interface table, or {} for none or anything unreadable.
+
+    Only ever written by upsert_capture, but a table that cannot be read costs
+    the viewer some names, never the capture.
+    """
+    try:
+        table = json.loads(stored) if stored else {}
+    except ValueError:
+        return {}
+    if not isinstance(table, dict):
+        return {}
+    # Checked entry by entry because CaptureInfo validates it at startup, and
+    # one bad row must not stop every capture from loading.
+    return {k: v for k, v in table.items() if k.isascii() and k.isdigit() and isinstance(v, str)}
 
 
 def _utcnow() -> datetime:
@@ -73,6 +91,7 @@ class Database:
                 ssh_key_name TEXT NOT NULL,
                 use_sudo INTEGER NOT NULL DEFAULT 0,
                 tcpdump_path TEXT NOT NULL DEFAULT '',
+                os_name TEXT NOT NULL DEFAULT '',
                 added_at TEXT NOT NULL
             );
 
@@ -112,7 +131,8 @@ class Database:
                 server_label TEXT NOT NULL DEFAULT '',
                 interface TEXT NOT NULL DEFAULT '',
                 live_stream INTEGER NOT NULL DEFAULT 0,
-                bpf_filter TEXT NOT NULL DEFAULT ''
+                bpf_filter TEXT NOT NULL DEFAULT '',
+                interface_names TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS known_usernames (
@@ -178,6 +198,8 @@ class Database:
         active_columns = {r["name"] for r in conn.execute("PRAGMA table_info(active_servers)")}
         if "tcpdump_path" not in active_columns:
             conn.execute("ALTER TABLE active_servers ADD COLUMN tcpdump_path TEXT NOT NULL DEFAULT ''")
+        if "os_name" not in active_columns:
+            conn.execute("ALTER TABLE active_servers ADD COLUMN os_name TEXT NOT NULL DEFAULT ''")
         session_columns = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
         if "last_seen" not in session_columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN last_seen TEXT")
@@ -228,6 +250,9 @@ class Database:
             # capture that was not filtered and shows a filter would be a lie
             # about what is in the file.
             conn.execute("ALTER TABLE captures ADD COLUMN bpf_filter TEXT NOT NULL DEFAULT ''")
+        if "interface_names" not in capture_columns:
+            # '' reads back as no table, so older captures show bare indexes.
+            conn.execute("ALTER TABLE captures ADD COLUMN interface_names TEXT NOT NULL DEFAULT ''")
         self._fold_saved_servers(conn)
         conn.commit()
 
@@ -445,14 +470,25 @@ class Database:
         self._conn().commit()
         return cur.rowcount > 0
 
+    def set_active_server_os(self, server_id: str, user_id: str, os_name: str) -> bool:
+        cur = self._conn().execute(
+            "UPDATE active_servers SET os_name = ? WHERE id = ? AND user_id = ?",
+            (os_name, server_id, user_id),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
     def update_active_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool) -> bool:
         # tcpdump_path is cleared: it was discovered on the old host and says
-        # nothing about wherever this server now points.
+        # nothing about wherever this server now points. os_name describes the
+        # machine, not the login, so it survives a rename or a new key and goes
+        # only when the endpoint changes. (SET expressions read the old row.)
         cur = self._conn().execute(
             """UPDATE active_servers
-               SET name = ?, hostname = ?, port = ?, username = ?, ssh_key_name = ?, use_sudo = ?, tcpdump_path = ''
+               SET name = ?, hostname = ?, port = ?, username = ?, ssh_key_name = ?, use_sudo = ?, tcpdump_path = '',
+                   os_name = CASE WHEN hostname = ? AND port = ? THEN os_name ELSE '' END
                WHERE id = ? AND user_id = ?""",
-            (name, hostname, port, username, ssh_key_name, int(use_sudo), server_id, user_id),
+            (name, hostname, port, username, ssh_key_name, int(use_sudo), hostname, port, server_id, user_id),
         )
         self._conn().commit()
         if cur.rowcount:
@@ -526,21 +562,23 @@ class Database:
     # --- captures ---
 
     def upsert_capture(self, row: dict) -> None:
+        names = row.get("interface_names") or {}
+        row = {**row, "interface_names": json.dumps({str(k): v for k, v in names.items()}) if names else ""}
         self._conn().execute(
             """INSERT OR REPLACE INTO captures
                (id, name, user_id, server_id, server_label, status, started_at, stopped_at, command,
                 remote_path, local_path, packet_count, file_size, error, interface, live_stream,
-                bpf_filter)
+                bpf_filter, interface_names)
                VALUES (:id, :name, :user_id, :server_id, :server_label, :status, :started_at, :stopped_at, :command,
                        :remote_path, :local_path, :packet_count, :file_size, :error, :interface, :live_stream,
-                       :bpf_filter)""",
+                       :bpf_filter, :interface_names)""",
             row,
         )
         self._conn().commit()
 
     def list_captures(self) -> list[dict]:
         rows = self._conn().execute("SELECT * FROM captures ORDER BY started_at").fetchall()
-        return [dict(r) for r in rows]
+        return [{**dict(r), "interface_names": _interface_names(r["interface_names"])} for r in rows]
 
     def delete_capture(self, capture_id: str) -> None:
         self._conn().execute("DELETE FROM captures WHERE id = ?", (capture_id,))

@@ -5,17 +5,24 @@ that must never reach a shell command."""
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from backend.ssh_manager import (
+    MAX_INTERFACE_INDEXES,
     SSHManager,
+    _IFINDEX_SCRIPT,
+    _PREREQ_SCRIPT,
     _is_safe_tcpdump_path,
     _shell_quote,
     evaluate_prereqs,
     host_key_strength,
+    parse_interface_indexes,
     parse_prereq_output,
     weaker_host_key_than_available,
 )
@@ -312,6 +319,10 @@ def make_facts(**overrides) -> dict:
         "selinux": "",
         "tmp_writable": True,
         "path_env": "/usr/bin:/bin",
+        "tcpdump_mode": "",
+        "tcpdump_group": "",
+        "noexec_path": "",
+        "noexec_group": "",
     }
     facts.update(overrides)
     return facts
@@ -953,3 +964,204 @@ async def test_closing_twice_is_still_safe_with_an_sftp_client_open(sftp_capture
 
     await capture.close()
     await capture.close()
+
+
+# --- file capabilities as the way off sudo -----------------------------------
+
+
+def test_working_sudo_still_offers_capabilities_as_the_way_off_it():
+    """Passwordless sudo passing used to end the conversation, so a host set up
+    with sudo was never told it could capture with no sudo rule at all."""
+    checks = evaluate_prereqs(
+        make_facts(uid=1000, sudo_present=True, sudo_nopasswd=True), use_sudo=True, username="alice"
+    )
+    assert _check(checks, "Capture privilege")["status"] == "ok"
+    offer = _check(checks, "Capture without sudo")
+    assert offer["status"] == "info"
+    assert "usermod -aG pcap alice" in offer["fix"]
+    assert "untick" in offer["fix"].lower()
+
+
+def test_the_capability_fix_limits_tcpdump_to_a_group_and_sets_caps_last():
+    """chgrp clears a file's capabilities, so setcap has to come after it; and
+    without the group and mode every account on the host could capture."""
+    checks = evaluate_prereqs(make_facts(uid=1000), use_sudo=False, username="alice")
+    fix = _check(checks, "Capture privilege")["fix"]
+    chgrp = fix.index("sudo chgrp pcap /usr/sbin/tcpdump")
+    chmod = fix.index("sudo chmod 750 /usr/sbin/tcpdump")
+    setcap = fix.index("sudo setcap cap_net_raw=eip /usr/sbin/tcpdump")
+    assert chgrp < setcap and chmod < setcap
+    assert "upgrad" in fix.lower()
+
+
+def test_capabilities_with_sudo_ticked_suggest_unticking_it():
+    checks = evaluate_prereqs(
+        make_facts(uid=1000, caps="cap_net_admin,cap_net_raw=eip", sudo_present=True, sudo_nopasswd=True),
+        use_sudo=True,
+    )
+    offer = _check(checks, "Capture without sudo")
+    assert offer["status"] == "info"
+    assert "Untick" in offer["detail"]
+    assert offer["fix"] == ""
+
+
+def test_capabilities_do_not_hide_a_sudo_that_will_fail():
+    """With sudo ticked the capture runs `sudo -n tcpdump`, and a sudo that
+    wants a password fails before tcpdump starts. Capabilities used to be
+    checked first and reported this as ready to capture."""
+    checks = evaluate_prereqs(
+        make_facts(uid=1000, caps="cap_net_raw=eip", sudo_present=True, sudo_nopasswd=False),
+        use_sudo=True,
+    )
+    check = _check(checks, "Capture privilege")
+    assert check["status"] == "fail"
+    assert "Untick" in check["detail"]
+    assert check["fix"] == ""
+
+
+def test_capabilities_on_a_world_executable_tcpdump_say_who_can_capture():
+    checks = evaluate_prereqs(
+        make_facts(uid=1000, caps="cap_net_raw=eip", tcpdump_mode="755", tcpdump_group="root"),
+        use_sudo=False,
+    )
+    row = _check(checks, "Who can capture")
+    assert row["status"] == "info"
+    assert "chmod 750" in row["fix"]
+
+
+@pytest.mark.parametrize("facts", [
+    {"caps": "cap_net_raw=eip", "tcpdump_mode": "750", "tcpdump_group": "pcap"},
+    {"caps": "", "tcpdump_mode": "755", "tcpdump_group": "root"},
+    {"caps": "cap_net_raw=eip", "tcpdump_mode": "", "tcpdump_group": ""},
+])
+def test_who_can_capture_only_appears_for_capabilities_open_to_everyone(facts):
+    checks = evaluate_prereqs(make_facts(uid=1000, **facts), use_sudo=False)
+    assert not any(c["name"] == "Who can capture" for c in checks)
+
+
+def test_a_tcpdump_this_user_cannot_run_is_not_reported_missing():
+    """The group-restricted setup looks exactly like this from an account left
+    out of the group. "Not installed" would send someone to install it again."""
+    checks = evaluate_prereqs(
+        make_facts(tcpdump_path="", on_path="", noexec_path="/usr/sbin/tcpdump", noexec_group="pcap"),
+        use_sudo=False, username="bob",
+    )
+    check = _check(checks, "tcpdump installed")
+    assert check["status"] == "fail"
+    assert "cannot run it" in check["detail"]
+    assert check["fix"] == "  sudo usermod -aG pcap bob"
+    assert not any(c["name"] == "Capture privilege" for c in checks)
+
+
+def test_parse_prereq_output_reads_mode_and_unrunnable_path():
+    raw = "\n".join([
+        "NOEXEC=/usr/sbin/tcpdump pcap",
+        "TDMODE=750 pcap",
+        "PROBE_COMPLETE",
+    ])
+    facts = parse_prereq_output(raw)
+    assert (facts["noexec_path"], facts["noexec_group"]) == ("/usr/sbin/tcpdump", "pcap")
+    assert (facts["tcpdump_mode"], facts["tcpdump_group"]) == ("750", "pcap")
+
+
+@pytest.mark.parametrize("line", [
+    "TDMODE=755 root;rm -rf /",
+    "TDMODE=rwxr-xr-x root",
+    "TDMODE=755",
+    "NOEXEC=/bin/sh -c evil pcap",
+])
+def test_parse_prereq_output_drops_implausible_mode_and_path_lines(line):
+    facts = parse_prereq_output(line + "\nPROBE_COMPLETE")
+    assert facts["tcpdump_mode"] == ""
+    assert facts["noexec_path"] == ""
+
+
+def test_parse_prereq_output_drops_a_hostile_group_but_keeps_the_path():
+    facts = parse_prereq_output("NOEXEC=/usr/sbin/tcpdump pcap;id\nPROBE_COMPLETE")
+    assert facts["noexec_path"] == "/usr/sbin/tcpdump"
+    assert facts["noexec_group"] == ""
+
+
+@pytest.mark.skipif(not os.path.exists("/bin/sh"), reason="needs /bin/sh")
+def test_the_probe_script_runs_under_a_real_posix_shell():
+    """The new stat lines are shell, and a syntax error there ends the probe
+    before PROBE_COMPLETE on every host."""
+    out = subprocess.run(["/bin/sh", "-c", _PREREQ_SCRIPT], capture_output=True, text=True, timeout=30)
+    facts = parse_prereq_output(out.stdout)
+    assert facts["complete"], out.stderr
+    if facts["tcpdump_path"] and shutil.which("stat"):
+        assert facts["tcpdump_mode"], out.stdout
+
+
+# --- interface index table ----------------------------------------------------
+
+
+def test_parse_interface_indexes_reads_index_name_lines():
+    assert parse_interface_indexes("1 lo\n2 eth0\n17 veth1a2b3c4\n") == {1: "lo", 2: "eth0", 17: "veth1a2b3c4"}
+
+
+@pytest.mark.parametrize("line", [
+    "x eth0", "2", "2 ", "-1 eth0", "0 eth0", "4294967296 eth0",
+    "2 eth0;reboot", "2 <script>", "2 averyveryverylongname", "² eth0", "2 eth²0",
+])
+def test_parse_interface_indexes_drops_anything_implausible(line):
+    assert parse_interface_indexes(line) == {}
+
+
+def test_parse_interface_indexes_is_bounded():
+    raw = "\n".join(f"{i} v{i}" for i in range(1, MAX_INTERFACE_INDEXES + 500))
+    assert len(parse_interface_indexes(raw)) == MAX_INTERFACE_INDEXES
+
+
+@pytest.mark.skipif(not os.path.isdir("/sys/class/net"), reason="needs Linux sysfs")
+def test_the_ifindex_script_matches_this_hosts_sysfs():
+    out = subprocess.run(["/bin/sh", "-c", _IFINDEX_SCRIPT], capture_output=True, text=True, timeout=10)
+    table = parse_interface_indexes(out.stdout)
+    for name in os.listdir("/sys/class/net"):
+        with open(f"/sys/class/net/{name}/ifindex") as f:
+            assert table.get(int(f.read())) == name
+
+
+@pytest.mark.parametrize("group", ["root", "wheel", "sudo", "docker"])
+def test_an_unrunnable_tcpdump_never_advises_joining_a_privileged_group(group):
+    """The group name comes off the host. "sudo usermod -aG root bob" is not a
+    fix to print for someone to paste, whoever's idea the group was."""
+    checks = evaluate_prereqs(
+        make_facts(tcpdump_path="", on_path="", noexec_path="/usr/sbin/tcpdump", noexec_group=group),
+        use_sudo=False, username="bob",
+    )
+    fix = _check(checks, "tcpdump installed")["fix"]
+    assert f"-aG {group}" not in fix
+    assert "chgrp pcap" in fix
+
+
+def test_the_capability_fix_grants_raw_only_and_explains_net_admin():
+    """cap_net_raw is all a capture needs; cap_net_admin on a host that does
+    not allow it stops tcpdump starting, so it is offered with that warning."""
+    checks = evaluate_prereqs(make_facts(uid=1000), use_sudo=False, username="alice")
+    fix = _check(checks, "Capture privilege")["fix"]
+    commands = [line for line in fix.splitlines() if line.startswith("  sudo setcap")]
+    assert commands == ["  sudo setcap cap_net_raw=eip /usr/sbin/tcpdump"]
+    assert "cap_net_raw,cap_net_admin=eip" in fix
+    assert "refuses to start" in fix
+
+
+REFUSED = "probe.sh: 23: /usr/sbin/tcpdump: Operation not permitted"
+
+
+@pytest.mark.parametrize("uid,use_sudo,sudo_nopasswd", [
+    (1000, False, False), (1000, True, True), (0, False, False),
+])
+def test_capabilities_the_host_refuses_are_a_failure_for_everyone(uid, use_sudo, sudo_nopasswd):
+    """The kernel refuses to exec a binary whose file capabilities exceed the
+    bounding set -- as root and under sudo too. Seen in a default container
+    with cap_net_admin set."""
+    checks = evaluate_prereqs(
+        make_facts(uid=uid, caps="cap_net_admin,cap_net_raw=eip", version=REFUSED,
+                   sudo_present=use_sudo, sudo_nopasswd=sudo_nopasswd),
+        use_sudo=use_sudo,
+    )
+    check = _check(checks, "Capture privilege")
+    assert check["status"] == "fail"
+    assert check["fix"] == "  sudo setcap cap_net_raw=eip /usr/sbin/tcpdump"
+    assert not any(c["name"] == "Capture without sudo" for c in checks)

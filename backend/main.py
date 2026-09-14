@@ -90,7 +90,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.31"
+APP_VERSION = "0.1.0-dev.32"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -1013,6 +1013,7 @@ def _server_from_row(row: dict) -> ServerInfo:
         ssh_key_name=row["ssh_key_name"],
         use_sudo=bool(row["use_sudo"]),
         tcpdump_path=row["tcpdump_path"] if "tcpdump_path" in row.keys() else "",
+        os_name=row.get("os_name", ""),
         added_at=datetime.fromisoformat(row["added_at"]),
     )
 
@@ -1132,10 +1133,18 @@ async def prereq_check(server_id: str, user: dict = Depends(get_current_user)):
             discovered = ""
         if discovered:
             db.set_active_server_tcpdump_path(server_id, user["id"], discovered)
+    # Already cut to one printable, bounded line by parse_prereq_output. Kept
+    # as reported, including empty, once the probe finished: a host with no
+    # os-release says nothing, and a stale name would be someone else's. A
+    # probe cut short proves nothing either way, so it leaves the name alone.
+    os_release = result["facts"]["os_release"]
+    os_name = os_release.get("PRETTY_NAME") or os_release.get("NAME", "")
+    if result["facts"]["complete"] and os_name != srv.os_name:
+        db.set_active_server_os(server_id, user["id"], os_name)
     return {
         "checks": result["checks"],
         "tcpdump_path": discovered or srv.tcpdump_path,
-        "os": result["facts"]["os_release"].get("PRETTY_NAME", ""),
+        "os": os_name,
     }
 
 
@@ -1867,7 +1876,7 @@ async def list_packets(
         packets = await get_packet_list(
             vault.source_for(path), offset=offset, limit=limit,
             display_filter=display_filter, view_flags=view_flags,
-            resolve_names=resolve_names,
+            resolve_names=resolve_names, interface_names=info.interface_names,
         )
         return {"packets": packets, "total": info.packet_count}
     except DisplayFilterError as exc:
@@ -1974,7 +1983,7 @@ async def live_packets(
         packets = await get_packet_list(
             source, offset=offset, limit=limit,
             display_filter=display_filter, view_flags=view_flags,
-            resolve_names=resolve_names,
+            resolve_names=resolve_names, interface_names=info.interface_names,
         )
     except DisplayFilterError as exc:
         raise HTTPException(400, {"code": "bad_display_filter", "reason": str(exc)})

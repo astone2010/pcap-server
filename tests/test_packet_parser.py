@@ -668,3 +668,58 @@ def test_parse_pdml_refuses_a_lowercase_doctype_too():
     hostile = b'<?xml version="1.0"?><!doctype p [<!entity a "x">]><pdml><packet/></pdml>'
     with pytest.raises(ValueError, match="document type declaration"):
         packet_parser._parse_pdml(hostile)
+
+
+# --- which interface an "any" packet crossed ------------------------------------
+
+
+def _cooked_v2_pcap(frames: list[tuple[int, int]]) -> bytes:
+    """One UDP packet per (ifindex, pkttype), in a Linux cooked v2 capture."""
+    ip = struct.pack(
+        ">BBHHHBBH4s4s", 0x45, 0, 32, 0, 0, 64, 17, 0,
+        bytes([10, 0, 0, 1]), bytes([10, 0, 0, 2]),
+    ) + struct.pack(">HHHH", 12345, 9, 12, 0) + b"ping"
+    header = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 276)
+    records = b""
+    for i, (ifindex, pkttype) in enumerate(frames):
+        frame = struct.pack(">HHIHBB8s", 0x0800, 0, ifindex, 1, pkttype, 6,
+                            bytes.fromhex("020000000001") + b"\0\0") + ip
+        records += struct.pack("<IIII", i, 0, len(frame), len(frame)) + frame
+    return header + records
+
+
+@needs_tshark
+async def test_any_capture_packets_carry_their_interface_name_and_direction():
+    packets = await packet_parser.get_packet_list(
+        BytesSource(_cooked_v2_pcap([(2, 0), (7, 4), (3, 1)])),
+        interface_names={2: "eth0", 3: "wlan0"},
+    )
+    assert [(p.interface, p.ifindex, p.direction) for p in packets] == [
+        ("eth0", 2, "in"), ("#7", 7, "out"), ("wlan0", 3, "broadcast"),
+    ]
+    # The two new fields sit before Info; the columns after them must not shift.
+    assert packets[0].source == "10.0.0.1"
+    assert packets[0].info
+
+
+@needs_tshark
+async def test_mac_columns_still_line_up_after_the_interface_fields():
+    packets = await packet_parser.get_packet_list(
+        BytesSource(_cooked_v2_pcap([(2, 0)])), view_flags=["-e"],
+    )
+    assert packets[0].src_mac == "02:00:00:00:00:01"
+    assert packets[0].interface == "#2"
+
+
+@needs_tshark
+async def test_cooked_v1_has_a_direction_but_no_interface():
+    packets = await packet_parser.get_packet_list(BytesSource(_build_cooked_pcap()))
+    assert packets[0].interface == ""
+    assert packets[0].ifindex == 0
+    assert packets[0].direction == "in"
+
+
+@needs_tshark
+async def test_a_named_interface_capture_has_no_interface_fields():
+    packets = await packet_parser.get_packet_list(BytesSource(_build_minimal_pcap()))
+    assert (packets[0].interface, packets[0].ifindex, packets[0].direction) == ("", 0, "")

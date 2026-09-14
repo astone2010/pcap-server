@@ -1367,3 +1367,121 @@ async def test_frame_numbers_keep_their_meaning_as_the_capture_grows(manager):
     # returns exactly the new packets.
     fresh = await get_packet_list(buffer.source(), offset=3)
     assert [p.number for p in fresh] == [4, 5, 6, 7, 8]
+
+
+# --- the interface table for an "any" capture ---------------------------------
+
+
+class NamingSSHManager(FakeSSHManager):
+    """Answers interface_indexes from a queue, one reading per call."""
+
+    def __init__(self, readings: list) -> None:
+        super().__init__()
+        self.readings = list(readings)
+        self.index_calls = 0
+
+    async def interface_indexes(self, server):
+        self.index_calls += 1
+        reading = self.readings.pop(0) if self.readings else {}
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+
+def _naming_manager(tmp_path, readings, db=None):
+    ssh = NamingSSHManager(readings)
+    settings = make_settings()
+    mgr = CaptureManager(ssh, tmp_path, lambda k: settings[k], db or FakeCaptureDB(), vault=None)
+    return mgr, ssh
+
+
+async def _settle(predicate, attempts: int = 50) -> None:
+    for _ in range(attempts):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+
+
+async def test_an_any_capture_reads_the_interface_table_as_it_starts(tmp_path):
+    mgr, ssh = _naming_manager(tmp_path, [{1: "lo", 2: "eth0"}])
+    try:
+        srv = make_server()
+        info = await mgr.start(CaptureRequest(server_id=srv.id, interface="any"), srv, user_id="u1")
+        await _settle(lambda: info.interface_names)
+        assert info.interface_names == {1: "lo", 2: "eth0"}
+        row = mgr._db.rows[info.id]
+        assert row["interface_names"] == {1: "lo", 2: "eth0"}
+    finally:
+        await mgr.shutdown()
+
+
+async def test_a_named_interface_capture_never_asks_for_the_table(tmp_path):
+    mgr, ssh = _naming_manager(tmp_path, [{2: "eth0"}])
+    try:
+        srv = make_server()
+        await mgr.start(CaptureRequest(server_id=srv.id, interface="eth0"), srv, user_id="u1")
+        await _settle(lambda: False, attempts=10)
+        assert ssh.index_calls == 0
+    finally:
+        await mgr.shutdown()
+
+
+async def test_the_end_reading_adds_interfaces_created_during_the_capture(tmp_path):
+    """A container started mid-capture brings a veth the start reading never saw."""
+    mgr, ssh = _naming_manager(tmp_path, [{2: "eth0", 9: "veth-old"}])
+    try:
+        info = seed_running_capture(mgr, interface="any")
+        info = mgr.get(info)
+        srv = make_server()
+        await mgr._record_interface_names(info, srv)
+        ssh.readings = [{2: "eth0", 9: "veth-new", 12: "veth-late"}]
+        await mgr._collect(info.id, srv, "/tmp/x.pcap", tmp_path / "missing.pcap", info)
+        assert info.interface_names == {2: "eth0", 9: "veth-new", 12: "veth-late"}
+    finally:
+        await mgr.shutdown()
+
+
+async def test_an_unreadable_interface_table_does_not_fail_the_capture(tmp_path):
+    mgr, ssh = _naming_manager(tmp_path, [ConnectionError("host went away")])
+    try:
+        info = mgr.get(seed_running_capture(mgr, interface="any"))
+        await mgr._collect(info.id, make_server(), "/tmp/x.pcap", tmp_path / "missing.pcap", info)
+        assert info.interface_names == {}
+    finally:
+        await mgr.shutdown()
+
+
+def test_the_interface_table_survives_the_real_database(tmp_path):
+    db = Database(tmp_path / "t.db")
+    db.create_user("u1", "u1", "h")
+    info = CaptureInfo(
+        id="c1", server_id="s", user_id="u1", interface="any", status=CaptureStatus.COMPLETED,
+        interface_names={2: "eth0", 3: "wlan0"},
+    )
+    from backend.capture import _row
+    db.upsert_capture(_row(info))
+    row = next(r for r in db.list_captures() if r["id"] == "c1")
+    assert CaptureInfo(**row).interface_names == {2: "eth0", 3: "wlan0"}
+
+
+@pytest.mark.parametrize("stored,expected", [
+    ("not json", {}),
+    ("[1, 2]", {}),
+    ('{"x": "eth0", "2": 5, "3": "ok"}', {3: "ok"}),
+])
+def test_a_damaged_interface_table_loads_as_what_can_be_read(tmp_path, stored, expected):
+    """CaptureInfo validates this at startup; one bad row must not stop every
+    capture from loading."""
+    db = Database(tmp_path / "t.db")
+    db.create_user("u1", "u1", "h")
+    db.upsert_capture(_row_for_db("c1"))
+    conn = db._conn()
+    conn.execute("UPDATE captures SET interface_names = ? WHERE id = 'c1'", (stored,))
+    conn.commit()
+    row = next(r for r in db.list_captures() if r["id"] == "c1")
+    assert CaptureInfo(**row).interface_names == expected
+
+
+def _row_for_db(capture_id: str) -> dict:
+    from backend.capture import _row
+    return _row(CaptureInfo(id=capture_id, server_id="s", user_id="u1", status=CaptureStatus.COMPLETED))

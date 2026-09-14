@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.1.0-dev.32 — 2026-09-14
+
+### Added
+
+- **Which interface each packet crossed, on an `any` capture.** The Viewer has
+  an **Interface** column — `eth0 out`, `docker0 in`, `bcast` — with the
+  interface number and a ready `sll.ifindex == N` filter on hover. The capture
+  file only numbers interfaces, so pcap-server reads the host's names as the
+  capture starts and again when it ends, and keeps them with the capture.
+- **The host's OS in the server list and the server's details**, as read by
+  **Check prerequisites**. It is kept until the check runs again, and cleared
+  when the server's hostname or port changes.
+- **Check prerequisites offers file capabilities on servers that use sudo.**
+  Where passwordless sudo works, it now also prints how to capture without it.
+  Where tcpdump already has the capability, it says to untick sudo.
+
+### Changed
+
+- **The capability fix limits tcpdump to a `pcap` group** before setting the
+  capability, so other accounts on the host cannot capture with it, and warns
+  that a tcpdump package upgrade usually undoes it. A tcpdump that anyone can
+  run with the capability set is pointed out.
+- **The capability fix grants `cap_net_raw` only.** It is all a capture needs.
+  `cap_net_admin` is still described as an option, with the catch: where a host
+  does not allow it, as in many containers, tcpdump will not start.
+- The sudo option's hint no longer says sudo is needed whenever the SSH user is
+  not root.
+
+### Fixed
+
+- A server set to use sudo, whose sudo wants a password, was reported ready to
+  capture when tcpdump had file capabilities. The capture runs `sudo -n tcpdump`
+  and fails, so this is now reported as the failure it is.
+- A tcpdump the SSH user is not allowed to run was reported as not installed.
+- A tcpdump whose file capabilities the host refuses ("Operation not permitted")
+  was reported as ready to capture.
+- On a phone, a prerequisite result with a long command pushed its text off
+  the edge of the screen.
+
+### Documentation
+
+- README: the screenshot captions' typos, and a caption left without its image.
+- target-hosts.md: the group-limited capability, why `setcap` goes last, and
+  re-checking after a tcpdump upgrade — replacing a claim that the capability
+  usually survives one — and when `cap_net_admin` is worth it. README: the same commands, and **Which interface a
+  packet crossed**. architecture.md: the interface column. security.md: the
+  reads that run on the target besides tcpdump.
+
 ## 0.1.0-dev.31 — 2026-09-13
 
 ### Added
