@@ -32,6 +32,35 @@ only reach over SSH.
 **The longer documents.** This page is the tour; each of these is one subject in
 full, for when you need it.
 
+
+Add severs easily from the main page
+
+<img width="2550" height="853" alt="image" src="https://github.com/user-attachments/assets/2f33e3e5-d2bb-4fa0-9d36-8f72687861fb" />
+Validate SSH key with Test Connection and perform a prerequite check
+
+<img width="1333" height="388" alt="image" src="https://github.com/user-attachments/assets/a24074a5-d314-4461-849d-7cbcda455cc5" />
+Full capture page allows for viewing, pcap sanitization, and/or download. Supports live captures. 
+
+<img width="2555" height="804" alt="image" src="https://github.com/user-attachments/assets/c2e58875-4cf1-413e-86e2-04c40b09e49a" />
+Easily target any interface on the remote
+
+<img width="2528" height="693" alt="image" src="https://github.com/user-attachments/assets/c94b24f2-673a-4b6b-a27d-6b8060907e2c" />
+Interactive BPF filter library on the capture screen. 
+
+
+<img width="2527" height="1254" alt="image" src="https://github.com/user-attachments/assets/50f6039e-6c9d-4441-a9d5-8a367a3a37c4" />
+Wireshark like actions in the browser for quick analysis. 
+
+<img width="1293" height="388" alt="image" src="https://github.com/user-attachments/assets/c78d0b10-a470-46b5-92d4-06d0205e1cdb" />
+Robust encryption and security for data moving and at rest
+
+<img width="1293" height="459" alt="image" src="https://github.com/user-attachments/assets/dfb547f3-adcc-4f40-8567-63c1e2e15c71" />
+ACME/Cerbot Integration
+
+<img width="2550" height="853" alt="image" src="https://github.com/user-attachments/assets/dbb3a01e-81ad-4f7c-9f96-b4f2779481f5" />
+For those who hate eyes, a "Flash-bang" theme. 
+
+
 | | |
 | --- | --- |
 | [Built-in HTTPS](docs/tls.md) | **Recommended.** Letting pcap-server get and renew its own Let's Encrypt certificate — no proxy, no inbound ports, DNS-01 through about two hundred DNS providers |
