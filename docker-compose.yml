@@ -91,6 +91,10 @@
 # `docker compose restart` (or stop + start) keeps the environment the container
 # was created with, so the change silently does nothing.
 
+
+
+# NOTE: The sectiion below is the only text needed to be in the compose file after the folders, permissions, and master key are created. Anything preceded with a # can be deleted. 
+
 services:
   pcap-server:
     image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.33
@@ -98,13 +102,13 @@ services:
       - "8080:8080"
     volumes:
       - type: bind
-        source: ./ssh-keys
+        source: /opt/docker/pcapserver/ssh-keys
         target: /app/ssh-keys
       - type: bind
-        source: ./data
+        source: /opt/docker/pcapserver/data
         target: /app/data
       - type: bind
-        source: ./captures
+        source: /opt/docker/pcapserver/captures
         target: /app/captures
     environment:
       - SSH_KEYS_DIR=/app/ssh-keys
@@ -128,6 +132,9 @@ services:
       - pcap_master_key
     restart: unless-stopped
 
+secrets:
+  pcap_master_key:
+    file: /opt/docker/pcapserver/secrets/master.key
 secrets:
   pcap_master_key:
     file: ./secrets/master.key
