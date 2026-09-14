@@ -433,9 +433,18 @@
                     <button id="btn-apply-filter" class="btn btn-sm btn-secondary">Apply</button>
                     <button id="btn-save-view" class="btn btn-sm btn-secondary"
                             title="Save the current display filter as a tab on this capture">Save view</button>
+                    <button id="btn-protocol-hierarchy" class="btn btn-sm btn-secondary"
+                            title="How this capture (or the current filter's slice of it) breaks down by protocol">Protocol Hierarchy</button>
+                    <button id="btn-conversations" class="btn btn-sm btn-secondary"
+                            title="Traffic totals by address pair and by address">Conversations</button>
                     <button id="btn-download-capture" class="btn btn-sm btn-secondary">Download .pcap</button>
                     <button id="btn-sanitize-capture" class="btn btn-sm btn-secondary"
                             title="Download a copy with credentials, addresses and names replaced. With a saved view open, only that view's packets.">Sanitize</button>
+                    <!-- Shown only once a packet is selected -- see setDetailVisible,
+                         which is the one place that decides whether the detail
+                         pane (and now this) has anything to act on. -->
+                    <button id="btn-export-packet-bytes" class="btn btn-sm btn-secondary" hidden
+                            title="Save this packet's raw bytes as a .bin file">Export bytes</button>
                 </div>
 
                 <!-- Saved views. One tab per named filter, plus "All packets"
@@ -756,6 +765,54 @@
         <div class="sanitize-actions">
             <button type="button" class="btn btn-sm btn-primary" data-sanitize="close">Close</button>
         </div>
+    </div>
+</dialog>
+
+<!-- Statistics > Protocol Hierarchy: how the open capture (or its current
+     display filter) breaks down by protocol layer, nested the way the
+     protocols themselves nest. -->
+<dialog id="protocol-hierarchy-dialog" class="stats-dialog" aria-labelledby="protocol-hierarchy-title">
+    <h2 id="protocol-hierarchy-title" class="sanitize-title">Protocol Hierarchy</h2>
+    <p id="protocol-hierarchy-scope" class="sanitize-target"></p>
+    <div id="protocol-hierarchy-tree" class="stats-tree"></div>
+    <div class="sanitize-actions">
+        <button type="button" class="btn btn-sm btn-primary" data-close-dialog>Close</button>
+    </div>
+</dialog>
+
+<!-- Statistics > Conversations / Endpoints, from one pass over the capture. -->
+<dialog id="conversations-dialog" class="stats-dialog" aria-labelledby="conversations-title">
+    <h2 id="conversations-title" class="sanitize-title">Conversations</h2>
+    <p id="conversations-scope" class="sanitize-target"></p>
+    <h3 class="sanitize-subhead">Address pairs</h3>
+    <div class="stats-table-scroll">
+        <table class="stats-table">
+            <thead><tr><th>A</th><th>B</th><th>A &rarr; B</th><th>B &rarr; A</th><th>Total</th><th></th></tr></thead>
+            <tbody id="conversations-pairs"></tbody>
+        </table>
+    </div>
+    <h3 class="sanitize-subhead">Endpoints</h3>
+    <div class="stats-table-scroll">
+        <table class="stats-table">
+            <thead><tr><th>Address</th><th>Packets</th><th>Bytes</th><th></th></tr></thead>
+            <tbody id="conversations-endpoints"></tbody>
+        </table>
+    </div>
+    <div class="sanitize-actions">
+        <button type="button" class="btn btn-sm btn-primary" data-close-dialog>Close</button>
+    </div>
+</dialog>
+
+<!-- Follow TCP/UDP Stream: one conversation, reassembled in the order it was
+     sent, both directions told apart by color the way Wireshark's own dialog
+     does. Opened from a packet row or field's right-click menu. -->
+<dialog id="follow-stream-dialog" class="stats-dialog follow-stream-dialog" aria-labelledby="follow-stream-title">
+    <h2 id="follow-stream-title" class="sanitize-title">Follow Stream</h2>
+    <p id="follow-stream-endpoints" class="sanitize-target"></p>
+    <div id="follow-stream-body" class="follow-stream-body"></div>
+    <div class="sanitize-actions">
+        <button type="button" id="btn-follow-stream-filter" class="btn btn-sm btn-secondary">Set as display filter</button>
+        <button type="button" class="btn btn-sm btn-primary" data-close-dialog>Close</button>
     </div>
 </dialog>
 

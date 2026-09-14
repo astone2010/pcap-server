@@ -723,3 +723,147 @@ async def test_cooked_v1_has_a_direction_but_no_interface():
 async def test_a_named_interface_capture_has_no_interface_fields():
     packets = await packet_parser.get_packet_list(BytesSource(_build_minimal_pcap()))
     assert (packets[0].interface, packets[0].ifindex, packets[0].direction) == ("", 0, "")
+
+
+# --- protocol hierarchy, conversations/endpoints, follow stream --------------
+#
+# All three read the whole capture rather than one frame, so they get their
+# own small multi-packet pcap: a three-way TCP handshake plus one HTTP
+# request/response over it, and an unrelated UDP packet to a third host, so a
+# hierarchy branch, a conversation direction split and an endpoint total all
+# have something real to add up.
+
+from tests.packet_builders import ethernet, ip4, ipv4, mac, pcap, read_pcap, tcp, udp  # noqa: E402
+
+
+def _http_exchange_pcap() -> bytes:
+    src_mac, dst_mac = mac("aa:bb:cc:dd:ee:01"), mac("aa:bb:cc:dd:ee:02")
+    third_mac = mac("aa:bb:cc:dd:ee:03")
+    a, b, c = ip4("10.0.0.1"), ip4("10.0.0.2"), ip4("10.0.0.3")
+    req = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
+    resp = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
+
+    def eth_ip(src, dst, smac, dmac, proto, payload):
+        return ethernet(dmac, smac, 0x0800, ipv4(src, dst, proto, payload))
+
+    frames = [
+        eth_ip(a, b, src_mac, dst_mac, 6, tcp(a, b, 12345, 80, b"", flags=0x02, seq=0)),
+        eth_ip(b, a, dst_mac, src_mac, 6, tcp(b, a, 80, 12345, b"", flags=0x12, seq=0)),
+        eth_ip(a, b, src_mac, dst_mac, 6, tcp(a, b, 12345, 80, b"", flags=0x10, seq=1)),
+        eth_ip(a, b, src_mac, dst_mac, 6, tcp(a, b, 12345, 80, req, flags=0x18, seq=1)),
+        eth_ip(b, a, dst_mac, src_mac, 6, tcp(b, a, 80, 12345, b"", flags=0x10, seq=1)),
+        eth_ip(b, a, dst_mac, src_mac, 6, tcp(b, a, 80, 12345, resp, flags=0x18, seq=1)),
+        eth_ip(a, b, src_mac, dst_mac, 6, tcp(a, b, 12345, 80, b"", flags=0x10, seq=1 + len(req))),
+        eth_ip(a, c, src_mac, third_mac, 17, udp(a, c, 5353, 53, b"dns-ish")),
+    ]
+    return pcap(frames)
+
+
+@needs_tshark
+async def test_protocol_hierarchy_nests_the_stack_and_totals_full_frame_bytes():
+    tree = await packet_parser.get_protocol_hierarchy(BytesSource(_http_exchange_pcap()))
+    assert [n.name for n in tree] == ["eth"]
+    eth = tree[0]
+    assert eth.frames == 8
+    assert eth.bytes == sum(len(f) for f in read_pcap_frames(_http_exchange_pcap()))
+    # frame.protocols carries "ethertype" as its own token between eth and ip
+    # -- a real layer to tshark, not folded away, so the tree has to include
+    # it rather than assume eth's only child is ip.
+    ip = eth.children[0].children[0]
+    assert ip.name == "ip" and ip.frames == 8
+    by_name = {c.name: c for c in ip.children}
+    assert by_name["tcp"].frames == 7
+    assert by_name["udp"].frames == 1
+    # http's own two frames (request and response) still carry the FULL frame
+    # length, not just the http layer's share of it -- same as tshark's own
+    # -z io,phs, verified separately against a real capture in this file's
+    # earlier design pass.
+    tcp_children = {c.name: c for c in by_name["tcp"].children}
+    assert tcp_children["http"].frames == 2
+
+
+def read_pcap_frames(data: bytes) -> list[bytes]:
+    return [frame for _incl, _orig, frame in read_pcap(data)]
+
+
+@needs_tshark
+async def test_protocol_hierarchy_applies_a_display_filter():
+    tree = await packet_parser.get_protocol_hierarchy(
+        BytesSource(_http_exchange_pcap()), display_filter="udp",
+    )
+    assert [n.name for n in tree] == ["eth"]
+    assert tree[0].frames == 1
+
+
+async def test_protocol_hierarchy_rejects_hostile_filter_before_running_any_tool():
+    with pytest.raises(ValueError):
+        await packet_parser.get_protocol_hierarchy(BoomSource(), display_filter="tcp; rm -rf /")
+
+
+@needs_tshark
+async def test_conversations_splits_bytes_by_direction_not_by_who_is_a():
+    convs, endpoints = await packet_parser.get_conversations(BytesSource(_http_exchange_pcap()))
+    by_pair = {frozenset((c.a, c.b)): c for c in convs}
+    ab = by_pair[frozenset(("10.0.0.1", "10.0.0.2"))]
+    # 4 frames from .1 (SYN, ACK, GET, final ACK), 3 from .2 (SYN-ACK, ACK, response).
+    a_to_b = ab.packets_a_to_b if ab.a == "10.0.0.1" else ab.packets_b_to_a
+    b_to_a = ab.packets_b_to_a if ab.a == "10.0.0.1" else ab.packets_a_to_b
+    assert (a_to_b, b_to_a) == (4, 3)
+
+    ac = by_pair[frozenset(("10.0.0.1", "10.0.0.3"))]
+    assert ac.packets_a_to_b + ac.packets_b_to_a == 1
+
+    by_addr = {e.address: e for e in endpoints}
+    assert by_addr["10.0.0.1"].packets == 8
+    assert by_addr["10.0.0.2"].packets == 7
+    assert by_addr["10.0.0.3"].packets == 1
+
+
+@needs_tshark
+async def test_follow_tcp_stream_reassembles_both_directions_in_order():
+    result = await packet_parser.get_follow_stream(BytesSource(_http_exchange_pcap()), "tcp", 0)
+    assert result.a == "10.0.0.1:12345"
+    assert result.b == "10.0.0.2:80"
+    directions = [(seg.from_a, bytes.fromhex(seg.hex)) for seg in result.segments]
+    assert directions == [
+        (True, b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+        (False, b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"),
+    ]
+
+
+@needs_tshark
+async def test_follow_udp_stream_works_too():
+    result = await packet_parser.get_follow_stream(BytesSource(_http_exchange_pcap()), "udp", 0)
+    assert result.a == "10.0.0.1:5353"
+    assert result.segments[0].hex == b"dns-ish".hex()
+
+
+@needs_tshark
+async def test_following_a_stream_that_does_not_exist_raises():
+    with pytest.raises(ValueError):
+        await packet_parser.get_follow_stream(BytesSource(_http_exchange_pcap()), "tcp", 99)
+
+
+@needs_tshark
+async def test_packet_detail_carries_its_tcp_stream_index():
+    detail = await packet_parser.get_packet_detail(BytesSource(_http_exchange_pcap()), 4)
+    assert detail.tcp_stream == 0
+    assert detail.udp_stream is None
+
+
+@needs_tshark
+async def test_packet_detail_carries_its_udp_stream_index():
+    detail = await packet_parser.get_packet_detail(BytesSource(_http_exchange_pcap()), 8)
+    assert detail.udp_stream == 0
+    assert detail.tcp_stream is None
+
+
+@needs_tshark
+async def test_packet_list_carries_the_tcp_stream_index_per_row():
+    """What the row's own right-click menu needs to offer Follow Stream
+    without opening the detail pane first."""
+    packets = await packet_parser.get_packet_list(BytesSource(_http_exchange_pcap()))
+    assert [p.tcp_stream for p in packets[:7]] == [0] * 7
+    assert packets[7].tcp_stream is None
+    assert packets[7].udp_stream == 0
+    assert all(p.udp_stream is None for p in packets[:7])

@@ -166,6 +166,70 @@ while the reader waits for output that cannot come.
 
 ---
 
+## Statistics: Protocol Hierarchy, Conversations, Follow Stream
+
+Three more views over a capture, `packet_parser.get_protocol_hierarchy` /
+`get_conversations` / `get_follow_stream`, behind
+`/api/captures/{id}/protocol-hierarchy`, `/api/captures/{id}/conversations`
+and `/api/captures/{id}/stream/{protocol}/{stream}`. All three read-only,
+rate-limited on the same budget as the packet list, and authorized the same
+way as every other capture route: `_require_readable_capture`.
+
+**The hierarchy and the conversations are built in Python, not by parsing
+tshark's own `-z io,phs` / `-z conv,ip` reports.** Those are formatted for a
+terminal — indentation carries the tree, column widths size themselves to
+the addresses present — which makes them the wrong thing to screen-scrape
+when the same totals can be read directly off one `-T fields` pass, the same
+mechanism `get_packet_list` already uses:
+
+```
+get_protocol_hierarchy: -e frame.protocols -e frame.len   (one line per packet)
+get_conversations:      -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst -e frame.len
+```
+
+`frame.protocols` is a colon-separated layer list (`eth:ethertype:ip:tcp:http`);
+folding it into a tree by walking each packet's list once, accumulating
+frames and bytes at every layer it passes through, reproduces tshark's own
+Protocol Hierarchy Statistics exactly — including that a layer's bytes are
+the packet's FULL length, not that layer's own share of it, verified against
+a real capture. Conversations are keyed by the address pair sorted once, so
+the same two addresses land in one bucket regardless of which was `src` on a
+given packet; direction is tracked per packet against that sorted key, which
+is what lets `packets_a_to_b` and `packets_b_to_a` come out right without a
+second pass. Endpoint totals are folded in from the same rows, so all of
+Conversations and Endpoints is one tshark spawn, not two.
+
+**Follow Stream uses `-z follow,<proto>,raw,<index>`, not `,ascii` or `,hex`.**
+All three were tried against a real capture before choosing:
+
+- `ascii` replaces non-printable bytes with `.`, which is fine for a lossy
+  preview but wrong for anything that has to be byte-exact.
+- `hex` is byte-exact, but its offsets run continuously across consecutive
+  same-direction frames — verified against a real capture with two frames in
+  a row from the same side, which come back as one merged run, offsets
+  0000000A picking up where 00000000 left off. There is no way to split that
+  back into per-frame lines.
+- `raw` is byte-exact AND keeps frame boundaries: the same two-consecutive-
+  same-direction-frames capture comes back as two separate lines under
+  `raw`, not one. Each line is a bare hex string, tab-prefixed for the
+  second endpoint, and turns into a `FollowStreamSegment` directly.
+
+A stream index that does not exist is not an error to tshark — it exits 0
+and prints `Node 0: :0` / `Node 1: :0` with no data lines, rather than
+failing. An empty address before the colon is the only signal that the
+index was never real (checked against a real capture), so that is what
+`get_follow_stream` raises `ValueError` on.
+
+`PacketSummary` and `PacketDetail` both carry `tcp_stream` / `udp_stream`
+(`None` when the packet is in neither) so the frontend can offer Follow
+Stream from a packet's row in the list — Wireshark's own workflow — without
+first opening its detail pane to find the index. The row's copy comes as two
+more `-T fields` columns on the existing `get_packet_list` call; the detail
+pane's comes from walking its PDML tree for the field, since PDML already
+carries every field tshark dissected, hidden ones included.
+
+---
+
 ## Data at rest
 
 Envelope encryption, `crypto.py`:

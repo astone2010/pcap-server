@@ -1,5 +1,121 @@
 # Dev Skills gate state
 
+## 0.1.0-dev.33, second commit — the recommended parity adds (2026-09-14)
+User (after the first dev.33 commit, ebe5ac4): "lets commit only and do the
+reccomended adds" -- the first half approved and executed already; this is a
+SEPARATE, not-yet-approved batch, same open version (never tagged), so it
+amends the same CHANGELOG entry rather than opening dev.34.
+
+Scope: the four Wireshark-parity items recommended earlier and accepted --
+Follow TCP/UDP Stream, Protocol Hierarchy, Conversations/Endpoints, Copy as
+filter -- plus Export packet bytes (already built and committed in the first
+dev.33 commit, listed here only because its CHANGELOG bullet was written in
+this batch). Declined earlier and NOT built: colorization rules, Decode As,
+IO Graph, full Statistics suite.
+
+Implementation DONE (uncommitted):
+- backend/packet_parser.py: get_protocol_hierarchy, get_conversations,
+  get_follow_stream -- all built from one `-T fields` tshark pass aggregated
+  in Python, NOT by parsing tshark's `-z io,phs`/`-z conv,ip` text reports
+  (terminal-formatted, not fixed-width, wrong thing to screen-scrape).
+  Follow Stream uses `follow,<proto>,raw,<index>` specifically -- verified
+  empirically against a real capture that `,hex` merges consecutive
+  same-direction frames' byte offsets (cannot split back apart) while `,raw`
+  keeps them as separate lines; `,ascii` was ruled out for lossiness
+  (non-printable bytes become `.`, wrong for something meant to be
+  byte-exact). A nonexistent stream index doesn't error in tshark (exit 0,
+  "Node 0: :0") -- verified, and is what the ValueError check is keyed on.
+- get_packet_list gains tcp.stream/udp.stream columns (2 more -e fields,
+  column indices shifted +2 -- full existing test suite re-run after the
+  shift, all still passed with no index-specific test changes needed) so a
+  packet ROW's own right-click can offer Follow Stream without first opening
+  the detail pane -- matches Wireshark's actual workflow. get_packet_detail
+  gains the same two fields from its PDML tree via a new _find_field_anywhere
+  helper (tcp.stream lives under the "tcp" layer, not "frame").
+- models.py: ProtocolHierarchyNode, Conversation, ConversationEndpoint,
+  FollowStreamSegment, FollowStreamResult; PacketSummary + PacketDetail gain
+  tcp_stream/udp_stream: int | None.
+- main.py: three new routes (protocol-hierarchy, conversations,
+  stream/{protocol}/{stream}), same auth/ownership/rate-limit pattern as the
+  existing packet routes (_require_readable_capture, packet_rate_limiter).
+  protocol path param validated against {tcp,udp} before anything else runs.
+- frontend: three new <dialog>s (Protocol Hierarchy tree, Conversations two
+  tables with per-row Filter buttons, Follow Stream with per-direction
+  colouring + Set as display filter), two new toolbar buttons, Follow Stream
+  wired into BOTH the packet-row context menu (via new data-tcp-stream/
+  data-udp-stream on <tr>) and the detail-pane context menu (via
+  currentDetail.tcp_stream/udp_stream) through a shared pushFollowStreamItems
+  helper. Copy as filter added to filterMenuItems (the one menu-builder every
+  right-click path already shares). Export packet bytes: client-side Blob
+  from the hex the detail pane already holds, no new request.
+SECURITY fix applied during this pass, before it ever reached a commit:
+  get_follow_stream's `assert protocol in ("tcp","udp")` replaced with an
+  explicit `if not in: raise ValueError` -- asserts strip under `python -O`,
+  and the value was being f-string-interpolated straight into a `-z` tshark
+  argument; the route already validates first, but the function itself had
+  no defense if ever called from anywhere else. Re-ran the full diff grep
+  for eval/exec/shell=True/os.system/innerHTML=/pickle/md5/sha1/bare-except/
+  assert-as-validation after the fix: 0 further hits.
+  XSS check done deliberately: reconstructed Follow Stream text is
+  attacker-influenced (raw captured bytes) and is rendered via escHtml
+  before insertion, same as every other interpolated value in these three
+  dialogs (protocol names, addresses, error messages) -- checked one by one,
+  not assumed.
+Tests: packet_parser tests build a real 8-frame pcap (TCP handshake + HTTP
+  exchange + unrelated UDP packet) via tests/packet_builders.py and run
+  against REAL tshark -- hierarchy nesting incl. full-frame-bytes-at-every-
+  layer semantics, conversation direction split, endpoint totals, follow
+  reassembly byte-for-byte both directions, nonexistent-stream ValueError,
+  tcp_stream/udp_stream on both PacketDetail and PacketSummary. test_main.py:
+  429-before-tshark gate + bad-protocol-400 for all three routes. Browser:
+  7 new tests (test_stats_dialogs_ui.py) with window.api stubbed per-path
+  (the established pattern in this suite for API-backed dialogs -- no real
+  capture pipeline available to browser tests here) -- tree rendering incl.
+  percentage-against-root, pairs+endpoints rendering, Filter button applies
+  the right expression and closes, stream colouring by direction, Set-as-
+  filter uses the right field/index, server error surfaces verbatim, AND the
+  row-context-menu trigger end to end (right-click -> menu item -> dialog
+  opens). Plus test_packet_export_ui.py (3, from the first dev.33 commit)
+  using page.expect_download to verify actual byte-exact file output, not
+  just that a click ran.
+  FULL SUITE, final run after this batch: 1371 passed, 0 failed, 0
+  unexpectedly skipped, run twice clean.
+
+🔢 VERSION    ➖ N/A for this commit -- still 0.1.0-dev.33, unshipped; no
+                further ref bump needed
+🔨 BUILD      ✅ podman build localhost/pcap-server:0.1.0-dev.33 ok (rebuilt
+                after this batch). Rootless smoke test (ALLOW_UNENCRYPTED_
+                CAPTURES=true, SELinux :Z + 0777 tmp mounts): 0 tracebacks,
+                / and /js/app.js serve 200, served app.js contains the new
+                dialog/menu code (grep count 10 across protocol-hierarchy/
+                Follow TCP Stream/exportPacketBytes/Copy as filter), fresh-
+                DB migration still drops live_stream cleanly. All three new
+                routes verified 401 unauthenticated (auth gate wired, not
+                skipped) with 0 server-side tracebacks in the log.
+🔒 SECURITY   ✅ 0 Critical/High/Medium. One real finding (assert-as-argv-
+                validation in get_follow_stream) found and fixed during this
+                same pass, described above -- not deferred.
+📄 DOCS       ✅ CHANGELOG dev.33 entry extended (Added: Follow Stream,
+                Protocol Hierarchy, Conversations/Endpoints, Copy as filter,
+                Export packet bytes; Documentation bullet added). README
+                gains Export bytes note, "Follow a stream" and "Protocol
+                Hierarchy and Conversations" sections, Copy-as-filter
+                mentioned in "The two filters". architecture.md gains a full
+                "Statistics: Protocol Hierarchy, Conversations, Follow
+                Stream" section covering the three empirically-verified
+                format choices (raw over hex/ascii for Follow Stream, Python
+                aggregation over `-z` text parsing) and the tcp_stream/
+                udp_stream plumbing.
+📦 RELEASE    ⬜ commit NOT YET REQUESTED for this batch -- the user's
+                earlier "lets commit" covered the first dev.33 commit only;
+                this batch needs its own approval before `git commit`, per
+                SKILL.md Section 1 (approval is scoped, not standing)
+🚀 SHIP       ⬜
+
+## 0.1.0-dev.33, first commit — live streaming removed (2026-09-14)
+Committed locally as ebe5ac4 (NOT pushed -- user asked to commit, not push).
+See the detailed record below this line for what that commit covered.
+
 ## 0.1.0-dev.33 — opened 2026-09-14 (local CLI, Fedora 44, bash, dev-skills 2.18.0)
 Track: release sequence 0.1.0-dev.33. Branch = origin cd2bda5 (tag v0.1.0-dev.32,
 confirmed on remote). New session picked up capture-size-handoff.md.

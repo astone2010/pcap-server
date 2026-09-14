@@ -2915,6 +2915,179 @@ function renderSanitizeSummary(entry) {
     }
 }
 
+// --- statistics: Protocol Hierarchy, Conversations, Follow Stream -----------
+//
+// Three read-only views over a whole capture, or the slice its current
+// display filter selects. Each is its own small <dialog> rather than a tab:
+// they are consulted, not lived in, and a capture with none of them open
+// should not carry their chrome permanently on screen.
+
+function initStatsDialogs() {
+    for (const id of ["protocol-hierarchy-dialog", "conversations-dialog", "follow-stream-dialog"]) {
+        const dialog = $(id);
+        dialog?.addEventListener("click", (e) => {
+            if (e.target.closest("[data-close-dialog]")) dialog.close();
+        });
+    }
+    $("conversations-dialog")?.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-conv-filter]");
+        if (!btn) return;
+        applyBuiltFilter(btn.dataset.convFilter, "selected");
+        $("conversations-dialog").close();
+    });
+    $("btn-follow-stream-filter")?.addEventListener("click", () => {
+        const dialog = $("follow-stream-dialog");
+        if (!dialog.dataset.protocol) return;
+        applyBuiltFilter(`${dialog.dataset.protocol}.stream eq ${dialog.dataset.stream}`, "selected");
+        dialog.close();
+    });
+}
+
+async function openProtocolHierarchyDialog() {
+    if (!viewingCaptureId) return;
+    const dialog = $("protocol-hierarchy-dialog");
+    const tree = $("protocol-hierarchy-tree");
+    const filter = $("display-filter").value.trim();
+    $("protocol-hierarchy-scope").textContent = filter ? `Packets matching: ${filter}` : "The whole capture";
+    tree.innerHTML = '<div class="empty-state" style="font-size:0.75rem"><span class="spinner"></span></div>';
+    dialog.showModal();
+    try {
+        const nodes = await api(
+            `/api/captures/${viewingCaptureId}/protocol-hierarchy?${new URLSearchParams({ display_filter: filter })}`
+        );
+        tree.innerHTML = nodes.length
+            ? renderHierarchyNodes(nodes, nodes[0].frames)
+            : '<div class="empty-state" style="font-size:0.75rem">No packets</div>';
+    } catch (e) {
+        tree.innerHTML = `<div style="color:var(--danger);padding:8px">${escHtml(e.message)}</div>`;
+    }
+}
+
+function renderHierarchyNodes(nodes, totalFrames, depth = 0) {
+    return nodes.map((n) => {
+        const pct = totalFrames ? ((n.frames / totalFrames) * 100).toFixed(1) : "0.0";
+        return `
+            <div class="stats-node" style="padding-left:${depth * 16}px">
+                <span class="stats-node-name">${escHtml(n.name)}</span>
+                <span class="stats-node-stats">frames:${n.frames.toLocaleString()} bytes:${n.bytes.toLocaleString()} (${pct}%)</span>
+            </div>${renderHierarchyNodes(n.children, totalFrames, depth + 1)}`;
+    }).join("");
+}
+
+async function openConversationsDialog() {
+    if (!viewingCaptureId) return;
+    const dialog = $("conversations-dialog");
+    const filter = $("display-filter").value.trim();
+    $("conversations-scope").textContent = filter ? `Packets matching: ${filter}` : "The whole capture";
+    $("conversations-pairs").innerHTML = '<tr><td colspan="6" style="text-align:center;padding:12px"><span class="spinner"></span></td></tr>';
+    $("conversations-endpoints").innerHTML = "";
+    dialog.showModal();
+    try {
+        const data = await api(
+            `/api/captures/${viewingCaptureId}/conversations?${new URLSearchParams({ display_filter: filter })}`
+        );
+        renderConversationPairs(data.conversations);
+        renderConversationEndpoints(data.endpoints);
+    } catch (e) {
+        $("conversations-pairs").innerHTML = `<tr><td colspan="6" style="color:var(--danger)">${escHtml(e.message)}</td></tr>`;
+    }
+}
+
+// A network-layer address is enough to build a filter for it -- see
+// addressField, already used by the packet list's own row menu -- so the
+// same button works whether the row is a conversation pair or one endpoint.
+function conversationFilterButton(expr) {
+    return expr
+        ? `<button type="button" class="btn btn-sm btn-secondary" data-conv-filter="${escHtml(expr)}">Filter</button>`
+        : "";
+}
+
+function renderConversationPairs(convs) {
+    const tbody = $("conversations-pairs");
+    if (!convs.length) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">No conversations</td></tr>';
+        return;
+    }
+    tbody.innerHTML = convs
+        .slice()
+        .sort((a, b) => (b.bytes_a_to_b + b.bytes_b_to_a) - (a.bytes_a_to_b + a.bytes_b_to_a))
+        .map((c) => {
+            const field = addressField(c.a);
+            const filterExpr = field ? `${buildFieldFilter(field, c.a)} && ${buildFieldFilter(field, c.b)}` : "";
+            const totalPkts = c.packets_a_to_b + c.packets_b_to_a;
+            const totalBytes = c.bytes_a_to_b + c.bytes_b_to_a;
+            return `
+            <tr>
+                <td>${escHtml(c.a)}</td>
+                <td>${escHtml(c.b)}</td>
+                <td>${c.packets_a_to_b.toLocaleString()} pkts, ${formatBytes(c.bytes_a_to_b)}</td>
+                <td>${c.packets_b_to_a.toLocaleString()} pkts, ${formatBytes(c.bytes_b_to_a)}</td>
+                <td>${totalPkts.toLocaleString()} pkts, ${formatBytes(totalBytes)}</td>
+                <td>${conversationFilterButton(filterExpr)}</td>
+            </tr>`;
+        }).join("");
+}
+
+function renderConversationEndpoints(endpoints) {
+    const tbody = $("conversations-endpoints");
+    if (!endpoints.length) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">No endpoints</td></tr>';
+        return;
+    }
+    tbody.innerHTML = endpoints
+        .slice()
+        .sort((a, b) => b.bytes - a.bytes)
+        .map((e) => {
+            const field = addressField(e.address);
+            return `
+            <tr>
+                <td>${escHtml(e.address)}</td>
+                <td>${e.packets.toLocaleString()}</td>
+                <td>${formatBytes(e.bytes)}</td>
+                <td>${conversationFilterButton(field ? buildFieldFilter(field, e.address) : "")}</td>
+            </tr>`;
+        }).join("");
+}
+
+function hexToBytes(hex) {
+    const bytes = new Uint8Array(Math.floor(hex.length / 2));
+    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return bytes;
+}
+
+// The same lossy ASCII rendering Wireshark's own Follow Stream dialog uses --
+// printable bytes and the two line-ending characters as themselves, anything
+// else as a dot. Exact bytes are still one click away, via Export bytes on
+// the packet each segment came from; this view is for reading, not for
+// round-tripping.
+function bytesToStreamText(bytes) {
+    let out = "";
+    for (const b of bytes) out += (b >= 32 && b < 127) || b === 10 || b === 13 ? String.fromCharCode(b) : ".";
+    return out;
+}
+
+async function openFollowStream(protocol, stream) {
+    if (!viewingCaptureId) return;
+    const dialog = $("follow-stream-dialog");
+    dialog.dataset.protocol = protocol;
+    dialog.dataset.stream = String(stream);
+    $("follow-stream-title").textContent = `Follow ${protocol.toUpperCase()} Stream`;
+    $("follow-stream-endpoints").textContent = "";
+    $("follow-stream-body").innerHTML = '<span class="empty-state" style="font-size:0.75rem"><span class="spinner"></span></span>';
+    dialog.showModal();
+    try {
+        const result = await api(`/api/captures/${viewingCaptureId}/stream/${protocol}/${stream}`);
+        $("follow-stream-endpoints").textContent =
+            `${result.a} ↔ ${result.b} • ${result.segments.length} segment${result.segments.length === 1 ? "" : "s"}`;
+        $("follow-stream-body").innerHTML = result.segments.map((seg) => {
+            const text = bytesToStreamText(hexToBytes(seg.hex));
+            return `<span class="${seg.from_a ? "stream-a" : "stream-b"}">${escHtml(text)}</span>`;
+        }).join("") || '<span class="empty-state" style="font-size:0.75rem">No data was exchanged</span>';
+    } catch (e) {
+        $("follow-stream-body").innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
+    }
+}
+
 // Typing over a saved view's filter means you are no longer looking at that
 // view, and the tab should stop claiming you are.
 function noteFilterEditedByHand() {
@@ -3458,8 +3631,15 @@ function interfaceCellHtml(p) {
 
 function packetRowHtml(p, cols) {
     const { localTime, mac, iface } = cols;
+    // Read by the row's own right-click menu, to offer Follow Stream without
+    // a round trip: null on a packet outside any TCP/UDP conversation, so
+    // "null" (the string a missing dataset value would otherwise read as)
+    // deliberately never appears here.
+    const tcpStream = p.tcp_stream ?? "";
+    const udpStream = p.udp_stream ?? "";
     return `
-            <tr class="${packetClass(p)}" data-frame="${p.number}">
+            <tr class="${packetClass(p)}" data-frame="${p.number}"
+                data-tcp-stream="${tcpStream}" data-udp-stream="${udpStream}">
                 <td class="col-no">${p.number}</td>
                 <td class="col-time" title="${escHtml(localTime ? LOCAL_ZONE : p.timestamp)}">${escHtml(localTime ? formatLocalTime(p.timestamp) : p.timestamp)}</td>
                 <td class="col-src" title="${escHtml(p.source)}">${escHtml(p.source)}</td>
@@ -3619,6 +3799,33 @@ function downloadCapture() {
 // "Click a packet above".
 function setDetailVisible(visible) {
     $("packet-viewer")?.classList.toggle("no-selection", !visible);
+    const exportBtn = $("btn-export-packet-bytes");
+    if (exportBtn) exportBtn.hidden = !visible;
+}
+
+// Wireshark's Export Packet Bytes. Entirely client-side: the frame's hex is
+// already here for the hex pane, so building a .bin from it costs nothing the
+// server needs to do again. Named after the frame number, not the capture, so
+// exporting two packets from the same capture does not silently overwrite one
+// with the other in the downloads folder.
+function exportPacketBytes() {
+    const hex = currentDetail?.frame_hex;
+    if (!hex) return;
+    const bytes = new Uint8Array(Math.floor(hex.length / 2));
+    for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+    }
+    const frame = selectedPacketRow?.dataset.frame || "packet";
+    const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `frame-${frame}.bin`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Not immediately: the click above schedules the download asynchronously,
+    // and revoking the URL before the browser has read it fails the save.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // The loaded frame, kept so the hex pane and the tree can find each other
@@ -3965,6 +4172,12 @@ function filterMenuItems(expr, label) {
         { separator: true },
         { label: "Prepare as filter", hint: "does not run", run: () => applyBuiltFilter(expr, "selected", false) },
         { label: "Copy value", run: () => navigator.clipboard?.writeText(label).catch(() => {}) },
+        // Distinct from Copy value: label is the raw field value (an address, a
+        // port number), expr is the filter built from it -- quoted, combined
+        // with a field name, sometimes falling back to a presence check when
+        // the value carries a character the filter forbids. Composing that by
+        // hand is exactly the fiddly part this menu exists to skip.
+        { label: "Copy as filter", run: () => navigator.clipboard?.writeText(expr).catch(() => {}) },
     ];
 }
 
@@ -3974,7 +4187,16 @@ function onDetailContextMenu(ev) {
     ev.preventDefault();
     selectField(row, null);
     const expr = buildFieldFilter(row.dataset.field, row.dataset.value);
-    openFilterMenu(ev.clientX, ev.clientY, filterMenuItems(expr, row.dataset.value || row.dataset.field));
+    const items = filterMenuItems(expr, row.dataset.value || row.dataset.field);
+    // Offered from anywhere in this packet's own tree, not only a tcp.stream
+    // or udp.stream row -- the same as right-clicking its line in the packet
+    // list, and the detail pane already has both indexes loaded.
+    pushFollowStreamItems(
+        items,
+        currentDetail?.tcp_stream != null ? String(currentDetail.tcp_stream) : "",
+        currentDetail?.udp_stream != null ? String(currentDetail.udp_stream) : "",
+    );
+    openFilterMenu(ev.clientX, ev.clientY, items);
 }
 
 // A row in the list has no PDML behind it, so its filters are built from the
@@ -4027,7 +4249,23 @@ function onPacketRowContextMenu(ev) {
         items.push({ separator: true });
         items.push({ label: "Conversation filter", hint: `${src} ↔ ${dst}`, run: () => applyBuiltFilter(conv, "selected") });
     }
+    pushFollowStreamItems(items, row.dataset.tcpStream, row.dataset.udpStream);
     openFilterMenu(ev.clientX, ev.clientY, items);
+}
+
+// Shared by the row's own menu and the detail pane's: whichever tcp.stream or
+// udp.stream this packet carries, offered as "Follow ... Stream" rather than
+// as a filter -- opening the reassembled conversation is a different action
+// from narrowing the list to it, even though both start from the same index.
+function pushFollowStreamItems(items, tcpStream, udpStream) {
+    if (tcpStream !== undefined && tcpStream !== "") {
+        items.push({ separator: true });
+        items.push({ label: "Follow TCP Stream", run: () => openFollowStream("tcp", Number(tcpStream)) });
+    }
+    if (udpStream !== undefined && udpStream !== "") {
+        items.push({ separator: true });
+        items.push({ label: "Follow UDP Stream", run: () => openFollowStream("udp", Number(udpStream)) });
+    }
 }
 
 // --- resizer ---
@@ -4900,6 +5138,10 @@ function initStaticHandlers() {
         if (viewingCaptureId) openSanitizeDialog(viewingCaptureId, activeViewId);
     });
     initSanitizeDialog();
+    $("btn-export-packet-bytes")?.addEventListener("click", exportPacketBytes);
+    $("btn-protocol-hierarchy")?.addEventListener("click", openProtocolHierarchyDialog);
+    $("btn-conversations")?.addEventListener("click", openConversationsDialog);
+    initStatsDialogs();
     $("resolve-names")?.addEventListener("change", onResolveNamesToggled);
     $("btn-save-settings")?.addEventListener("click", saveSettings);
     $("btn-admin-create-user")?.addEventListener("click", adminCreateUser);

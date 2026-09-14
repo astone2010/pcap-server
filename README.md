@@ -546,8 +546,10 @@ already recorded, so it costs nothing to change your mind.
 
 Most display filters do not need to be typed. **Right-click** anything in the
 viewer — a field in the detail tree at any depth, a column in the packet list,
-a single TCP flag bit — and the Wireshark menu appears, including a
-**Conversation filter** for both endpoints of an exchange and nothing else.
+a single TCP flag bit — and the Wireshark menu appears: Apply / Not / And /
+Or / Prepare as filter, a **Conversation filter** for both endpoints of an
+exchange and nothing else, **Copy value** for the raw reading, and **Copy as
+filter** for the expression built from it.
 
 A filter tshark cannot parse comes back with tshark's own message and the
 position it objected to, so an empty packet list always means the filter was
@@ -562,6 +564,29 @@ and its bytes light up in both the hex and ASCII columns; click a byte and the
 innermost field covering it is selected, with every parent opened so the row is
 on screen. This works because the dissection comes from tshark's PDML output,
 which reports each field's byte offset and length — the JSON output does not.
+
+**Export bytes**, in the detail toolbar once a packet is selected, saves that
+packet's raw bytes as a `.bin` file — built client-side from the same hex the
+detail pane already holds, so it costs no extra request.
+
+### Follow a stream
+
+Right-click a TCP or UDP packet — its row in the list, or anywhere in its
+detail pane — for **Follow TCP Stream** / **Follow UDP Stream**: the whole
+conversation, reassembled in the order it was sent, one colour per direction.
+**Set as display filter** narrows the packet list to the same stream
+(`tcp.stream eq N` / `udp.stream eq N`).
+
+### Protocol Hierarchy and Conversations
+
+Two toolbar buttons give the shape of a capture without reading it packet by
+packet. **Protocol Hierarchy** breaks it down by layer — `eth` → `ip` → `tcp`
+→ `http`, each with a frame count, a byte count and a share of the whole —
+nested the way the protocols themselves nest. **Conversations** lists every
+address pair's traffic, split by direction, and every address's own total;
+either table's rows offer a one-click filter onto them. Both read the current
+display filter's slice of the capture when one is set, and the whole thing
+otherwise.
 
 ### Saved views
 

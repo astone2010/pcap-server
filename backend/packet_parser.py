@@ -9,11 +9,16 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from backend.models import (
+    Conversation,
+    ConversationEndpoint,
     DisplayFilterError,
     FILTER_FORBIDDEN,
     FILTER_MAX_LEN,
+    FollowStreamResult,
+    FollowStreamSegment,
     PacketDetail,
     PacketSummary,
+    ProtocolHierarchyNode,
     validate_display_filter,
 )
 from backend.pcapsource import PcapSource
@@ -252,6 +257,11 @@ async def get_packet_list(
         # Before Info, so the one free-text column stays last but for the MACs.
         "-e", "sll.ifindex",
         "-e", "sll.pkttype",
+        # What Follow Stream needs to offer itself from a row's own right-click
+        # menu, without first opening the packet's detail pane to find it --
+        # empty on every packet outside a TCP or UDP conversation.
+        "-e", "tcp.stream",
+        "-e", "udp.stream",
         "-e", "_ws.col.Info",
     ]
     if show_mac:
@@ -282,7 +292,7 @@ async def get_packet_list(
     packets = []
     for line in stdout.decode(errors="replace").splitlines():
         parts = line.split("\t")
-        if len(parts) < 9:
+        if len(parts) < 11:
             continue
         num = int(parts[0])
         if num <= offset:
@@ -300,12 +310,14 @@ async def get_packet_list(
             destination=parts[3] or "N/A",
             protocol=protocol.upper(),
             length=int(parts[5]) if parts[5] else 0,
-            info=parts[8],
-            src_mac=_mac(parts, 9, 11) if show_mac else "",
-            dst_mac=_mac(parts, 10) if show_mac else "",
+            info=parts[10],
+            src_mac=_mac(parts, 11, 13) if show_mac else "",
+            dst_mac=_mac(parts, 12) if show_mac else "",
             interface=_interface(ifindex, interface_names or {}),
             ifindex=ifindex,
             direction=_SLL_DIRECTION.get(parts[7], ""),
+            tcp_stream=int(parts[8]) if parts[8].isdigit() else None,
+            udp_stream=int(parts[9]) if parts[9].isdigit() else None,
         ))
 
     return packets
@@ -332,6 +344,190 @@ def _mac(parts: list[str], *indexes: int) -> str:
         if len(parts) > index and parts[index]:
             return parts[index]
     return ""
+
+
+async def get_protocol_hierarchy(
+    source: PcapSource, display_filter: str = "",
+) -> list[ProtocolHierarchyNode]:
+    """Wireshark's Statistics > Protocol Hierarchy, built from the same
+    per-packet fields the packet list already reads rather than by parsing
+    tshark's own `-z io,phs` report.
+
+    That report is formatted for a terminal -- indentation carries the tree
+    structure, column widths are not fixed -- which makes it the wrong thing
+    to screen-scrape when the same tree can be built directly from
+    `frame.protocols` (the colon-separated layer list already used to derive
+    a packet's protocol column) and `frame.len`, one line per packet, exactly
+    like get_packet_list's own tshark call.
+    """
+    cmd = ["tshark", "-r", "-", "-T", "fields", "-e", "frame.protocols", "-e", "frame.len",
+           "-E", "separator=\t", "-E", "occurrence=f"]
+    if display_filter:
+        _validate_display_filter(display_filter)
+        cmd += ["-Y", display_filter]
+
+    stdout, stderr, rc = await _run_tool(cmd, source)
+    if rc != 0:
+        logger.warning("tshark stderr: %s", stderr.decode(errors="replace")[:500])
+        if display_filter:
+            raise DisplayFilterError(_filter_rejection(stderr))
+
+    # dict, not ProtocolHierarchyNode, while building: a packet's protocol
+    # stack can branch (tcp:http vs tcp:tls under the same tcp), and mutating
+    # the totals in place as each packet is folded in is far simpler against
+    # a plain dict tree than rebuilding an immutable model on every packet.
+    root: dict[str, dict] = {}
+    for line in stdout.decode(errors="replace").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2 or not parts[0]:
+            continue
+        length = int(parts[1]) if parts[1] else 0
+        node = root
+        for layer in parts[0].split(":"):
+            entry = node.setdefault(layer, {"frames": 0, "bytes": 0, "children": {}})
+            entry["frames"] += 1
+            entry["bytes"] += length
+            node = entry["children"]
+
+    def to_models(tree: dict[str, dict]) -> list[ProtocolHierarchyNode]:
+        return [
+            ProtocolHierarchyNode(
+                name=name, frames=entry["frames"], bytes=entry["bytes"],
+                children=to_models(entry["children"]),
+            )
+            for name, entry in tree.items()
+        ]
+
+    return to_models(root)
+
+
+async def get_conversations(
+    source: PcapSource, display_filter: str = "",
+) -> tuple[list[Conversation], list[ConversationEndpoint]]:
+    """Wireshark's Conversations and Endpoints tabs, from one tshark pass.
+
+    Network-layer only (IPv4 and IPv6 addresses, not port-qualified) -- the
+    reasonable middle ground between "every packet has an address" (always
+    meaningful) and a separate report per transport (tcp/udp/...), which
+    would be four tshark calls for a distinction the address pairs already
+    mostly make on their own via the ports carried in frame.protocols'
+    Info column context. Built the same way as the protocol hierarchy above:
+    aggregated in Python from one field-per-packet pass, not by parsing
+    tshark's `-z conv,ip` text table, whose column widths are sized to the
+    addresses actually present and so are not fixed across calls.
+    """
+    cmd = ["tshark", "-r", "-", "-T", "fields",
+           "-e", "ip.src", "-e", "ip.dst", "-e", "ipv6.src", "-e", "ipv6.dst",
+           "-e", "frame.len", "-E", "separator=\t", "-E", "occurrence=f"]
+    if display_filter:
+        _validate_display_filter(display_filter)
+        cmd += ["-Y", display_filter]
+
+    stdout, stderr, rc = await _run_tool(cmd, source)
+    if rc != 0:
+        logger.warning("tshark stderr: %s", stderr.decode(errors="replace")[:500])
+        if display_filter:
+            raise DisplayFilterError(_filter_rejection(stderr))
+
+    # Keyed by the pair sorted once, so the same two addresses always land in
+    # the same bucket regardless of which one happened to be frame.src on a
+    # given packet -- direction is still tracked, just per-packet rather than
+    # baked into the key.
+    pairs: dict[tuple[str, str], dict[str, int]] = {}
+    endpoints: dict[str, dict[str, int]] = {}
+    for line in stdout.decode(errors="replace").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        src = parts[0] or parts[2]
+        dst = parts[1] or parts[3]
+        length = int(parts[4]) if parts[4] else 0
+        if not src or not dst:
+            continue
+
+        for addr in (src, dst):
+            ep = endpoints.setdefault(addr, {"packets": 0, "bytes": 0})
+            ep["packets"] += 1
+            ep["bytes"] += length
+
+        key = (src, dst) if src <= dst else (dst, src)
+        conv = pairs.setdefault(key, {
+            "packets_a_to_b": 0, "bytes_a_to_b": 0,
+            "packets_b_to_a": 0, "bytes_b_to_a": 0,
+        })
+        if src == key[0]:
+            conv["packets_a_to_b"] += 1
+            conv["bytes_a_to_b"] += length
+        else:
+            conv["packets_b_to_a"] += 1
+            conv["bytes_b_to_a"] += length
+
+    conversations = [
+        Conversation(a=a, b=b, **totals) for (a, b), totals in pairs.items()
+    ]
+    endpoint_list = [
+        ConversationEndpoint(address=addr, **totals) for addr, totals in endpoints.items()
+    ]
+    return conversations, endpoint_list
+
+
+# tshark's own header lines in a `follow,<proto>,raw` report -- everything
+# that is not one of these, and not a pure hex line, is a data line.
+_FOLLOW_NODE = re.compile(r"^Node ([01]): (.*)$")
+
+
+async def get_follow_stream(
+    source: PcapSource, protocol: str, stream: int,
+) -> FollowStreamResult:
+    """One TCP or UDP stream, reassembled in the order it was sent.
+
+    `raw` mode, not `ascii` or `hex`: ascii mode replaces non-printable bytes
+    with `.`, which is fine for Wireshark's own lossy preview but wrong for
+    anything meant to round-trip; hex mode's byte offsets run continuously
+    across consecutive same-direction frames, merging them, which loses frame
+    boundaries verified NOT to matter for raw mode -- two consecutive
+    same-direction frames come back as two separate lines, not one, checked
+    against a real capture rather than assumed. Each line is a plain hex
+    string, undecorated, tab-prefixed for the second endpoint -- the simplest
+    of the three formats to parse exactly, which is the point: a Follow
+    Stream view is only as trustworthy as its byte-for-byte fidelity to what
+    was actually sent.
+    """
+    if protocol not in ("tcp", "udp"):
+        # The route validates this before calling in; caught again here so a
+        # future caller cannot smuggle an arbitrary -z mode into the argv
+        # through this parameter, and so this function is safe to call
+        # directly, not just from behind that one check.
+        raise ValueError(f"unsupported protocol for follow stream: {protocol}")
+    cmd = ["tshark", "-r", "-", "-q", "-z", f"follow,{protocol},raw,{stream}"]
+    stdout, stderr, rc = await _run_tool(cmd, source)
+    if rc != 0:
+        logger.warning("tshark stderr: %s", stderr.decode(errors="replace")[:500])
+        raise ValueError(f"could not follow {protocol} stream {stream}")
+
+    node_a = node_b = ""
+    segments: list[FollowStreamSegment] = []
+    for line in stdout.decode(errors="replace").splitlines():
+        match = _FOLLOW_NODE.match(line)
+        if match:
+            if match.group(1) == "0":
+                node_a = match.group(2)
+            else:
+                node_b = match.group(2)
+            continue
+        from_b = line.startswith("\t")
+        payload = line[1:] if from_b else line
+        if payload and all(c in "0123456789abcdefABCDEF" for c in payload):
+            segments.append(FollowStreamSegment(from_a=not from_b, hex=payload.lower()))
+
+    # tshark exits 0 and prints "Node 0: :0" / "Node 1: :0" for a stream index
+    # that does not exist, rather than an error -- checked against a real
+    # capture. An empty address before the colon is the only signal that the
+    # index was never real, since a genuine stream always has one.
+    if not node_a.split(":", 1)[0]:
+        raise ValueError(f"no such {protocol} stream: {stream}")
+
+    return FollowStreamResult(protocol=protocol, stream=stream, a=node_a, b=node_b, segments=segments)
 
 
 async def stream_filtered_pcap(
@@ -425,6 +621,8 @@ async def get_packet_detail(source: PcapSource, frame_number: int) -> PacketDeta
         layers=layers,
         hex_dump=hex_dump,
         frame_hex=frame_hex,
+        tcp_stream=_int_or_none(_find_field_anywhere(layers, "tcp.stream")),
+        udp_stream=_int_or_none(_find_field_anywhere(layers, "udp.stream")),
     )
 
 
@@ -436,6 +634,24 @@ def _find_field_value(fields: list[dict], name: str) -> str:
         if found:
             return found
     return ""
+
+
+def _find_field_anywhere(layers: list[dict], name: str) -> str:
+    """Like _find_field_value, but across every top-level layer.
+
+    tcp.stream lives under the "tcp" layer, not "frame" -- callers that
+    already know which layer a field is under use _find_field_value directly;
+    this is for the ones that would otherwise have to guess.
+    """
+    for layer in layers:
+        value = _find_field_value(layer.get("fields") or [], name)
+        if value:
+            return value
+    return ""
+
+
+def _int_or_none(value: str) -> int | None:
+    return int(value) if value.lstrip("-").isdigit() else None
 
 
 # tshark's PDML carries no document type declaration and no entities. Anything

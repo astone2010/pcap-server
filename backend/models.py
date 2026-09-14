@@ -547,6 +547,12 @@ class PacketSummary(BaseModel):
     interface: str = ""
     ifindex: int = 0
     direction: str = ""
+    # Which TCP or UDP conversation this packet belongs to, when it belongs to
+    # one -- carried here rather than left for the detail pane to dig up, so a
+    # row's own right-click menu can offer Follow Stream without first opening
+    # it.
+    tcp_stream: int | None = None
+    udp_stream: int | None = None
 
 
 class PacketField(BaseModel):
@@ -584,6 +590,73 @@ class PacketDetail(BaseModel):
     # offset/hex/ASCII panes from this so individual bytes are addressable and
     # can be highlighted; tshark's own -x text is a single blob that cannot be.
     frame_hex: str = ""
+    # Which TCP or UDP stream this frame belongs to, when it belongs to one --
+    # what "Follow Stream" needs and the field's own showname would otherwise
+    # be buried several layers deep in the tree for the frontend to go dig for.
+    tcp_stream: int | None = None
+    udp_stream: int | None = None
+
+
+class ProtocolHierarchyNode(BaseModel):
+    """One row of Wireshark's Statistics > Protocol Hierarchy, nested.
+
+    `frames` and `bytes` are the FULL frame total for every packet that
+    reaches this layer, not this layer's own share of it -- matching
+    tshark's own `-z io,phs`: an `http` packet's bytes are counted again at
+    `eth`, `ip` and `tcp` above it, because each of those layers really did
+    carry the whole frame.
+    """
+
+    name: str
+    frames: int
+    bytes: int
+    children: list["ProtocolHierarchyNode"] = []
+
+
+class ConversationEndpoint(BaseModel):
+    """One address's totals across a capture -- Wireshark's Endpoints tab."""
+
+    address: str
+    packets: int
+    bytes: int
+
+
+class Conversation(BaseModel):
+    """One address pair's totals, direction split -- Wireshark's Conversations tab.
+
+    `a` and `b` are not "source" and "destination": a conversation has no
+    fixed direction of its own, only individual packets do, so the pair is
+    ordered once (the two addresses, sorted) and every packet's own src/dst
+    decides which side of the count it lands on.
+    """
+
+    a: str
+    b: str
+    packets_a_to_b: int
+    bytes_a_to_b: int
+    packets_b_to_a: int
+    bytes_b_to_a: int
+
+
+class FollowStreamSegment(BaseModel):
+    """One frame's payload contribution to the stream, in order.
+
+    tshark's own `follow,<proto>,raw` report emits one line per frame, tagged
+    by which side sent it -- verified against consecutive same-direction
+    frames, which stay as separate lines rather than merging (unlike its
+    `,hex` variant, whose byte offsets run continuously across them and so
+    cannot be split back apart)."""
+
+    from_a: bool
+    hex: str
+
+
+class FollowStreamResult(BaseModel):
+    protocol: str
+    stream: int
+    a: str
+    b: str
+    segments: list[FollowStreamSegment]
 
 
 CAPTURE_NAME_MAX = 120

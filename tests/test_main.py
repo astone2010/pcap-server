@@ -394,6 +394,72 @@ def test_packet_list_rate_limit_returns_429_before_spawning_tshark(secure_client
     assert called is False
 
 
+def test_protocol_hierarchy_rate_limit_returns_429_before_spawning_tshark(
+    secure_client, enrolled, monkeypatch
+):
+    called = False
+
+    def should_not_run(capture_id):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(main.capture_manager, "get", should_not_run)
+    monkeypatch.setattr(main, "packet_rate_limiter", SlidingWindowLimiter(max_per_minute=0))
+
+    resp = secure_client.get("/api/captures/some-capture-id/protocol-hierarchy")
+
+    assert resp.status_code == 429
+    assert called is False
+
+
+def test_conversations_rate_limit_returns_429_before_spawning_tshark(
+    secure_client, enrolled, monkeypatch
+):
+    called = False
+
+    def should_not_run(capture_id):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(main.capture_manager, "get", should_not_run)
+    monkeypatch.setattr(main, "packet_rate_limiter", SlidingWindowLimiter(max_per_minute=0))
+
+    resp = secure_client.get("/api/captures/some-capture-id/conversations")
+
+    assert resp.status_code == 429
+    assert called is False
+
+
+def test_follow_stream_rate_limit_returns_429_before_spawning_tshark(
+    secure_client, enrolled, monkeypatch
+):
+    called = False
+
+    def should_not_run(capture_id):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(main.capture_manager, "get", should_not_run)
+    monkeypatch.setattr(main, "packet_rate_limiter", SlidingWindowLimiter(max_per_minute=0))
+
+    resp = secure_client.get("/api/captures/some-capture-id/stream/tcp/0")
+
+    assert resp.status_code == 429
+    assert called is False
+
+
+def test_follow_stream_refuses_an_unknown_protocol(secure_client, enrolled):
+    """Checked before the rate limiter or the capture lookup: a bogus
+    protocol is never going to be accepted, whatever else is true of the
+    request, and get_follow_stream itself only asserts tcp/udp rather than
+    reporting a clean 400 -- the route is where that has to be caught."""
+    resp = secure_client.get("/api/captures/some-capture-id/stream/sctp/0")
+    assert resp.status_code == 400
+
+
 def test_admin_settings_update_propagates_to_new_rate_limiters(secure_client, enrolled):
     """admin_update_setting must route these two keys to the new limiters, the
     same way it already routes rate_limit_max_attempts/lockout_minutes to

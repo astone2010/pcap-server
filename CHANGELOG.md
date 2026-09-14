@@ -27,6 +27,24 @@
   And / Or / Prepare / Copy menu every other column already has, filtering on
   `sll.ifindex` — the cell's own tooltip already named this filter; it can now
   be clicked rather than typed.
+- **Follow TCP/UDP Stream.** Right-click a TCP or UDP packet — from its row in
+  the list, or anywhere in its detail pane — for **Follow TCP/UDP Stream**: the
+  conversation reassembled in the order it was sent, both directions told
+  apart by colour, with a button to set the display filter to it
+  (`tcp.stream eq N` / `udp.stream eq N`).
+- **Protocol Hierarchy.** A new toolbar button breaks the open capture — or
+  the slice its current display filter selects — down by protocol layer,
+  nested the way the protocols themselves nest, each level's frame count,
+  byte count and share of the total.
+- **Conversations and Endpoints.** A new toolbar button lists every address
+  pair's traffic, split by direction, and every address's own total, each row
+  offering a one-click filter onto it.
+- **Copy as filter**, alongside the existing **Copy value**, on every
+  right-click filter menu: copies the built expression itself (`ip.addr ==
+  10.0.0.1`) rather than the raw value it was built from.
+- **Export packet bytes.** The packet detail toolbar gains a button that saves
+  the selected packet's raw bytes as a `.bin` file, entirely client-side from
+  the same hex the detail pane already holds.
 
 ### Documentation
 
@@ -34,6 +52,10 @@
   security.md, operating.md and architecture.md; docs/live-streaming.md
   deleted. architecture.md gains a **Known limits** note on GRO/TSO-inflated
   captures and a removal note explaining the dev.33 decision.
+- README **Reading a capture** section gains Follow Stream, Protocol
+  Hierarchy and Conversations; architecture.md documents the three new routes
+  and how each is built from one `-T fields` tshark pass rather than by
+  parsing a `-z` text report.
 
 ## 0.1.0-dev.32 — 2026-09-14
 

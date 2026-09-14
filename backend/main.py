@@ -62,8 +62,11 @@ from backend.models import (
 from backend.packet_parser import (
     ALLOWED_VIEW_FLAGS,
     DisplayFilterError,
+    get_conversations,
+    get_follow_stream,
     get_packet_detail,
     get_packet_list,
+    get_protocol_hierarchy,
     stream_filtered_pcap,
 )
 from backend.localnet import SELF_CAPTURE_EXPLANATION, describe_if_local
@@ -1881,6 +1884,62 @@ async def packet_detail(capture_id: str, frame_number: int, user: dict = Depends
         return await get_packet_detail(vault.source_for(path), frame_number)
     except Exception:
         raise HTTPException(500, "failed to get packet detail")
+
+
+@app.get("/api/captures/{capture_id}/protocol-hierarchy")
+async def protocol_hierarchy(
+    capture_id: str, display_filter: str = Query(""), user: dict = Depends(get_current_user),
+):
+    """Statistics > Protocol Hierarchy, over the whole capture or a display
+    filter's slice of it. Shares the packet-list budget: one tshark spawn
+    over the capture, same cost class as listing it."""
+    if not packet_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many requests, slow down")
+    _info, path = _require_readable_capture(capture_id, user)
+    try:
+        return await get_protocol_hierarchy(vault.source_for(path), display_filter)
+    except DisplayFilterError as exc:
+        raise HTTPException(400, {"code": "bad_display_filter", "reason": str(exc)})
+    except Exception:
+        logger.exception("protocol hierarchy failed")
+        raise HTTPException(500, "failed to compute protocol hierarchy")
+
+
+@app.get("/api/captures/{capture_id}/conversations")
+async def conversations(
+    capture_id: str, display_filter: str = Query(""), user: dict = Depends(get_current_user),
+):
+    """Statistics > Conversations and Endpoints, from the same tshark pass."""
+    if not packet_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many requests, slow down")
+    _info, path = _require_readable_capture(capture_id, user)
+    try:
+        convs, endpoints = await get_conversations(vault.source_for(path), display_filter)
+        return {"conversations": convs, "endpoints": endpoints}
+    except DisplayFilterError as exc:
+        raise HTTPException(400, {"code": "bad_display_filter", "reason": str(exc)})
+    except Exception:
+        logger.exception("conversations failed")
+        raise HTTPException(500, "failed to compute conversations")
+
+
+@app.get("/api/captures/{capture_id}/stream/{protocol}/{stream}")
+async def follow_stream(
+    capture_id: str, protocol: str, stream: int, user: dict = Depends(get_current_user),
+):
+    """Follow TCP/UDP Stream: one conversation, reassembled in order."""
+    if protocol not in ("tcp", "udp"):
+        raise HTTPException(400, "protocol must be tcp or udp")
+    if not packet_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many requests, slow down")
+    _info, path = _require_readable_capture(capture_id, user)
+    try:
+        return await get_follow_stream(vault.source_for(path), protocol, stream)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception:
+        logger.exception("follow stream failed")
+        raise HTTPException(500, "failed to follow stream")
 
 
 # --- static files (frontend) ---

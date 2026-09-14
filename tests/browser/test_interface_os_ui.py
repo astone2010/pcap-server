@@ -138,6 +138,21 @@ async def test_an_interface_reading_without_an_ifindex_offers_no_filter_on_it(ap
     assert not any("sll.ifindex" in label for label in labels)
 
 
+async def test_the_right_click_menu_offers_copy_as_filter_distinct_from_copy_value(app_page):
+    """Copy value copies the raw reading (an ifindex, an address); Copy as
+    filter copies the expression built from it. Conflating the two would make
+    the menu useless for pasting a filter into a display-filter box."""
+    await _row(app_page, CAPTURE, PACKET)
+    await _show_viewer(app_page)
+    await app_page.click("#packet-tbody td.col-iface", button="right")
+    await app_page.wait_for_selector("#filter-menu")
+    labels = await app_page.eval_on_selector_all(
+        "#filter-menu .filter-menu-item", "els => els.map(e => e.textContent.trim())"
+    )
+    assert "Copy value" in labels
+    assert "Copy as filter" in labels
+
+
 async def test_a_named_interface_capture_has_no_interface_column(app_page):
     got = await _row(app_page, {**CAPTURE, "interface": "eth0"}, {**PACKET, "interface": "", "ifindex": 0, "direction": ""})
     assert got["thHidden"] and got["tdHidden"]
