@@ -8,6 +8,23 @@ on:
   # excludes them without needing to name release.yml's own 'v*' pattern here.
   push:
     branches: ['**']
+    # Nothing in this suite reads these files -- checked, not assumed: no
+    # test references README.md, anything under docs/, or CHANGELOG.md, and
+    # .claude/ is session scratch. A push touching only these already gets
+    # no coverage whether or not this runs, so running the full suite (tshark
+    # + tcpdump + chromium + ~1400 tests) for it is pure wait with nothing
+    # verified.
+    #
+    # Deliberately NOT listed here: .github/workflows/**. A change to this
+    # file is the one case where running Check IS the test -- excluding it
+    # would mean a broken edit to check.yml itself never gets exercised,
+    # because the same push that introduced the break is also the one this
+    # filter would suppress from running it.
+    paths-ignore:
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'docs/**'
+      - '.claude/**'
   pull_request:
 
 jobs:
