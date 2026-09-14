@@ -8,23 +8,23 @@ on:
   # excludes them without needing to name release.yml's own 'v*' pattern here.
   push:
     branches: ['**']
-    # Nothing in this suite reads these files -- checked, not assumed: no
-    # test references README.md, anything under docs/, or CHANGELOG.md, and
-    # .claude/ is session scratch. A push touching only these already gets
-    # no coverage whether or not this runs, so running the full suite (tshark
-    # + tcpdump + chromium + ~1400 tests) for it is pure wait with nothing
-    # verified.
-    #
-    # Deliberately NOT listed here: .github/workflows/**. A change to this
-    # file is the one case where running Check IS the test -- excluding it
-    # would mean a broken edit to check.yml itself never gets exercised,
-    # because the same push that introduced the break is also the one this
-    # filter would suppress from running it.
+    # Nothing in this suite reads README.md, docs/**, or CHANGELOG.md --
+    # checked, not assumed -- and .claude/ is session scratch, so a push
+    # touching only those already gets no coverage whether or not this runs.
+    # .github/workflows/** is excluded too, now that lint-workflows.yml gives
+    # it a real, purpose-built check of its own (actionlint: YAML syntax,
+    # expression/context correctness, a shellcheck pass over `run:` blocks).
+    # That check is static analysis, not execution, so it is NOT a full
+    # substitute for this job actually running check.yml's steps -- it would
+    # not catch e.g. a typo'd script path in the "Run tests" step. What it
+    # does cover is the much more common mistake for a workflow edit: broken
+    # YAML, a bad expression, an undefined context.
     paths-ignore:
       - 'README.md'
       - 'CHANGELOG.md'
       - 'docs/**'
       - '.claude/**'
+      - '.github/workflows/**'
   pull_request:
 
 jobs:

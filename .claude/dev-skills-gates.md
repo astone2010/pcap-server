@@ -1,5 +1,79 @@
 # Dev Skills gate state
 
+## CI: actionlint added, workflow-file pushes skip the full suite (2026-09-14)
+Chain: user kept pressing on "why the full suite for a workflow YAML edit"
+across several turns, ending in "what is the standard" (answer: actionlint,
+a purpose-built static linter for Actions workflows) then "yes" to adding it.
+
+NOT committed yet -- presented, awaiting approval.
+
+New file .github/workflows/lint-workflows.yml: downloads actionlint v1.7.12
+from its GitHub release, SHA256-checksum verified against the value in the
+release's own *_checksums.txt (fetched and compared directly, not trusted
+from memory -- `gh api repos/rhysd/actionlint/releases/tags/v1.7.12` for the
+asset list, `curl` the checksums file, `sha256sum -c` against the real
+download). Ran the resulting binary against this repo's actual check.yml and
+release.yml before writing anything: 0 findings, confirming both that the
+tool works and that the existing files are already clean. Triggered only on
+`.github/workflows/**` -- NOT the same download-and-pipe-to-tar script
+actionlint's own README advertises for CI use, which does no checksum
+verification at all; downloading+verifying directly matches this repo's own
+fetch_lego.py pattern instead.
+
+check.yml: `.github/workflows/**` moved from "deliberately excluded" (my own
+prior reasoning, this same file, a few commits back) into paths-ignore, now
+that lint-workflows.yml gives it real coverage. Flagged explicitly to the
+user, not silently assumed equivalent: actionlint is static analysis, not
+execution -- it would NOT catch a typo'd script path in the "Run tests" step,
+only YAML/expression-level mistakes. User has not yet responded to that
+caveat or to the dependabot gap also raised (github-actions ecosystem not
+watched at all, dependabot.yml only has `docker`) -- offered, not added.
+
+Track: work commit (no APP_VERSION bump). Required: SECURITY + approval.
+
+🔒 SECURITY  ✅ actionlint fetched over HTTPS from GitHub's own release CDN,
+               checksum-verified before extraction, exact version pinned
+               (manually bumped, matching LEGO_VERSION's existing pattern in
+               this repo -- not a new maintenance burden shape). New job
+               declares `permissions: contents: read` explicitly (checkout
+               only, nothing written) -- least privilege, and check.yml/
+               release.yml were checked for what they currently declare
+               before choosing this rather than copying either blindly.
+📦 approval  ⬜ diff shown, not yet approved
+
+## CI: check.yml no longer fires on a tag push (2026-09-14)
+REVERSES a standing decision recorded further down this file under
+"0.1.0-dev.25": "DECLINED by the user 2026-09-13, do not raise again:
+...narrowing check.yml's triggers." That entry is left as-is below (historical
+record of what was true then); this note is the current state. User asked
+directly this session ("lets not duplicate the work in the process and fix
+it") after I explained the tag push fires Check a second time (the branch
+push already ran it) AND fires Release, which runs no tests at all and is not
+gated on Check passing -- that second, larger finding (Release publishes to
+ghcr regardless of Check's result) was NOT asked to be fixed and was not
+touched; only the duplicate-Check-run trigger was.
+
+Fix: .github/workflows/check.yml `on: push:` (bare, matched every ref
+including tags) -> `on: push: branches: ['**']`. Tags carry no ref under
+refs/heads, so this excludes them without needing to duplicate release.yml's
+own `v*` pattern. pull_request: trigger untouched. YAML validated
+(python3 -c "import yaml; yaml.safe_load(...)"). No test in the suite
+references this file's contents, so nothing else to update.
+
+Track: work commit (no APP_VERSION bump, no artifact, not part of the dev.33
+feature set -- CI plumbing, not app CHANGELOG material, so not added there).
+Required gates: SECURITY (below) + commit approval, not the full six.
+
+🔒 SECURITY  ✅ one-line trigger-filter change to an existing, already-trusted
+               workflow file. No new action, no new permission, no new
+               secret, no change to what the job does once it runs -- only
+               to which pushes cause it to run at all.
+📦 approval  ✅ commit 6121629, approved by user ("yes"), executed by
+               Claude, NOT pushed (not asked). Applies to the NEXT tag
+               push, not v0.1.0-dev.33 (already tagged/shipped under the
+               old trigger -- confirmed via gh: Check #92 branch push,
+               Check #93 + Release #33 both on the tag push, all success).
+
 ## 0.1.0-dev.33, second commit — the recommended parity adds (2026-09-14)
 User (after the first dev.33 commit, ebe5ac4): "lets commit only and do the
 reccomended adds" -- the first half approved and executed already; this is a
@@ -106,11 +180,11 @@ Tests: packet_parser tests build a real 8-frame pcap (TCP handshake + HTTP
                 format choices (raw over hex/ascii for Follow Stream, Python
                 aggregation over `-z` text parsing) and the tcp_stream/
                 udp_stream plumbing.
-📦 RELEASE    ⬜ commit NOT YET REQUESTED for this batch -- the user's
-                earlier "lets commit" covered the first dev.33 commit only;
-                this batch needs its own approval before `git commit`, per
-                SKILL.md Section 1 (approval is scoped, not standing)
-🚀 SHIP       ⬜
+📦 RELEASE    ⏳ commit c3e43f6, approved by user ("yes") after the diff and
+                message were shown; executed by Claude, NOT pushed (not
+                asked). PR ➖ N/A (branch canonical, as prior releases).
+🚀 SHIP       ⬜ two commits on the branch (ebe5ac4, c3e43f6), neither
+                pushed/tagged; 0.1.0-dev.33 still unshipped
 
 ## 0.1.0-dev.33, first commit — live streaming removed (2026-09-14)
 Committed locally as ebe5ac4 (NOT pushed -- user asked to commit, not push).

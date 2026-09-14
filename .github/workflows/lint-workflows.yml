@@ -1,0 +1,41 @@
+name: Lint workflows
+
+# Only this repo's own workflow files feed it, and it is the fast, purpose-
+# built check for them -- YAML syntax, expression/context typos, job
+# dependency shape, even a shellcheck pass over `run:` blocks -- all without
+# starting a runner environment for the app itself. This is what lets
+# check.yml leave .github/workflows/** out of its own paths-ignore-adjacent
+# scope with a real check standing behind it, rather than either running the
+# whole app suite for a trigger-only edit or running nothing at all.
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download actionlint
+        env:
+          # Bumped by hand; checksum copied from the release's own
+          # *_checksums.txt, not computed after the fact, so a tampered or
+          # substituted binary is refused rather than silently trusted.
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          curl -fsSL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+
+      - name: Run actionlint
+        run: ./actionlint -color
