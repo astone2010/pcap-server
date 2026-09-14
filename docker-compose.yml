@@ -93,7 +93,7 @@
 
 
 
-# NOTE: The sectiion below is the only text needed to be in the compose file after the folders, permissions, and master key are created. Anything preceded with a # can be deleted. 
+# NOTE: The sectiion below is the only text needed to be in the compose file after the folders, permissions, and master key are created. Anything preceded with a # can be deleted. The final filename should be compose.yaml.
 
 services:
   pcap-server:
