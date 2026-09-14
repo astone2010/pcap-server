@@ -216,6 +216,8 @@ account you are about to create cannot finish being created without it. See
 step 6.
 
 ```bash
+Go to the docker-compose.yaml for full instructions, this is a broad overview. 
+
 # 1. Pick the install directory. This directory IS the install: it will hold
 #    your captures and the key that decrypts them, and every relative path in
 #    the compose file resolves against it. Anywhere you control is fine.
