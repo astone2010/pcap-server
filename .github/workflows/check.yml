@@ -1,7 +1,13 @@
 name: Check
 
 on:
+  # Branches only. A bare `push:` also matches a tag push, which is exactly
+  # what fires release.yml -- so tagging a commit this same Check already
+  # passed on the branch push ran the whole suite a second time against
+  # nothing new. Tags carry no separate ref under refs/heads, so this filter
+  # excludes them without needing to name release.yml's own 'v*' pattern here.
   push:
+    branches: ['**']
   pull_request:
 
 jobs:
