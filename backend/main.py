@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import os
 import re
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -68,6 +69,15 @@ from backend.packet_parser import (
     stream_filtered_pcap,
 )
 from backend.localnet import SELF_CAPTURE_EXPLANATION, describe_if_local
+from backend.sanitizer import (
+    FilteredSource,
+    SanitizeError,
+    SanitizeOptions,
+    SanitizeSummary,
+    capture_key,
+    check_capture,
+    stream_sanitized_pcap,
+)
 from backend.ssh_manager import SSHManager, host_key_fingerprint, resolve_key_path
 from backend.tls import INSECURE_ALLOWED_PATHS as TLS_INSECURE_ALLOWED_PATHS
 from backend.tls import TlsManager, build_router as build_tls_router
@@ -80,7 +90,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.30"
+APP_VERSION = "0.1.0-dev.31"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -1681,6 +1691,157 @@ _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 def _view_download_name(capture_id: str, view_name: str) -> str:
     slug = _FILENAME_SAFE.sub("-", view_name).strip("-")[:60]
     return f"{capture_id}-{slug}.pcap" if slug else f"{capture_id}-view.pcap"
+
+
+# --- sanitized downloads ---
+#
+# A copy of a finished capture with its credentials, addresses and names
+# replaced, built while it downloads (backend.sanitizer). The stored capture is
+# untouched and no sanitized copy is ever written anywhere.
+#
+# What was replaced -- and, more importantly, what could not be -- is known only
+# once the whole capture has gone through, by which point the response body is
+# long gone. So the browser names each download with a random ticket, and asks
+# for that ticket's summary afterwards. Summaries hold counts, protocol names
+# and port numbers only, never a value from the capture; they are kept in
+# memory, briefly, and handed out once.
+
+_SANITIZE_TICKET = re.compile(r"[A-Za-z0-9_-]{16,64}")
+_SANITIZE_SUMMARY_TTL_SECONDS = 15 * 60
+_SANITIZE_SUMMARY_LIMIT = 500
+_sanitize_summaries: dict[tuple[str, str, str], tuple[float, dict]] = {}
+
+
+def _remember_sanitize_summary(key: tuple[str, str, str], entry: dict) -> None:
+    now = time.monotonic()
+    for stale in [k for k, (at, _) in _sanitize_summaries.items() if now - at > _SANITIZE_SUMMARY_TTL_SECONDS]:
+        del _sanitize_summaries[stale]
+    if key not in _sanitize_summaries and len(_sanitize_summaries) >= _SANITIZE_SUMMARY_LIMIT:
+        del _sanitize_summaries[min(_sanitize_summaries, key=lambda k: _sanitize_summaries[k][0])]
+    _sanitize_summaries[key] = (now, entry)
+
+
+def _sanitized_download_name(info, view: dict | None) -> str:
+    base = _FILENAME_SAFE.sub("-", info.name).strip("-")[:60] if info.name else ""
+    base = base or info.id
+    if view:
+        slug = _FILENAME_SAFE.sub("-", view["name"]).strip("-")[:60]
+        base = f"{base}-{slug or 'view'}"
+    return f"{base}-sanitized.pcap"
+
+
+@app.get("/api/captures/{capture_id}/sanitize")
+async def download_sanitized_capture(
+    capture_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    credentials: bool = True,
+    ips: bool = True,
+    keep_private: bool = False,
+    macs: bool = True,
+    keep_oui: bool = False,
+    hostnames: bool = False,
+    usernames: bool = False,
+    strip_payload: bool = False,
+    view: str = "",
+    ticket: str = "",
+):
+    """The capture, or one saved view of it, sanitized as it downloads.
+
+    HTTPS-only like every other download. Sanitizing is best effort by nature
+    -- no tool finds every secret in every protocol -- so a sanitized file is
+    still treated as packet data until the operator has read its summary.
+    """
+    _require_secure_transport(request)
+    info, path = _require_readable_capture(capture_id, user)
+    view_row = _view_or_404(capture_id, view, user) if view else None
+
+    options = SanitizeOptions(
+        credentials=credentials, ips=ips, keep_private=keep_private, macs=macs,
+        keep_oui=keep_oui, hostnames=hostnames, usernames=usernames,
+        strip_payload=strip_payload,
+    )
+    if not options.anything_selected():
+        raise HTTPException(400, "choose at least one thing to sanitize")
+    if ticket and not _SANITIZE_TICKET.fullmatch(ticket):
+        raise HTTPException(400, "invalid summary ticket")
+
+    # Two tshark runs per download at least, so the same per-user budget as a
+    # filtered download.
+    if not packet_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many sanitize requests, slow down")
+
+    try:
+        source = vault.source_for(path)
+        key = capture_key(vault, path, capture_id, DATA_DIR)
+        await check_capture(source)
+    except CryptoError as exc:
+        raise HTTPException(503, str(exc))
+    except SanitizeError as exc:
+        raise HTTPException(400, str(exc))
+    except OSError:
+        logger.exception("could not prepare capture %s for sanitizing", capture_id)
+        raise HTTPException(500, "could not prepare the capture for sanitizing")
+
+    if view_row and view_row["display_filter"]:
+        source = FilteredSource(source, view_row["display_filter"])
+
+    summary = SanitizeSummary()
+    summary_key = (user["id"], capture_id, ticket)
+    if ticket:
+        _remember_sanitize_summary(summary_key, {"done": False})
+
+    async def body():
+        outcome: dict = {"done": True, "error": "the download was interrupted before it finished"}
+        try:
+            async for chunk in stream_sanitized_pcap(source, key, options, summary):
+                yield chunk
+            outcome = {"done": True, "summary": summary.as_dict()}
+        except (CryptoError, DisplayFilterError, SanitizeError) as exc:
+            logger.exception("sanitized download of %s failed", capture_id)
+            outcome = {"done": True, "error": str(exc)[:400]}
+            # The response has begun, so cutting it off is the only signal
+            # left -- a truncated file must never pass for a sanitized one.
+            raise
+        except Exception:
+            logger.exception("sanitized download of %s failed", capture_id)
+            outcome = {"done": True, "error": "sanitizing failed; see the server log"}
+            raise
+        finally:
+            if ticket:
+                _remember_sanitize_summary(summary_key, outcome)
+
+    return StreamingResponse(
+        body(),
+        media_type="application/vnd.tcpdump.pcap",
+        headers={
+            "Content-Disposition": f'attachment; filename="{_sanitized_download_name(info, view_row)}"',
+        },
+    )
+
+
+@app.get("/api/captures/{capture_id}/sanitize/summary")
+async def sanitized_download_summary(
+    capture_id: str,
+    ticket: str,
+    user: dict = Depends(get_current_user),
+):
+    """What one sanitized download replaced, once it has finished.
+
+    {"done": false} while it is still running. A finished summary is handed
+    out once and forgotten.
+    """
+    _require_own_capture(capture_id, user)
+    if not _SANITIZE_TICKET.fullmatch(ticket):
+        raise HTTPException(400, "invalid summary ticket")
+    key = (user["id"], capture_id, ticket)
+    held = _sanitize_summaries.get(key)
+    if held is None:
+        raise HTTPException(404, "no sanitized download with that ticket")
+    entry = held[1]
+    if entry.get("done"):
+        _sanitize_summaries.pop(key, None)
+    return entry
 
 
 # --- packets ---

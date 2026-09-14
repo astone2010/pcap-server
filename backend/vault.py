@@ -14,11 +14,13 @@ from pathlib import Path
 
 from backend.crypto import (
     Cryptor,
+    HEADER_LEN,
     CryptoError,
     WrongKey,
     KeySource,
     KeyUnavailable,
     PassphraseKeySource,
+    derive_subkey,
     looks_encrypted,
     resolve_key_source,
 )
@@ -202,6 +204,22 @@ class CaptureVault:
                 raise CryptoError("this capture is encrypted and the vault is locked")
             return EncryptedSource(path, self._cryptor)
         return PlaintextSource(path)
+
+    def derived_key(self, path: Path, info: bytes, length: int) -> bytes | None:
+        """Key material derived from a capture's own data key, or None.
+
+        None for a capture stored without encryption, which has no key of its
+        own. The data key itself never leaves this method: callers get a key
+        derived from it under their own label, which cannot be turned back
+        into the data key or used to open the capture.
+        """
+        if not looks_encrypted(path):
+            return None
+        if self._cryptor is None:
+            raise CryptoError("this capture is encrypted and the vault is locked")
+        with open(path, "rb") as fh:
+            header = fh.read(HEADER_LEN)
+        return derive_subkey(self._cryptor.unwrap_dek(header), info, length)
 
     # --- migration ---
 

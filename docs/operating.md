@@ -327,6 +327,9 @@ Notes on how it behaves, which matter if something goes wrong mid-run:
 - A file sealed under some third key is named and skipped, never guessed at.
 - It never deletes a capture. The worst case is a file still on the old key,
   named in the output.
+- Sanitized downloads are unaffected. Their stand-ins come from each capture's
+  own data key, which a rotation rewraps without changing, so a capture
+  sanitized after rotating matches one sanitized before.
 
 There is no supported way to rotate while the app runs, and no way to recover
 captures whose key is lost — that is the point of the design, not a gap in it.

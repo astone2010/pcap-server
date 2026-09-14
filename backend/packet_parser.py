@@ -97,6 +97,67 @@ async def _run_tool(cmd: list[str], source: PcapSource) -> tuple[bytes, bytes, i
     return stdout, stderr, proc.returncode or 0
 
 
+async def spawn_tool(
+    cmd: list[str],
+    source: PcapSource,
+    *,
+    limit: int | None = None,
+) -> tuple[asyncio.subprocess.Process, asyncio.Task]:
+    """Start a pcap tool reading the capture on stdin, for a caller that streams.
+
+    _run_tool collects everything the tool prints; this hands back the running
+    process for a caller that reads its output as it comes, and the task
+    feeding it, which the caller must pass to reap_tool when done. Same
+    os.pipe() stdin and same separate feeder as _run_tool, for the same reasons.
+
+    `limit` raises the per-line bound on proc.stdout.readline() for tools
+    whose output lines can be long.
+    """
+    read_fd, write_fd = os.pipe()
+    try:
+        try:
+            kwargs = {"limit": limit} if limit else {}
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=read_fd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **kwargs,
+            )
+        finally:
+            os.close(read_fd)
+    except BaseException:
+        os.close(write_fd)
+        raise
+
+    async def feed() -> None:
+        try:
+            async for chunk in source.chunks():
+                await asyncio.to_thread(_write_all, write_fd, chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+
+    return proc, asyncio.create_task(feed())
+
+
+async def reap_tool(proc: asyncio.subprocess.Process, feeder: asyncio.Task) -> None:
+    """Stop whatever spawn_tool started that is still running.
+
+    A client that disconnects mid-download leaves both the tool and its feeder
+    running; this is what ends them.
+    """
+    if not feeder.done():
+        feeder.cancel()
+    if proc.returncode is None:
+        proc.kill()
+    await asyncio.gather(feeder, proc.wait(), return_exceptions=True)
+
+
 def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
     while view:
@@ -277,34 +338,7 @@ async def stream_filtered_pcap(
     validate_display_filter(display_filter)
     cmd = ["tshark", "-r", "-", "-Y", display_filter, "-w", "-", "-F", "pcap"]
 
-    read_fd, write_fd = os.pipe()
-    try:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=read_fd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        finally:
-            os.close(read_fd)
-    except BaseException:
-        os.close(write_fd)
-        raise
-
-    async def feed() -> None:
-        try:
-            async for chunk in source.chunks():
-                await asyncio.to_thread(_write_all, write_fd, chunk)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            try:
-                os.close(write_fd)
-            except OSError:
-                pass
-
-    feeder = asyncio.create_task(feed())
+    proc, feeder = await spawn_tool(cmd, source)
     try:
         while True:
             chunk = await proc.stdout.read(CHUNK_BYTES)
@@ -314,12 +348,7 @@ async def stream_filtered_pcap(
         stderr = await proc.stderr.read()
         await proc.wait()
     finally:
-        # A client that disconnects mid-download leaves both of these running.
-        if not feeder.done():
-            feeder.cancel()
-        if proc.returncode is None:
-            proc.kill()
-        await asyncio.gather(feeder, proc.wait(), return_exceptions=True)
+        await reap_tool(proc, feeder)
 
     if proc.returncode not in (0, None):
         raise DisplayFilterError(_filter_rejection(stderr))

@@ -43,6 +43,9 @@ over an unencrypted connection.
 | `packet_parser.py` | Feeding captures to `tshark`/`capinfos` and parsing what comes back |
 | `pcapsource.py` | How a capture's bytes reach a tool, plaintext or decrypting in flight |
 | `livestream.py` | Holding a running capture's bytes, and walking pcap records so only whole ones reach tshark |
+| `sanitizer.py` | Sanitized downloads: the tshark pass, the field rules, and keeping it in step with the frame walker |
+| `framewalk.py` | Addresses and checksums in frame headers, and incremental checksum updates |
+| `anonymize.py` | Keyed stand-ins: prefix-preserving IP addresses, MAC addresses, same-length names |
 | `crypto.py` | The envelope format, sealing and opening |
 | `vault.py` | Key resolution, startup policy, plaintext migration |
 | `localnet.py` | Detecting that a capture target is the machine pcap-server runs on |
@@ -591,6 +594,83 @@ cannot do TLS would lock operators out of their own tool.
 
 ---
 
+## Sanitizing a capture
+
+`GET /api/captures/{id}/sanitize` streams a sanitized copy of a finished capture
+(or, with `view=`, of one saved view run through `stream_filtered_pcap` first).
+Nothing is written: the capture is decrypted in flight exactly as for a
+download, and the output goes straight to the response.
+
+**Two readers, one capture.** The capture is opened twice at once:
+
+- `framewalk.walk()` reads every record's headers — Ethernet, VLAN, Linux cooked
+  v1/v2, raw IP, MPLS, PPPoE, IPv4, IPv6 and its extension headers, TCP, UDP,
+  ICMP and ICMPv6 (including the header an error quotes and neighbour-discovery
+  targets and options), ARP, GRE, VXLAN, Geneve and IP-in-IP — and reports
+  where every address and every checksum is. This covers the addresses on every
+  packet without tshark.
+- tshark runs once with a display filter built from the ticked options, and
+  prints `-T json -x` for only the packets that match: each field with its byte
+  position. The sanitizer reads that in step with the records, by frame number.
+  tshark prints nothing for a frame the filter does not select, so the walker
+  waits for it; memory is one packet from each side.
+
+The JSON is split on tshark's own indentation (`"\n  }"` ends a packet and
+appears nowhere else) and read in 1 MB chunks. Reading it a line at a time was
+three quarters of the run time.
+
+**Positions are checked, not trusted.** A field from a reassembled, decompressed
+or decoded buffer reports a position in *that* buffer. So a field is only written
+where its reported bytes are actually found in the frame at its reported offset;
+anything else is counted in the summary's `unplaced` rather than written to a
+guess. Reassembly and defragmentation are off, so ordinary fields do refer to the
+frame. So is TCP sequence analysis, together with `no_subdissector_on_error`:
+tshark does not hand a segment it judges to be a retransmission to the protocol
+above, so a retransmitted login would otherwise pass through with its password —
+measured, 50,000 frames of HTTP `Authorization` reported one field without them.
+
+There is no `-J` top-level layer filter, although it would cut tshark's output
+fivefold, because the fields that matter are often not top-level layers: NTLMSSP
+sits inside HTTP or SMB2, Kerberos inside SPNEGO. `-J ntlmssp` reports nothing
+for an HTTP NTLM login. The header layers the walker has covered are skipped when
+the JSON is walked instead.
+
+**Field names are asked of tshark.** `tshark -G fields` is read once per process
+for the types of the rule fields and every `FT_IPv4`, `FT_IPv6` and `FT_ETHER`
+field. The filter only names fields this tshark has, since a display filter
+naming an unknown field is refused outright. Address-typed fields are only
+rewritten when their bytes decode to the value shown, which skips fields that
+display an address without storing one (STUN's XOR-mapped address).
+
+**Checksums** are updated incrementally, RFC 1624, innermost first — an outer
+VXLAN UDP checksum covers the inner packet's checksums, so they have to be
+final before it is. Incremental rather than recomputed because a frame cut
+short by the snap length has a checksum over bytes that were never captured,
+and a checksum that was wrong in the original (offload) should stay exactly as
+wrong.
+
+**Keys.** `capture_key()` asks the vault for 64 bytes derived from the capture's
+own data key under the label `pcap-server sanitize v1` (`CaptureVault.derived_key`
+— the data key itself never leaves the vault). A rekey rewraps the data key
+without changing it, so the mapping survives rotation. A plaintext capture has no
+data key; it gets the install-wide `data/sanitize.key` combined with its id. The
+first 32 bytes key Crypto-PAn, the second 32 key the HMACs for MACs and names.
+
+**The summary** — counts, field names, ports, never a value from the capture —
+is known only when the stream ends, long after the response began. The browser
+sends a random ticket with the download and polls
+`GET /api/captures/{id}/sanitize/summary?ticket=` for it; summaries live in
+memory for 15 minutes at most, 500 at most, keyed by user and capture, and are
+handed out once. A failure after the response has started cuts the download off,
+and the summary says so, so a truncated file never passes for a sanitized one.
+
+A capture in a link type the walker does not know (802.11 radiotap, for one) or
+in pcapng is refused before the response starts, for the same reason: a
+sanitizer that cannot find the addresses must not produce a file that looks
+sanitized.
+
+---
+
 ## Storage layout
 
 | Path | Contents | Notes |
@@ -598,6 +678,7 @@ cannot do TLS would lock operators out of their own tool.
 | `/app/data` | SQLite database | WAL mode, foreign keys on |
 | `/app/captures` | Capture files | `<uuid>.pcap.enc` when encryption is on |
 | `/app/ssh-keys` | SSH private keys | Uploaded through the Admin panel |
+| `/app/data/sanitize.key` | Random key for sanitizing captures stored before encryption was on | Mode `0600`, created on first use, never replaced |
 | `/app/data/tls` | Built-in HTTPS certificate, sealed key, sealed DNS credentials, settings | Mode `0700`; see [tls.md](tls.md#what-is-stored) |
 | `/run/secrets/…` | Master key | Deliberately **not** on a data volume |
 
@@ -706,6 +787,20 @@ subprocess handling get driven in a real browser against a real server.
   avoids sudo entirely and is preferred.
 - The single-writer SQLite database is fine for the concurrency this tool sees
   and would not be for much more.
+- Sanitizing finds what Wireshark dissects into a field. A credential in a JSON
+  body, a hostname in a URL or a `Referer`, or anything in a protocol Wireshark
+  does not know is not replaced; the summary lists undissected payload by port.
+  Fields split across TCP segments are only found where their first segment
+  carries them.
+- Prefix preservation is also a known weakness of Crypto-PAn: anyone who knows
+  some real addresses in the capture, or managed to get chosen traffic into it,
+  learns the mapping of those prefixes, and so the matching bits of every other
+  address under them. Name stand-ins keep length and character classes.
+- Prefix preservation means a public address can map into a private or
+  reserved range, and with **Keep private ranges** could in principle collide
+  with a private address that was kept. IPv6 solicited-node multicast addresses
+  (and the `33:33:ff…` MACs they use) keep the last 24 bits of the address they
+  solicit.
 
 ---
 
@@ -734,10 +829,3 @@ are authorisation — an MCP client is not a browser session and should not
 inherit one — and how much of a capture should be allowed to cross that boundary
 at all.
 
-**Packet sanitizer.** Produce a redacted copy of a capture that can be shared
-outside the team: strip or mask payloads, credentials in cleartext protocols,
-authentication headers, and optionally rewrite addresses consistently so traffic
-patterns survive while identities do not. This is what makes a capture shareable
-with a vendor or attached to a ticket, and it pairs directly with the at-rest
-encryption already here — the encryption protects what must not leave, and the
-sanitizer defines what may.

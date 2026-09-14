@@ -41,7 +41,9 @@ from pathlib import Path
 from typing import AsyncIterator, Iterator
 
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,15 @@ def kek_id(kek: bytes) -> bytes:
 KDF_N = 1 << 17
 KDF_R = 8
 KDF_P = 1
+
+
+def derive_subkey(secret: bytes, info: bytes, length: int) -> bytes:
+    """Key material for one purpose, derived from a key held for another.
+
+    HKDF-SHA256 with a purpose label, so a derived key says nothing about the
+    key it came from and two purposes can never end up sharing a key.
+    """
+    return HKDF(algorithm=hashes.SHA256(), length=length, salt=None, info=info).derive(secret)
 
 
 def derive_kek_from_passphrase(passphrase: str, salt: bytes) -> bytes:

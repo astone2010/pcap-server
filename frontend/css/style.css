@@ -3099,3 +3099,169 @@ body {
     font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: 0.625rem;
 }
+
+/* --- sanitize dialog --- */
+
+.sanitize-dialog {
+    /* The global reset zeroes every margin, and a modal <dialog> is centred
+       by its auto margins. */
+    margin: auto;
+    width: min(540px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    padding: 0;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+.sanitize-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.sanitize-stage {
+    padding: 18px 20px;
+}
+
+.sanitize-title {
+    margin: 0 0 4px;
+    font-size: 1rem;
+    color: var(--text-primary);
+}
+
+.sanitize-target {
+    margin: 0 0 14px;
+    font-size: 0.8125rem;
+    overflow-wrap: anywhere;
+}
+
+.sanitize-target.sanitize-failed {
+    color: var(--danger);
+}
+
+.sanitize-options {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    display: grid;
+    gap: 2px;
+}
+
+.sanitize-legend {
+    margin-bottom: 6px;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.sanitize-option {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 0.8125rem;
+    cursor: pointer;
+}
+
+.sanitize-option:hover {
+    background: var(--bg-hover);
+}
+
+.sanitize-option input {
+    margin-top: 3px;
+    accent-color: var(--accent);
+}
+
+.sanitize-option strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.sanitize-option small {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.sanitize-sub {
+    margin-left: 26px;
+}
+
+.sanitize-sub small {
+    display: inline;
+    margin-left: 4px;
+}
+
+.sanitize-option:has(input:disabled) {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.sanitize-note {
+    margin: 12px 0 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.sanitize-error {
+    margin: 10px 0 0;
+    font-size: 0.8125rem;
+    color: var(--danger);
+}
+
+.sanitize-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+/* .btn-primary is full-width by default, for the forms it was made for. */
+.sanitize-actions .btn {
+    width: auto;
+}
+
+.sanitize-summary {
+    font-size: 0.8125rem;
+}
+
+.sanitize-subhead {
+    margin: 14px 0 6px;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.sanitize-subhead:first-child {
+    margin-top: 0;
+}
+
+.sanitize-subhead.sanitize-warn {
+    color: var(--warning);
+}
+
+.sanitize-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.sanitize-row.sanitize-warn {
+    color: var(--warning);
+}
+
+.sanitize-count {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+    text-align: right;
+}

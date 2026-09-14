@@ -461,6 +461,8 @@
                     <button id="btn-save-view" class="btn btn-sm btn-secondary"
                             title="Save the current display filter as a tab on this capture">Save view</button>
                     <button id="btn-download-capture" class="btn btn-sm btn-secondary">Download .pcap</button>
+                    <button id="btn-sanitize-capture" class="btn btn-sm btn-secondary"
+                            title="Download a copy with credentials, addresses and names replaced. With a saved view open, only that view's packets.">Sanitize</button>
                 </div>
 
                 <!-- Saved views. One tab per named filter, plus "All packets"
@@ -732,6 +734,73 @@
 
     </div>
 </div>
+
+<!-- Sanitize: choose what to replace, then read back what was replaced.
+     One dialog, two stages, because the second stage is the one that
+     matters -- a sanitized capture is only as trustworthy as the account of
+     what the sanitizer could NOT find. -->
+<dialog id="sanitize-dialog" class="sanitize-dialog" aria-labelledby="sanitize-title">
+    <form id="sanitize-form" class="sanitize-stage" data-stage="options">
+        <h2 id="sanitize-title" class="sanitize-title">Sanitize capture</h2>
+        <p id="sanitize-target" class="sanitize-target"></p>
+        <fieldset class="sanitize-options">
+            <legend class="sanitize-legend">Replace</legend>
+            <label class="sanitize-option">
+                <input type="checkbox" name="credentials" checked>
+                <span><strong>Credentials</strong>
+                    <small>Passwords, Authorization headers, cookie values, SNMP communities, NTLM and Kerberos responses</small></span>
+            </label>
+            <label class="sanitize-option">
+                <input type="checkbox" name="ips" checked>
+                <span><strong>IP addresses</strong>
+                    <small>Prefix-preserving: hosts that shared a subnet still share one</small></span>
+            </label>
+            <label class="sanitize-option sanitize-sub">
+                <input type="checkbox" name="keep_private" data-parent="ips">
+                <span>Keep private ranges <small>10/8, 172.16/12, 192.168/16, 100.64/10, link-local, fc00::/7</small></span>
+            </label>
+            <label class="sanitize-option">
+                <input type="checkbox" name="macs" checked>
+                <span><strong>MAC addresses</strong>
+                    <small>Replaced with locally administered addresses</small></span>
+            </label>
+            <label class="sanitize-option sanitize-sub">
+                <input type="checkbox" name="keep_oui" data-parent="macs">
+                <span>Keep vendor prefix <small>the first three bytes (OUI)</small></span>
+            </label>
+            <label class="sanitize-option">
+                <input type="checkbox" name="hostnames">
+                <span><strong>Hostnames</strong>
+                    <small>DNS, TLS server name, HTTP Host, DHCP, NetBIOS; the last label (.com, .local) is kept</small></span>
+            </label>
+            <label class="sanitize-option">
+                <input type="checkbox" name="usernames">
+                <span><strong>Usernames</strong>
+                    <small>FTP, POP, IMAP, SMTP, NTLM, Kerberos, LDAP, RADIUS, database logins</small></span>
+            </label>
+            <label class="sanitize-option">
+                <input type="checkbox" name="strip_payload">
+                <span><strong>Strip payload</strong>
+                    <small>Keep headers only: everything after the TCP or UDP header is cut off</small></span>
+            </label>
+        </fieldset>
+        <p class="sanitize-note">The stored capture is not changed and no sanitized copy is kept. A capture
+            always gets the same stand-ins, so two sanitized downloads of it line up.</p>
+        <p id="sanitize-error" class="sanitize-error" role="alert" hidden></p>
+        <div class="sanitize-actions">
+            <button type="button" class="btn btn-sm btn-secondary" data-sanitize="close">Cancel</button>
+            <button type="submit" class="btn btn-sm btn-primary">Download sanitized</button>
+        </div>
+    </form>
+    <div id="sanitize-report" class="sanitize-stage" data-stage="report" hidden>
+        <h2 class="sanitize-title">Sanitized download</h2>
+        <p id="sanitize-status" class="sanitize-target" role="status" aria-live="polite"></p>
+        <div id="sanitize-summary" class="sanitize-summary"></div>
+        <div class="sanitize-actions">
+            <button type="button" class="btn btn-sm btn-primary" data-sanitize="close">Close</button>
+        </div>
+    </div>
+</dialog>
 
 <script src="/js/app.js"></script>
 <script src="/js/tls.js"></script>

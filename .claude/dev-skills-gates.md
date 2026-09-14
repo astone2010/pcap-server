@@ -1,7 +1,68 @@
 # Dev Skills gate state
 
-## Current session — opened 2026-09-13 (local CLI, Fedora 44, bash)
-Track: release sequence 0.1.0-dev.30 — UI refresh of Servers + Capture (visual + flow).
+## Current session — opened 2026-09-13 (local CLI, Fedora 44, bash, dev-skills 2.18.0)
+Track: release sequence 0.1.0-dev.31 — packet sanitizer. IMPLEMENTATION DONE
+(uncommitted), gates not yet run. Version not bumped.
+New: backend/anonymize.py (Crypto-PAn, matches 10 reference vectors; MAC; names),
+backend/framewalk.py (header walker + RFC 1624 checksums), backend/sanitizer.py
+(tshark JSON pass in lockstep, field rules, keys, install secret data/sanitize.key),
+main.py GET /api/captures/{id}/sanitize (+ /sanitize/summary?ticket=),
+vault.derived_key + crypto.derive_subkey, packet_parser spawn_tool/reap_tool
+(stream_filtered_pcap refactored onto them). UI: Sanitize on capture card + viewer
+toolbar, <dialog> options -> report stage. Tests: test_anonymize, test_framewalk,
+test_sanitizer (real tshark + routes), browser/test_sanitize_ui, packet_builders.
+Docs: README What it does + "Sanitizing a capture" + TOC, roadmap item removed;
+architecture.md section/modules/storage/limits/roadmap; security.md paragraph.
+Findings fixed during build: tshark skips retransmitted segments' payloads
+(prefs added); -J misses nested NTLMSSP (dropped); line-by-line JSON read was
+3/4 of runtime (chunked split: 50k fully-selected frames 38s -> 9.4s).
+check.sh on final code: 1370 passed, exit 0 (was 1267 at dev.30).
+Screenshots dark/light 1440/400 checked; dialog centring + button width fixed.
+NOT YET VERIFIED: container tshark (Debian, 4.4.x) runs the sanitize pass --
+do this in Gate 2 with a real sanitize inside the podman image.
+Branch claude/admiring-wright-k20ptf = origin 212936f (fetched at session start).
+All versions tagged on the remote through v0.1.0-dev.30.
+Model: Opus 5 — user approved staying on it for the sanitizer (2026-09-13).
+Decisions: defaults creds+IPs+MACs; mapping key = HKDF(capture DEK), plaintext
+captures fall back to one random secret file in the data volume.
+Uncommitted at start: this file (dev.30 ship record); untracked
+.claude/audit-handoff.md, .claude/sanitizer-handoff.md.
+
+User: "Run the gates" (2026-09-13). Not commit approval.
+
+🔢 VERSION    ✅ 0.1.0-dev.31 in all seven refs: backend/main.py:93,
+                docker-compose.yml:96, README.md:206/307/323,
+                docs/reverse-proxy.md:117/372. test_live_stream_ui.py:85 names
+                dev.30 as history, deliberately. v0.1.0-dev.30 on remote -> 212936f.
+                REPO_URL + release_notes_url (derived from APP_VERSION) present.
+🔨 BUILD      ✅ final check.sh (after Gate 3 fixes): 1372 passed, 0 skipped, exit 0.
+                Earlier post-bump run: 1370 passed, exit 0. podman build
+                localhost/pcap-server:0.1.0-dev.31 ok; in-container (tshark
+                4.4.18) sanitize of 50k frames 12-13s, 0 unmasked, 0 bad checksums,
+                NTLM case matches local; app serves dialog markup, route 401
+                unauthenticated, encryption enabled, 0 tracebacks. Rebuilt and
+                re-verified after Gate 3 fixes.
+🔒 SECURITY   ✅ 0 Critical, 0 High (pending user sight of quality review).
+                pip-audit clean. No shell/eval/pickle/innerHTML in diff.
+                Fixed: client-visible data-dir path in sanitize.key error;
+                unbounded AddressMapper/Pseudonyms caches (CACHE_LIMIT 200k);
+                -G fields subprocess not killed on read error; CPU on event loop
+                (yield every 64 frames; test proves 0 ticks without it).
+                Documented: Crypto-PAn known-address weakness, length kept.
+                Low, accepted-pending-user: UI summary poll has no time cap once
+                started; small sync reads (DEK header, sanitize.key) in async
+                route; no per-user concurrency cap beyond packet_rate_limiter.
+                Quality: stream_sanitized_pcap split (_TsharkPass);
+                download_sanitized_capture ~80 lines, mostly validation.
+📄 DOCS       ✅ CHANGELOG dev.31 (Added/Documentation). README sanitizing section
+                + TOC + What it does + limits sentence; architecture.md section,
+                modules, storage, known limits, roadmap; security.md; operating.md
+                rotation note. Roadmap sanitizer entries removed.
+📦 RELEASE    ⬜ branch = origin 212936f (fetched). Needs commit approval.
+🚀 SHIP       ⬜
+
+## 0.1.0-dev.30 tracker (previous session)
+Track: 0.1.0-dev.30 CLOSED AND SHIPPED 2026-09-13 (UI refresh, HTTPS docs). Ship record uncommitted.
 User decisions 2026-09-13: scope "Visual + flow"; stay on Opus 5 for this task only.
  Branch claude/admiring-wright-k20ptf = origin 8832614.
 Next version would be 0.1.0-dev.30. All prior versions tagged (dev.25..dev.29).
@@ -55,16 +116,27 @@ shell-quoted, never credentials) + 2 browser tests; tls.md sentence.
                 section, step 7, roadmap Windows; reverse-proxy self-signed;
                 operating/NPM/compose recreate note; stale "red banner" refs
                 fixed; tls.md CLI prefill sentence.
-📦 RELEASE    ⏳ commit + push by Claude on the user's instruction ("do a commit
-                and push and tag"); tag handed back per §5.8. PR ➖ N/A (as
+📦 RELEASE    ✅ commit 212936f by Claude on the user's instruction ("do a commit
+                and push and tag"), pushed; ls-remote = 212936f. CI Check run
+                34795033974 success on 212936f. audit-handoff.md excluded.
+                Notes drafted and shown with the tag block. PR ➖ N/A (as
                 dev.27-29: branch is canonical).
-🚀 SHIP       ⬜
+🚀 SHIP       ✅ 2026-09-13, post-ship checks:
+                * tag v0.1.0-dev.30 on remote -> 212936f (user).
+                * Release run 34795624685: build+push image success, create
+                  release success. v0.1.0-dev.30 (Dev), prerelease,
+                  2026-09-14T01:21:52Z; notes applied via gh release edit.
+                  Tag Check run 34795624644 success.
+                * PR ➖ N/A.
+                * GHCR :0.1.0-dev.30 and :dev -> sha256:7ef6d0954dc899d8b78da0f94bf693c07a09cf084aef59f8ddd81d9d4307822f
 
 ---
 Track: 0.1.0-dev.29 CLOSED AND SHIPPED 2026-09-13. Ship record committed (8832614).
        0.1.0-dev.28 CLOSED AND SHIPPED 2026-09-13 (below).
 
 ## PENDING WORK — read before starting a session
+- NEXT FEATURE (discussed, not started): packet sanitizer. See memory
+  packet-sanitizer-design for the agreed shape and user decisions.
 - Prepared, approved, NOT YET RUN: exhaustive security audit + operability + pentest.
   Full plan and locked user decisions in .claude/audit-handoff.md. Read-only
   investigation, carries no gates itself. Resume with "run the audit handoff".

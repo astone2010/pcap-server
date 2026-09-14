@@ -2304,7 +2304,9 @@ function captureActions(c, id) {
         // Downloads are refused over plain HTTP, so say why here rather
         // than letting the button fail with a 403 when clicked.
         const dl = secureTransport
-            ? `<button class="btn btn-sm btn-secondary" data-action="download-capture" data-id="${id}">Download</button>`
+            ? `<button class="btn btn-sm btn-secondary" data-action="download-capture" data-id="${id}">Download</button>
+               <button class="btn btn-sm btn-secondary" data-action="sanitize-capture" data-id="${id}"
+                 title="Download a copy with credentials, addresses and names replaced">Sanitize</button>`
             : `<button class="btn btn-sm btn-secondary" disabled
                  title="Downloads require HTTPS. A pcap can contain credentials, so it is not sent over an unencrypted connection.">Download (HTTPS only)</button>`;
         actions = `<button class="btn btn-sm btn-primary" data-action="view-capture" data-id="${id}">View</button>
@@ -2796,6 +2798,214 @@ function downloadView(viewId) {
         return;
     }
     window.open(`/api/captures/${viewingCaptureId}/views/${viewId}/download`, "_blank");
+}
+
+// --- sanitized downloads ---
+//
+// The dialog collects what to replace, starts the download the same way every
+// other download starts (a navigation the browser saves), then polls for the
+// summary under a random ticket. The summary is the half that matters: it is
+// where the server says what it could NOT sanitize.
+
+const SANITIZE_POLL_MS = 1500;
+// The download request may not have reached the server when the first poll
+// does. A ticket still unknown after this long means it never will be.
+const SANITIZE_START_GRACE_MS = 20000;
+let sanitizePollTimer = null;
+
+function initSanitizeDialog() {
+    const dialog = $("sanitize-dialog");
+    if (!dialog) return;
+    const form = $("sanitize-form");
+    form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        startSanitizedDownload();
+    });
+    form.addEventListener("change", syncSanitizeOptions);
+    dialog.addEventListener("click", (e) => {
+        if (e.target.closest("[data-sanitize=close]")) dialog.close();
+    });
+    dialog.addEventListener("close", () => {
+        clearTimeout(sanitizePollTimer);
+        sanitizePollTimer = null;
+    });
+}
+
+// A sub-option means nothing without its parent, so it is disabled -- and
+// unticked, so a hidden choice cannot ride along with the request.
+function syncSanitizeOptions() {
+    const form = $("sanitize-form");
+    form.querySelectorAll("input[data-parent]").forEach((input) => {
+        const parent = form.elements[input.dataset.parent];
+        input.disabled = !parent.checked;
+        if (!parent.checked) input.checked = false;
+    });
+}
+
+function openSanitizeDialog(captureId, viewId = ALL_PACKETS_VIEW) {
+    if (!secureTransport) {
+        showHttpsRefusal({
+            reason: "Sanitizing is best effort, so a sanitized capture is still treated as packet "
+                + "data: it is not sent over an unencrypted connection either.",
+            remedy: HTTPS_REMEDY,
+        });
+        return;
+    }
+    const capture = captures.find((c) => c.id === captureId);
+    if (!capture || capture.status !== "completed") {
+        showBlockingAlert("This capture has not finished",
+                          "Only a finished capture can be sanitized.",
+                          "Wait for it to finish transferring, then try again.");
+        return;
+    }
+    const view = viewId && viewingCaptureId === captureId
+        ? savedViews.find((v) => v.id === viewId)
+        : null;
+    const dialog = $("sanitize-dialog");
+    dialog.dataset.captureId = captureId;
+    dialog.dataset.viewId = view ? view.id : "";
+    const title = capture.name || captureId;
+    $("sanitize-target").textContent = view
+        ? `${title}, only the packets in the view "${view.name}"`
+        : title;
+    $("sanitize-error").hidden = true;
+    $("sanitize-form").hidden = false;
+    $("sanitize-report").hidden = true;
+    syncSanitizeOptions();
+    dialog.showModal();
+}
+
+function sanitizeTicket() {
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+function startSanitizedDownload() {
+    const dialog = $("sanitize-dialog");
+    const form = $("sanitize-form");
+    const captureId = dialog.dataset.captureId;
+    const params = new URLSearchParams();
+    let anything = false;
+    for (const name of ["credentials", "ips", "keep_private", "macs", "keep_oui",
+                        "hostnames", "usernames", "strip_payload"]) {
+        const checked = form.elements[name].checked;
+        params.set(name, checked ? "true" : "false");
+        if (checked && !form.elements[name].dataset.parent) anything = true;
+    }
+    if (!anything) {
+        const err = $("sanitize-error");
+        err.textContent = "Choose at least one thing to replace.";
+        err.hidden = false;
+        return;
+    }
+    if (dialog.dataset.viewId) params.set("view", dialog.dataset.viewId);
+    const ticket = sanitizeTicket();
+    params.set("ticket", ticket);
+
+    window.open(`/api/captures/${encodeURIComponent(captureId)}/sanitize?${params}`, "_blank");
+
+    form.hidden = true;
+    $("sanitize-report").hidden = false;
+    $("sanitize-status").textContent = "Sanitizing\u2026 the file downloads as it is built. "
+        + "What was replaced is listed here when it finishes.";
+    $("sanitize-summary").textContent = "";
+    pollSanitizeSummary(captureId, ticket, Date.now());
+}
+
+async function pollSanitizeSummary(captureId, ticket, startedAt) {
+    const dialog = $("sanitize-dialog");
+    if (!dialog.open) return;
+    let entry = null;
+    try {
+        entry = await api(`/api/captures/${encodeURIComponent(captureId)}/sanitize/summary?ticket=${encodeURIComponent(ticket)}`);
+    } catch (err) {
+        if (Date.now() - startedAt > SANITIZE_START_GRACE_MS) {
+            $("sanitize-status").textContent = "The sanitized download did not start: " + err.message;
+            return;
+        }
+    }
+    if (entry && entry.done) {
+        renderSanitizeSummary(entry);
+        return;
+    }
+    sanitizePollTimer = setTimeout(() => pollSanitizeSummary(captureId, ticket, startedAt), SANITIZE_POLL_MS);
+}
+
+function sanitizeRow(label, value, cls = "") {
+    const row = document.createElement("div");
+    row.className = "sanitize-row" + (cls ? " " + cls : "");
+    const name = document.createElement("span");
+    name.textContent = label;
+    const count = document.createElement("span");
+    count.className = "sanitize-count";
+    count.textContent = value;
+    row.append(name, count);
+    return row;
+}
+
+function renderSanitizeSummary(entry) {
+    const status = $("sanitize-status");
+    const box = $("sanitize-summary");
+    box.textContent = "";
+    if (entry.error) {
+        status.textContent = "Sanitizing failed, and the download was cut off. Do not share "
+            + "the partial file. " + entry.error;
+        status.classList.add("sanitize-failed");
+        return;
+    }
+    status.classList.remove("sanitize-failed");
+    const s = entry.summary;
+    status.textContent = `Finished: ${s.frames.toLocaleString()} packets.`;
+
+    const replaced = [
+        ["IPv4 addresses", s.addresses.ipv4],
+        ["IPv6 addresses", s.addresses.ipv6],
+        ["MAC addresses", s.addresses.mac],
+        ["Credentials", s.masked.credentials],
+        ["Usernames", s.masked.usernames],
+        ["Hostnames", s.masked.hostnames],
+        ["Reverse-DNS names", s.masked.reverse_dns_names],
+        ["Packets with payload stripped", s.stripped_frames],
+    ].filter(([, n]) => n > 0);
+    const heading = document.createElement("h3");
+    heading.className = "sanitize-subhead";
+    heading.textContent = replaced.length ? "Replaced" : "Nothing needed replacing";
+    box.append(heading);
+    for (const [label, n] of replaced) {
+        box.append(sanitizeRow(label, n.toLocaleString()));
+    }
+
+    const unplaced = Object.entries(s.unplaced || {});
+    if (unplaced.length) {
+        const warn = document.createElement("h3");
+        warn.className = "sanitize-subhead sanitize-warn";
+        warn.textContent = "Found but not replaced in place";
+        const why = document.createElement("p");
+        why.className = "sanitize-note";
+        why.textContent = "These were read from decoded, decompressed or reassembled data, which "
+            + "has no fixed position in a packet. If the field carrying them was replaced (an "
+            + "HTTP Authorization header, say) they went with it; otherwise they are still in "
+            + "the file. Check before sharing.";
+        box.append(warn, why);
+        for (const [field, n] of unplaced) box.append(sanitizeRow(field, n.toLocaleString(), "sanitize-warn"));
+    }
+
+    const undissected = s.undissected || [];
+    if (undissected.length) {
+        const head = document.createElement("h3");
+        head.className = "sanitize-subhead";
+        head.textContent = "Payload no dissector understood";
+        const why = document.createElement("p");
+        why.className = "sanitize-note";
+        why.textContent = "Only protocols Wireshark can read are searched for credentials and names. "
+            + "Check what runs on these ports before sharing.";
+        box.append(head, why);
+        for (const u of undissected) {
+            const label = u.port ? `${u.transport.toUpperCase()} port ${u.port}` : u.transport.toUpperCase();
+            box.append(sanitizeRow(label, `${u.frames.toLocaleString()} packets, ${formatBytes(u.bytes)}`));
+        }
+    }
 }
 
 // Typing over a saved view's filter means you are no longer looking at that
@@ -5020,6 +5230,10 @@ function initStaticHandlers() {
         "delete-view": (id) => deleteView(id),
     });
     $("btn-download-capture")?.addEventListener("click", downloadCapture);
+    $("btn-sanitize-capture")?.addEventListener("click", () => {
+        if (viewingCaptureId) openSanitizeDialog(viewingCaptureId, activeViewId);
+    });
+    initSanitizeDialog();
     $("btn-live-stop")?.addEventListener("click", stopLiveCapture);
     $("resolve-names")?.addEventListener("change", onResolveNamesToggled);
     $("btn-save-settings")?.addEventListener("click", saveSettings);
@@ -5057,6 +5271,7 @@ function initEventDelegation() {
         "stop-capture": (id) => stopCapture(id),
         "view-capture": (id) => viewCapture(id),
         "download-capture": (id) => downloadCaptureById(id),
+        "sanitize-capture": (id) => openSanitizeDialog(id),
         "rename-capture": (id) => renameCapture(id),
         "delete-capture": (id) => deleteCapture(id),
     });

@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.1.0-dev.31 — 2026-09-13
+
+### Added
+
+- **Sanitized downloads.** **Sanitize** on a finished capture's card, and in the
+  Viewer's toolbar, downloads `<name>-sanitized.pcap`: the same packets at the
+  same sizes, with what identifies people and places replaced. With a saved view
+  open in the Viewer, only that view's packets.
+  - **Credentials** (ticked to start): HTTP Authorization and cookie values,
+    FTP and POP passwords, IMAP and SMTP logins, SNMP communities, RADIUS
+    passwords, NTLM and Kerberos responses, LDAP simple binds, MySQL,
+    PostgreSQL and SQL Server passwords, VNC responses. Masked with `*`, keeping
+    the auth scheme and cookie names.
+  - **IP addresses** (ticked): prefix-preserving Crypto-PAn, so a subnet is still
+    a subnet — in headers, tunnels (GRE, VXLAN, Geneve, IP-in-IP), ICMP errors,
+    ARP, neighbour discovery, DNS answers, DHCP and routing protocols, and
+    reverse lookups. Optionally keeping private ranges.
+  - **MAC addresses** (ticked): locally administered stand-ins, optionally
+    keeping the vendor prefix.
+  - **Hostnames** and **usernames**: same-length stand-ins. One host gets one
+    stand-in whether it appears in DNS, the TLS server name, HTTP `Host`, DHCP or
+    NetBIOS.
+  - **Strip payload**: keep headers only.
+  - Checksums are updated, so the file opens cleanly — and a checksum that was
+    wrong in the original stays wrong.
+  - **The same capture always gets the same stand-ins**, derived from the
+    capture's own encryption key, so two sanitized downloads line up, and
+    rotating the master key does not change them. Nothing about the mapping is
+    stored.
+  - Built as it downloads; no sanitized copy is written anywhere. HTTPS only,
+    like every download.
+  - When it finishes, the dialog lists what was replaced, fields found in
+    decoded or reassembled data that could not be replaced in place, and payload
+    no dissector understood, by port. A failure cuts the download off and says
+    not to share the partial file.
+
+### Documentation
+
+- README: **Sanitizing a capture**, including what it does not find. The
+  sanitizer is off the roadmap.
+- architecture.md: how a sanitize works — the frame walker, the tshark pass kept
+  in step with it, why positions are checked against the frame, the tshark
+  preferences it needs, keys, and its known limits. security.md: what a
+  sanitized download does and does not promise.
+
 ## 0.1.0-dev.30 — 2026-09-13
 
 ### Changed

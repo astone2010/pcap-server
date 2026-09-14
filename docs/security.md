@@ -64,6 +64,16 @@ transit between two processes.
 Uploaded SSH private keys are sealed the same way, and a key uploaded before
 encryption was switched on is sealed in place at the next start.
 
+**A sanitized download is built in flight too**, and is never stored. Its
+address and name mapping is keyed by a key derived from the capture's own data
+key, so anyone holding a sanitized file still cannot reverse the mapping without
+access to the capture itself. Sanitizing is best effort — it replaces what
+Wireshark can dissect, and says in its summary what it could not — so a
+sanitized capture is refused over plain HTTP like any other download, and should
+be checked before it is shared. Captures stored before encryption was switched
+on are keyed by `data/sanitize.key` instead, which is as sensitive as the
+captures it covers.
+
 ## Traffic in transit
 
 **Browser to pcap-server** is TLS from either

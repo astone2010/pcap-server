@@ -22,7 +22,8 @@ only reach over SSH.
 **Using it** — [Preparing a target host](#preparing-a-target-host) ·
 [Taking a capture](#taking-a-capture) ·
 [Streaming a capture live](#streaming-a-capture-live) ·
-[Reading a capture](#reading-a-capture)
+[Reading a capture](#reading-a-capture) ·
+[Sanitizing a capture](#sanitizing-a-capture)
 
 **Running it** — [Security](#security) · [Operating it](#operating-it) ·
 [Architecture](#architecture) · [Development](#development) ·
@@ -67,6 +68,12 @@ A filter worth keeping can be **saved as a view** — a named tab on that captur
 still there when you come back next week, and downloadable as its own pcap
 containing only what it selects. Timestamps can be relative, epoch, delta, the
 server's UTC, or your own time zone.
+
+**Share it.** **Sanitize** downloads a copy of a finished capture — or of one
+saved view — with credentials masked and IP addresses, MAC addresses, hostnames
+and usernames replaced by stand-ins that stay the same every time you sanitize
+that capture. It is built as it downloads, so no sanitized copy is stored, and
+it ends with an account of what it replaced and what it could not.
 
 **Keep it safe.** Captures are encrypted at rest under a key that never lives on
 the data volume, and decrypted in flight, so no plaintext pcap ever touches
@@ -196,7 +203,7 @@ cd /opt/docker/pcap
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.30/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.31/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -297,7 +304,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.30` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.31` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -313,7 +320,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcap
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.30/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.31/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -556,6 +563,57 @@ survive a different browser, and another user's views are not yours to see.
 slice of a capture rather than a less sensitive one — so it is refused over
 plain HTTP for the same reason the full download is.
 
+### Sanitizing a capture
+
+**Sanitize** — on a finished capture's card, and in the Viewer's toolbar —
+downloads `<name>-sanitized.pcap`: the same packets, the same sizes, with what
+identifies people and places replaced. In the Viewer with a saved view open, it
+sanitizes just that view's packets.
+
+| Option | Ticked to start | What happens |
+| --- | --- | --- |
+| **Credentials** | yes | Masked with `*`: HTTP `Authorization` (the scheme word is kept), cookie values (names kept), FTP/POP passwords, IMAP and SMTP logins, SNMP communities, RADIUS passwords, NTLM and Kerberos responses, LDAP simple binds, MySQL, PostgreSQL and SQL Server passwords, VNC responses |
+| **IP addresses** | yes | Replaced prefix-preserving ([Crypto-PAn](https://en.wikipedia.org/wiki/Crypto-PAn)): hosts that shared a subnet still share one. Headers, tunnels, ICMP errors, ARP, neighbour discovery, and addresses inside DNS, DHCP and routing protocols. Reverse lookups (`…in-addr.arpa`) go with them |
+| ↳ Keep private ranges | no | 10/8, 172.16/12, 192.168/16, 100.64/10, link-local and fc00::/7 are left as they are |
+| **MAC addresses** | yes | Replaced with locally administered addresses |
+| ↳ Keep vendor prefix | no | Only the last three bytes are replaced |
+| **Hostnames** | no | DNS names, TLS server name, HTTP `Host`, DHCP and NetBIOS names — label by label, with the last label (`.com`, `.local`) kept, so one host gets one stand-in wherever it appears |
+| **Usernames** | no | Same-length stand-ins, in FTP, POP, IMAP, SMTP, NTLM, Kerberos, LDAP, RADIUS, SMB and database logins |
+| **Strip payload** | no | Everything after the TCP or UDP header is cut off, as if captured with a short snap length |
+
+Loopback, multicast, broadcast and group MAC addresses are never replaced: they
+are the same on every network. Checksums are updated to match, so a sanitized
+capture opens without a wall of checksum errors — and one that was already wrong
+in the original, as outgoing packets captured before checksum offload are,
+stays exactly as wrong.
+
+**The same capture always gets the same stand-ins.** Sanitize it today and again
+next month and the two files line up, address for address. The mapping is
+derived from that capture's own encryption key, so it changes for nothing — not
+even for a master-key rotation — and nothing about it is stored. A different
+capture maps differently. (A capture stored before encryption was switched on
+uses a random key created once in `data/sanitize.key` instead.)
+
+**Read the summary before sharing.** When the download finishes, the dialog
+lists what was replaced, and two things it could not vouch for:
+
+- **Found but not replaced in place** — fields read from decoded, decompressed
+  or reassembled data, which has no fixed position in a packet. NTLM inside an
+  HTTP header is base64, for example; there the whole header is masked anyway,
+  but not every carrier is.
+- **Payload no dissector understood**, by port — traffic Wireshark could not
+  read, and so could not search. A password on a custom port is invisible to
+  every rule above.
+
+Sanitizing is best effort by nature: it replaces what Wireshark can find, in the
+places listed above, and a credential in a JSON body or a hostname in a URL is
+not one of them. Replaced addresses keep their structure on purpose, and that
+cuts both ways: someone who already knows the real address of a host or two in
+the capture learns how their prefixes map, and with it part of every address
+that shares them. Stand-in names keep their length. For anything leaving your hands, **Strip payload** is the
+option that does not depend on recognising what is in a packet. Like every other
+download, it needs HTTPS.
+
 ## Security
 
 A packet capture is one of the most sensitive files a machine can produce: it
@@ -714,11 +772,6 @@ add.
   imitating a browser session. The open questions are authorisation, since an
   MCP client is not a browser session and should not inherit one, and how much
   of a capture should be allowed to cross that boundary.
-- **Packet sanitizer** — produce a redacted copy of a capture that is safe to
-  share outside the team: strip or mask payloads and cleartext credentials, and
-  optionally rewrite addresses consistently so traffic patterns survive while
-  identities do not. It pairs with the encryption already here — that protects
-  what must not leave, this defines what may.
 
 ## License
 
