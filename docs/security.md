@@ -200,11 +200,6 @@ same-origin COOP and CORP. HSTS is sent only where TLS is genuinely in use.
 - The pcap exists in the clear in `/tmp` on the **target** host for the duration
   of the capture. Inherent to running `tcpdump -w` on a remote machine; it is
   deleted after transfer.
-- A live stream holds up to the preview limit (16 MB by default) of unencrypted
-  packet data in the server's memory while the capture runs, discarded when it
-  ends. Packets already pass through memory on their way to tshark; what a live
-  stream changes is how much and for how long. It is never written to the data
-  volume.
 - Self-capture detection cannot see the host's LAN address from inside a bridged
   container, so it guards against the common mistakes rather than proving
   non-locality.

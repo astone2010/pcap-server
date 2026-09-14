@@ -31,8 +31,6 @@ These are configurable from the Admin tab by the admin user:
 | Max capture seconds | 300 | Maximum duration for a single capture |
 | Max capture packets | 100000 | Maximum packets per capture |
 | Max concurrent captures | 5 | Captures running or finishing up at once, across all users — each holds an SSH connection to a target host plus a local file. Separately, and not configurable: one capture at a time per interface per server, so `eth0` and `eth1` on the same host can run together but a second capture on either is refused |
-| Max simultaneous live streams | 2 | Live-streamed captures at once, across all users. Far lower than the limit above because a live stream costs more than an ordinary capture: an SFTP channel held open on the target, and a tshark run over the whole buffer on every poll. An ordinary capture can still start when this is full |
-| Live stream preview limit (MB) | 16 | How much of a live capture the preview holds and re-reads. Past it the preview stops updating and says so; **the capture itself keeps running and is saved in full**. Raising it costs CPU as well as memory, because every poll re-parses the whole buffer — narrowing the capture with an interface or a filter is the lever that actually helps, and is why a live stream [requires one](live-streaming.md#a-live-stream-has-to-be-pointed-at-something) |
 | Session duration (hours) | 8 | Login session lifetime |
 | Session idle timeout (minutes) | 60 | Idle window before a session is deleted, independent of the absolute duration above. `0` disables idle expiry |
 | Device trust (days) | 30 | How long a trusted device skips MFA |
@@ -40,7 +38,6 @@ These are configurable from the Admin tab by the admin user:
 | Rate limit lockout (minutes) | 15 | Lockout duration after too many failures |
 | Packet list requests per minute | 30 | Per-user cap on `/api/captures/{id}/packets` calls, which spawn tshark |
 | Capture start requests per minute | 10 | Per-user cap on `/api/captures` (POST), which opens an SSH connection |
-| Live stream requests per minute | 90 | Per-user cap on the live streaming routes. Separate from the packet list cap above because a live view polls on a timer rather than when someone clicks — sharing one budget would leave two streams unable to open a packet |
 
 ## Sessions
 

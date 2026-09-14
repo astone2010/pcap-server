@@ -115,7 +115,5 @@ to count.
 
 ## Related
 
-- [Streaming a capture live](live-streaming.md) — a live stream needs an
-  interface or a filter, and this is why.
 - [architecture.md](architecture.md#input-validation) — every validator the
   filter passes through, and the reason each one exists.

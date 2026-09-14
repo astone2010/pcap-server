@@ -529,21 +529,6 @@ body {
     white-space: nowrap;
 }
 
-/* Still recording. The same signal the live bar inside the panel carries, on
-   the tab, so a capture left running in a background tab still says so. */
-.tab-live-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--accent);
-    flex-shrink: 0;
-    animation: live-pulse 1.6s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .tab-live-dot { animation: none; }
-}
-
 .tab-close {
     background: none;
     border: none;
@@ -2957,136 +2942,10 @@ body {
 .save-filter-bad { color: var(--danger); }
 
 
-/* --- live streaming ----------------------------------------------------- */
-/* A capture you can watch while it records. The bar only exists in the Viewer
-   and only while, or just after, a live capture is open: it carries the three
-   things that are true of a live view and not a stored one -- that packets are
-   still arriving, how far the preview is allowed to get, and that Stop is
-   reachable without going back to the Captures tab. */
-
-/* Laid out like the fields beside it -- a label on top, then a control the
-   height of an input -- so it lines up with Snap length instead of floating.
-   The selectors carry .capture-config because the generic .form-group label
-   and .form-group input rules would otherwise make the label a block and give
-   the tickbox a full-width input's box, which is what stacked it before. */
-.capture-config .live-stream-toggle {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-surface);
-    color: var(--text-primary);
-    font-size: 0.875rem;
-    line-height: normal;
-    white-space: nowrap;
-    cursor: pointer;
-}
-
-.capture-config .live-stream-toggle input {
-    width: auto !important;
-    margin: 0;
-    padding: 0;
-    accent-color: var(--accent);
-    cursor: pointer;
-}
-
-/* Full width on its own row under the form, not tucked beside the checkbox:
-   it is the reason Start will refuse, and a refusal explained in a 120px
-   column beside a tickbox is a refusal nobody reads. Warning-coloured rather
-   than danger-coloured -- nothing has gone wrong yet, and the form is still
-   one field away from being valid. */
-.live-target-notice {
-    flex: 1 1 100%;
-    margin: 0;
-    padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--warning) 10%, transparent);
-    color: var(--text-secondary);
-    font-size: 0.8125rem;
-    line-height: 1.55;
-    max-width: 80ch;
-}
-
-.live-target-notice strong { color: var(--text-primary); }
-
-.live-target-notice code {
-    font-family: var(--font-mono);
-    font-size: 0.9em;
-    padding: 1px 4px;
-    border-radius: 3px;
-    background: var(--bg-hover);
-    color: var(--text-primary);
-}
-
-.live-target-note {
-    display: block;
-    margin-top: 6px;
-    color: var(--text-muted);
-}
-
-.live-bar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--border);
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
-    font-size: 0.875rem;
-    flex-shrink: 0;
-}
-
-.live-bar-actions {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.live-follow {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    cursor: pointer;
-    white-space: nowrap;
-}
-
-/* Pulsing only while the stream is actually live. Once the preview freezes or
-   the capture ends the dot goes still, because a blinking "live" indicator on
-   a view that has stopped updating is the one thing here that would actively
-   mislead. */
-.live-dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: var(--accent);
-    flex-shrink: 0;
-    animation: live-pulse 1.6s ease-in-out infinite;
-}
-
-.live-bar.live-frozen { background: color-mix(in srgb, var(--warning) 10%, transparent); }
-.live-bar.live-frozen .live-dot { animation: none; opacity: 0.5; }
-
+/* The pulsing dot on a running capture's status badge (.status-running::before). */
 @keyframes live-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.25; }
-}
-
-/* Respect a stated preference for less motion: a dot pulsing once a second for
-   the length of a capture is exactly the kind of thing that setting is for. */
-@media (prefers-reduced-motion: reduce) {
-    .live-dot { animation: none; }
-}
-
-.live-status-warn { color: var(--warning); }
-.live-status-done { color: var(--text-secondary); }
-
-.badge-live {
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
-    color: var(--accent);
 }
 
 /* The capture filter: the library's name for it where the library knows one,

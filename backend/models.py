@@ -334,9 +334,8 @@ def assert_no_forbidden_flags(args: list[str]) -> None:
 BPF_FORBIDDEN_CHARS = ";$`\\"
 
 
-# tcpdump's pseudo-interface: every link on the host at once. The right default
-# for a capture you are going to read afterwards, and the one thing a live
-# stream cannot be pointed at -- see LiveStreamNotTargeted in capture.py.
+# tcpdump's pseudo-interface: every link on the host at once. The right
+# default for a capture you are going to read afterwards.
 ANY_INTERFACE = "any"
 
 
@@ -345,11 +344,9 @@ class CaptureRequest(BaseModel):
     #
     # OPTIONAL HERE, REQUIRED BY THE FORM, and the asymmetry is deliberate.
     # The rule is a working convention -- a list of captures called "3f2a..."
-    # is a list nobody can read a week later -- not a safety property, and the
-    # live-stream targeting rule is the shape safety properties take in this
-    # file: refused on both sides. Refusing a name-less capture at the API
-    # would break a scripted capture for a cosmetic reason, which is a worse
-    # trade than an unnamed row.
+    # is a list nobody can read a week later -- not a safety property.
+    # Refusing a name-less capture at the API would break a scripted capture
+    # for a cosmetic reason, which is a worse trade than an unnamed row.
     #
     # Captures taken before the form asked for one keep the empty name they
     # have, and can still be renamed afterwards.
@@ -360,16 +357,6 @@ class CaptureRequest(BaseModel):
     snap_len: int | None = Field(default=None, ge=0, le=65535)
     duration_seconds: int | None = Field(default=None, ge=1, le=600)
     bpf_filter: str = ""
-    # Watch the packets arrive instead of waiting for the transfer. Changes two
-    # things about the capture itself: tcpdump is given -U so the remote file
-    # grows packet by packet rather than a buffer at a time, and the capture
-    # counts against max_live_streams as well as max_concurrent_captures.
-    #
-    # It does NOT change what is captured or how it is stored. The authoritative
-    # pcap still accumulates on the remote host and is still fetched and sealed
-    # at the end, so a live-streamed capture and an ordinary one are the same
-    # file by the time either is saved.
-    live_stream: bool = False
 
     @field_validator("name")
     @classmethod
@@ -513,12 +500,6 @@ class CaptureInfo(BaseModel):
     # restored as FAILED, so no stale record can hold an interface hostage.
     interface: str = ""
     user_id: str = ""
-    # Recorded rather than inferred, and kept after the capture completes: the
-    # operator asked for a live stream and the finished capture should still say
-    # so. It also decides what the viewer does when the capture is opened while
-    # it is still running -- without the flag there is no way to tell a capture
-    # that can be watched from one that merely happens to be RUNNING.
-    live_stream: bool = False
     # The capture filter this ran with, kept so a finished capture can still say
     # what it was selecting for. Stored in its own right rather than read back
     # out of `command` for the same reason `interface` is: a rule that depends

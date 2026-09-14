@@ -62,7 +62,7 @@ async def test_an_info_row_reads_as_an_option_not_a_fault(app_page):
 
 CAPTURE = {
     "id": "cap-any", "name": "", "server_id": "s1", "server_label": "edge",
-    "interface": "any", "user_id": "u1", "live_stream": False, "status": "completed",
+    "interface": "any", "user_id": "u1", "status": "completed",
     "command": "", "packet_count": 1, "file_size": 1, "error": "",
 }
 
@@ -97,6 +97,45 @@ async def test_an_any_capture_shows_which_interface_each_packet_crossed(app_page
     assert "sll.ifindex == 2" in got["title"]
     assert "sent by this host" in got["title"]
     assert got["span"] == 8
+
+
+async def _show_viewer(page):
+    """_row only fills the table; the surrounding panel stays hidden behind
+    the empty state until a real viewCapture() shows it. A real click needs
+    the cell actually visible, not just present in the DOM."""
+    await page.evaluate(
+        """() => { activatePanel("viewer"); hide("viewer-empty"); show("packet-viewer"); }"""
+    )
+
+
+async def test_right_clicking_the_interface_cell_offers_a_filter_on_it(app_page):
+    """The tooltip promises `filter: sll.ifindex == 2` -- this is that promise
+    kept. Right-clicking the cell has to reach the same filter it advertises."""
+    await _row(app_page, CAPTURE, PACKET)
+    await _show_viewer(app_page)
+    await app_page.click("#packet-tbody td.col-iface", button="right")
+    await app_page.wait_for_selector("#filter-menu")
+    labels = await app_page.eval_on_selector_all(
+        "#filter-menu .filter-menu-item", "els => els.map(e => e.textContent)"
+    )
+    assert any("sll.ifindex == 2" in label for label in labels)
+
+    await app_page.click("#filter-menu .filter-menu-item >> nth=0")
+    assert await app_page.input_value("#display-filter") == "sll.ifindex == 2"
+
+
+async def test_an_interface_reading_without_an_ifindex_offers_no_filter_on_it(app_page):
+    """A packet from before dev.32 recorded no ifindex at all (0, the model's
+    default) -- nothing to filter on there, though the row's own Conversation
+    filter (built from source/destination, not the interface) still offers."""
+    await _row(app_page, CAPTURE, {**PACKET, "interface": "", "ifindex": 0})
+    await _show_viewer(app_page)
+    await app_page.click("#packet-tbody td.col-iface", button="right")
+    await app_page.wait_for_selector("#filter-menu")
+    labels = await app_page.eval_on_selector_all(
+        "#filter-menu .filter-menu-item", "els => els.map(e => e.textContent)"
+    )
+    assert not any("sll.ifindex" in label for label in labels)
 
 
 async def test_a_named_interface_capture_has_no_interface_column(app_page):

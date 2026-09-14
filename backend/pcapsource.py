@@ -42,6 +42,27 @@ class PlaintextSource(PcapSource):
         return self.path.stat().st_size
 
 
+class BytesSource(PcapSource):
+    """A PcapSource over a prefix of an in-memory buffer.
+
+    Takes the buffer itself rather than a copy, so a caller streaming bytes
+    into a growing bytearray can hand this a `length` short of the buffer's
+    current size and read a stable prefix while the rest keeps arriving.
+    """
+
+    def __init__(self, data, length: int, chunk_size: int = 256 * 1024) -> None:
+        self._data = data
+        self._length = length
+        self._chunk = chunk_size
+
+    async def chunks(self) -> AsyncIterator[bytes]:
+        for start in range(0, self._length, self._chunk):
+            yield bytes(self._data[start:min(start + self._chunk, self._length)])
+
+    async def size(self) -> int:
+        return self._length
+
+
 class EncryptedSource(PcapSource):
     """Decrypts in flight. Reading and decryption run off the event loop."""
 

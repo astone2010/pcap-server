@@ -1,5 +1,135 @@
 # Dev Skills gate state
 
+## 0.1.0-dev.33 — opened 2026-09-14 (local CLI, Fedora 44, bash, dev-skills 2.18.0)
+Track: release sequence 0.1.0-dev.33. Branch = origin cd2bda5 (tag v0.1.0-dev.32,
+confirmed on remote). New session picked up capture-size-handoff.md.
+
+Diagnosis (no code changes): user gave two same-interface (ens18) captures,
+2000 packets each, 943KB vs 16.6MB. Pasted packet list from the 16.6MB one
+showed repeated TCP payloads at len=32804/57920/48800 on one SSH flow --
+impossible as real Ethernet frames. Root cause: TSO/GSO segmentation offload
+on the target NIC (virtio-net/Proxmox), independent of live vs non-live --
+tcpdump captures the kernel's pre-segmentation superframe. Not a pcap-server
+bug; data content is correct, per-packet framing/size/timing is not.
+
+User: "does this affect the actual readability/truth of the actual data" ->
+answered: payload content is complete and correct, packet-level structure
+(counts, sizes, timing, checksums on the coalesced frame) is not representative
+of the wire.
+
+User's scope (2026-09-14), all four accepted:
+ 1. "remove the feature entirely and explain in the release notes why" ->
+    AskUserQuestion confirmed: LIVE STREAMING (the whole watch-as-it-records
+    capability), not the GSO issue itself (which isn't a pcap-server feature).
+ 2. Filter in Viewer by interface when `any` is used.
+ 3. Every section right-clickable as a filter, Wireshark-style, in the frame
+    viewer.
+ 4. Review tshark/wireshark for other reasonable parity gaps.
+
+Research (general-purpose subagent, Sonnet, read-only) found #3 ALREADY FULLY
+IMPLEMENTED: onDetailContextMenu/buildFieldFilter/filterMenuItems (Apply/Not/
+And/Or/Prepare/Copy) on the packet-detail tree, plus row-level Conversation
+filter -- confirmed by direct code read, not just the subagent's word. No work
+needed there; user was not told anything was missing, was told it already
+exists. Same research flagged #2 as the one real, cheap gap (col-iface has no
+context-menu case though the cell's own tooltip already promises the filter),
+and produced a prioritized Wireshark-parity list (D) for #4, NOT YET PRESENTED
+to the user or scoped into this release -- to report next turn: Follow Stream
+(highest value), interface right-click (built this session, see below),
+Protocol Hierarchy, Conversations/Endpoints table, Copy as Filter, Export
+Packet Bytes; explicitly recommended skipping colorization rules/Decode As/
+IO Graph/full Statistics suite as disproportionate for this tool.
+
+Implementation DONE (uncommitted):
+- Live streaming removed: backend/livestream.py deleted; capture.py (_LiveCount
+  progress-reporting infra KEPT -- unrelated, general to all captures, NOT
+  live-stream-specific despite the name); ssh_manager.py RemoteCapture.read_at
+  + _sftp slot removed; database.py live_stream column DROPPED via migration
+  (SQLite supports DROP COLUMN >= 3.35; host 3.51.2, container Debian 13 --
+  both qualify) + orphaned settings rows (max_live_streams, live_stream_buffer_mb,
+  rate_limit_live_polls_per_min) deleted from the settings table on every
+  startup (get_all_settings merges raw DB rows over DEFAULTS with no filter,
+  so a customized value would otherwise persist as an unlabelled key forever);
+  main.py routes/imports/rate limiter removed; models.py CaptureRequest/
+  CaptureInfo.live_stream fields removed; frontend (app.js ~250 lines across
+  the form, capture list, tabs, viewer, and the whole live-view polling
+  module; index.html; style.css, keeping @keyframes live-pulse which
+  .status-running::before still uses) fully swept, verified by exhaustive
+  grep to zero remaining references.
+  CAUGHT BY RUNNING TESTS, NOT BY GREP: backend/sanitizer.py imported pcap
+  format constants (GLOBAL_HEADER_LEN, RECORD_HEADER_LEN, MAX_RECORD_BYTES,
+  magic-byte tables) FROM livestream.py -- these are generic pcap-record-
+  walking constants that happened to live there, unrelated to the live-stream
+  feature itself. Moved into sanitizer.py (now sole consumer, before its
+  first use at module scope -- NameError on load order was itself an early
+  catch). BytesSource (PcapSource over an in-memory buffer) is genuinely
+  reusable test/production infra, not live-stream-specific -- moved to
+  pcapsource.py; tests/test_sanitizer.py import fixed.
+- Interface filter (#2): packetRowHtml's .col-iface td gains data-ifindex/
+  data-iface-name; onPacketRowContextMenu gains a col-iface branch producing
+  buildFieldFilter("sll.ifindex", ifindex) through the SAME filterMenuItems
+  Apply/Not/And/Or/Prepare/Copy menu every other column uses -- no new
+  filter-building code. Tests added in test_interface_os_ui.py (right-click
+  offers the filter; Apply sets #display-filter; no ifindex -> no ifindex
+  item, though the row's own Conversation filter still offers -- test
+  corrected once to reflect that pre-existing, unrelated behavior).
+Tests: deleted tests/test_livestream.py, tests/browser/test_live_stream_ui.py
+  (whole feature gone); trimmed the live-streaming sections out of
+  test_main.py, test_capture.py (965-1371, including the "display filter over
+  a running capture" tests, which exercised live_poll and are gone with it),
+  test_ssh_manager.py (read_at/sftp_capture fixture); scrubbed live_stream
+  fixture fields from test_capture_filter_record.py (schema fixture kept --
+  it's testing bpf_filter's ADD COLUMN migration on an intentionally-legacy
+  schema, live_stream there is historically accurate and my DROP COLUMN
+  migration handles it fine, verified), test_interface_os_ui.py,
+  test_sanitize_ui.py, test_capture_ui.py.
+  FULL SUITE GREEN: 1346 passed (1207 API + 139 browser), 0 failed, 0 skipped
+  reported as unexpected. Run twice, clean both times.
+Docs: docs/live-streaming.md deleted. README (TOC, screenshot caption, three
+  feature-description paragraphs, the whole "Streaming a capture live"
+  section, the tab-dot claim now false, the Interface-column paragraph
+  updated to describe right-click instead of hover-only), docs/filters.md,
+  docs/operating.md (settings table), docs/security.md ("what this does not
+  protect"), docs/architecture.md (module table, the whole "Streaming a
+  capture live" section replaced with a "Removed" note explaining the dev.33
+  decision and the real GRO/TSO cause, runtime settings table, Known limits
+  gains a GRO/TSO-inflated-capture entry replacing the live-stream entries).
+  CHANGELOG.md dev.33 entry written (Removed/Added/Documentation).
+Version: 0.1.0-dev.33 in all seven refs (verified by grep after sed):
+  backend/main.py, docker-compose.yml, README.md (x3), docs/reverse-proxy.md
+  (x2). v0.1.0-dev.32 confirmed on remote (ls-remote).
+
+Not yet done: formal Gate 3 security review (a self-review during
+implementation found nothing -- no new routes, no new deps, the one new
+filter-string path reuses existing buildFieldFilter/escHtml hardening, the
+DB migration is a static DROP COLUMN + static-key DELETE with no
+interpolation -- but this is not a substitute for running the gate itself).
+Podman image not yet built (Gate 2 needs this, not just local pytest).
+Commit approval not requested. Parity list (D) not yet put to the user.
+
+🔢 VERSION    ✅ see above
+🔨 BUILD      ✅ pytest 1346 passed. podman build localhost/pcap-server:
+                0.1.0-dev.33 ok. Rootless smoke test (ALLOW_UNENCRYPTED_
+                CAPTURES=true, SELinux :Z mounts): server starts, 0
+                tracebacks, / and /js/app.js serve 200, app.js contains the
+                new sll.ifindex filter code, 0 remaining live-stream markup
+                in served HTML/JS. Fresh-DB migration verified directly:
+                captures table has no live_stream column, settings table
+                carries none of the three removed keys.
+🔒 SECURITY   ✅ 0 Critical/High/Medium. Read full SECURITY_REFERENCE.md this
+                session. Diff is overwhelmingly deletions; the one new
+                client-built filter string (sll.ifindex) reuses the existing
+                buildFieldFilter/FILTER_UNSAFE escaping, same as every other
+                column's filter -- no new pattern. DB migration is a static
+                DROP COLUMN + static-key-list DELETE, no interpolation. No
+                new dependencies, no new routes, no new logging of anything
+                sensitive. Grep across the diff for eval/exec/shell=True/
+                os.system/innerHTML=/pickle/md5/sha1/bare-except: 0 hits
+                outside test assertions.
+📄 DOCS       ✅ see above (CHANGELOG + all affected docs)
+📦 RELEASE    ⏳ commit about to be requested
+🚀 SHIP       ⬜
+
 ## 0.1.0-dev.32 — opened 2026-09-14 (local CLI, Fedora 44, bash, dev-skills 2.18.0)
 Track: release sequence 0.1.0-dev.32. Branch = origin 1478ff5 (tag v0.1.0-dev.31).
 2026-09-14: user pushed README gallery 83d7783 + bc07bbc; 83d7783 carried sensitive
@@ -68,8 +198,17 @@ Docs + CHANGELOG dev.32 written.
                 "survives upgrade" claim), OS recorded, sudo-first order. architecture.md:
                 lifecycle diagram, Interface column section, known limits. security.md:
                 target-side reads, group-limited setcap. Stale-claim grep clean.
-📦 RELEASE    ⬜
-🚀 SHIP       ⬜
+📦 RELEASE    ✅ commit cd2bda5 approved by user ("commit"), executed by Claude; pushed on
+                user's "push"; ls-remote = cd2bda5. PR ➖ N/A (branch canonical, as
+                dev.27-31). Handoff notes excluded. CI Check run 34852170279 success on cd2bda5.
+                Tag block (Termux, 3 lines) handed to user.
+🚀 SHIP       ✅ user pushed tag 2026-09-14: ls-remote v0.1.0-dev.32 -> cd2bda5.
+                Release run 34854429821 success; tag-push Check run 34854429920 success.
+                GitHub release v0.1.0-dev.32 (Dev) published, prerelease; CHANGELOG dev.32
+                notes applied via gh release edit (2452 chars, replacing the auto compare
+                link) on user's "yes". ghcr :0.1.0-dev.32 and :dev share one digest
+                sha256:5801c80a604e878b7dee855842945db3d34cb1c343db1db3b20c3f05e089bc83.
+                RELEASE SEQUENCE 0.1.0-dev.32 CLOSED.
 
 ## 0.1.0-dev.31 (previous)
 
@@ -136,7 +275,7 @@ User: "Run the gates" (2026-09-13). Not commit approval.
                 dev.27-30). Low findings: user proceeded to commit without
                 objection. Release notes drafted and shown. CI Check run
                 34799467956 success on 1478ff5.
-🚀 SHIP       ⏳ checked 2026-09-14 (new session, local CLI, bash):
+🚀 SHIP       ✅ checked 2026-09-14 (new session, local CLI, bash):
                 * tag v0.1.0-dev.31 on remote -> 1478ff5 (user).
                 * Release run 34800153617 success; tag Check run 34800153624
                   success. v0.1.0-dev.31 (Dev), prerelease, 2026-09-14T02:44:31Z.

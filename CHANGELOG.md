@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.0-dev.33 — 2026-09-14
+
+### Removed
+
+- **Live streaming.** The **Live stream** option that opened the Viewer on a
+  capture while it was still recording is gone: the checkbox, the in-memory
+  preview buffer, the `/api/captures/{id}/live/*` routes, the settings that
+  bounded it (`max_live_streams`, `live_stream_buffer_mb`,
+  `rate_limit_live_polls_per_min`), and the badge and pulsing tab dot that
+  marked a capture as having been watched live. Prompted by an investigation
+  into captures that were far larger than the traffic they recorded seemed to
+  justify — the actual cause turned out to be TCP/generic segmentation offload
+  on the target host's NIC, producing captured "frames" tens of kilobytes wide
+  that never existed on the wire, unrelated to live streaming. But correctness
+  of what a capture reports was judged more valuable than the watch-as-it-
+  records convenience, so the feature was cut rather than kept and caveated.
+  See **Known limits** in architecture.md for the real cause and the remedy.
+  Existing captures keep their history; the now-meaningless `live_stream`
+  column is dropped from the database on upgrade.
+
+### Added
+
+- **Filter by interface from the packet list.** On an `any` capture,
+  right-clicking the **Interface** column now offers the same Apply / Not /
+  And / Or / Prepare / Copy menu every other column already has, filtering on
+  `sll.ifindex` — the cell's own tooltip already named this filter; it can now
+  be clicked rather than typed.
+
+### Documentation
+
+- Every "Streaming a capture live" reference removed from README, filters.md,
+  security.md, operating.md and architecture.md; docs/live-streaming.md
+  deleted. architecture.md gains a **Known limits** note on GRO/TSO-inflated
+  captures and a removal note explaining the dev.33 decision.
+
 ## 0.1.0-dev.32 — 2026-09-14
 
 ### Added

@@ -45,17 +45,35 @@ from typing import AsyncIterator
 
 from backend.anonymize import KEY_INFO, AddressMapper, Pseudonyms, derive_key
 from backend.framewalk import LINKTYPE_NAMES, refresh_checksums, walk
-from backend.livestream import (
-    GLOBAL_HEADER_LEN,
-    MAX_RECORD_BYTES,
-    RECORD_HEADER_LEN,
-    _MAGICS as PCAP_MAGICS,
-    _PCAPNG_MAGIC as PCAPNG_MAGIC,
-)
 from backend.packet_parser import reap_tool, spawn_tool, stream_filtered_pcap
 from backend.pcapsource import PcapSource
 
 logger = logging.getLogger(__name__)
+
+# libpcap's file header, and the per-packet header inside it.
+GLOBAL_HEADER_LEN = 24
+RECORD_HEADER_LEN = 16
+
+# The four classic-pcap magics, mapped to the byte order the rest of the file is
+# written in. The two "3c4d" variants only change the units of the timestamp
+# fraction (nanoseconds rather than microseconds), which nothing here reads --
+# but they change nothing about the lengths, so they are just as walkable.
+PCAP_MAGICS = {
+    b"\xa1\xb2\xc3\xd4": "big",
+    b"\xd4\xc3\xb2\xa1": "little",
+    b"\xa1\xb2\x3c\x4d": "big",
+    b"\x4d\x3c\xb2\xa1": "little",
+}
+
+# pcapng, recognised only so it can be refused by name -- see global_header().
+PCAPNG_MAGIC = b"\x0a\x0d\x0d\x0a"
+
+# A record longer than this is not a record. tcpdump's own default snapshot
+# length is 262144 and the API caps a requested one at 65535, so a claimed
+# length beyond a megabyte means the bytes are not what they say they are.
+# Without this bound a corrupt length field parks the walk forever, waiting for
+# bytes that are never coming.
+MAX_RECORD_BYTES = 1024 * 1024
 
 # How much sanitized output to gather before handing it to the response.
 OUTPUT_CHUNK_BYTES = 64 * 1024

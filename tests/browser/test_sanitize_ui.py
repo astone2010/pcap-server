@@ -1,10 +1,9 @@
 """The Sanitize dialog: what it offers, what it sends, and what it reports.
 
-The capture list is filled in directly, as in test_live_stream_ui, so the
-real renderer and the real dialog run without a capture pipeline behind them.
-window.open is stubbed: the request it would make is what is under test here,
-and the download itself is covered against the real route in
-tests/test_sanitizer.py.
+The capture list is filled in directly, so the real renderer and the real
+dialog run without a capture pipeline behind them. window.open is stubbed:
+the request it would make is what is under test here, and the download
+itself is covered against the real route in tests/test_sanitizer.py.
 """
 
 from __future__ import annotations
@@ -24,7 +23,6 @@ def _row(**overrides):
         "server_label": "target (alice@target.example)",
         "interface": "eth0",
         "user_id": "u1",
-        "live_stream": False,
         "status": "completed",
         "command": "tcpdump -w /tmp/x.pcap -i eth0",
         "packet_count": 12,

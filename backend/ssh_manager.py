@@ -98,16 +98,12 @@ class RemoteCapture:
     path including cancellation.
     """
 
-    __slots__ = ("process", "_conn", "_closed", "_sftp")
+    __slots__ = ("process", "_conn", "_closed")
 
     def __init__(self, process: asyncssh.SSHClientProcess, conn: asyncssh.SSHClientConnection) -> None:
         self.process = process
         self._conn = conn
         self._closed = False
-        # Opened only if someone streams this capture live, and reused across
-        # polls: a live view reads every few seconds for the whole capture, and
-        # an SFTP subsystem handshake each time would be the bulk of the cost.
-        self._sftp = None
 
     @property
     def exit_status(self):
@@ -139,40 +135,11 @@ class RemoteCapture:
         """
         await self._conn.run(f"rm -f {_shell_quote(remote_path)}", check=True, timeout=10)
 
-    async def read_at(self, remote_path: str, offset: int, length: int) -> bytes:
-        """Read a slice of the capture file while tcpdump is still writing it.
-
-        Over the connection the capture is already running on, for the same
-        reason remove_remote_file uses it: the host is authenticated and the
-        channel is open, so a live view costs a read rather than an SSH
-        handshake every few seconds.
-
-        Reading does not disturb the writer. tcpdump holds its own descriptor
-        and appends; this opens a second, read-only one and never seeks it past
-        what has been written.
-        """
-        if self._closed:
-            raise ConnectionResetError("the capture's connection is closed")
-        if self._sftp is None:
-            self._sftp = await self._conn.start_sftp_client()
-        async with self._sftp.open(remote_path, "rb") as fh:
-            return await fh.read(length, offset)
-
     async def close(self) -> None:
         """Idempotent: safe to call from the monitor, from delete, and at shutdown."""
         if self._closed:
             return
         self._closed = True
-        if self._sftp is not None:
-            # Before the connection goes: an SFTP client outliving its
-            # connection is what leaves the "task was destroyed but it is
-            # pending" noise behind at shutdown.
-            try:
-                self._sftp.exit()
-                await self._sftp.wait_closed()
-            except Exception:
-                logger.debug("sftp client already gone while closing capture", exc_info=True)
-            self._sftp = None
         try:
             self.process.close()
         except Exception:

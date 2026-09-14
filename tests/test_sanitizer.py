@@ -33,8 +33,8 @@ from fastapi.testclient import TestClient
 from backend import main
 from backend.auth import create_session_token
 from backend.crypto import Cryptor
-from backend.livestream import BytesSource
 from backend.models import CaptureInfo, CaptureStatus
+from backend.pcapsource import BytesSource
 from backend.rekey import rekey_file
 from backend.sanitizer import (
     INSTALL_SECRET_NAME,

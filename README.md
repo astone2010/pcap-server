@@ -21,7 +21,6 @@ only reach over SSH.
 
 **Using it** — [Preparing a target host](#preparing-a-target-host) ·
 [Taking a capture](#taking-a-capture) ·
-[Streaming a capture live](#streaming-a-capture-live) ·
 [Reading a capture](#reading-a-capture) ·
 [Sanitizing a capture](#sanitizing-a-capture)
 
@@ -36,7 +35,7 @@ full, for when you need it.
 Validate SSH key with Test Connection and perform a prerequisite check
 
 <img width="1333" height="388" alt="image" src="https://github.com/user-attachments/assets/a24074a5-d314-4461-849d-7cbcda455cc5" />
-Full capture page allows for viewing, pcap sanitization, and/or download. Supports live captures. 
+Full capture page allows for viewing, pcap sanitization, and/or download.
 
 <img width="2555" height="804" alt="image" src="https://github.com/user-attachments/assets/c2e58875-4cf1-413e-86e2-04c40b09e49a" />
 Easily target any interface on the remote
@@ -64,7 +63,6 @@ For those who hate eyes, a "Flash-bang" theme.
 | [Reverse proxy setup](docs/reverse-proxy.md) | Getting it behind TLS — Caddy, nginx or Nginx Proxy Manager, with a real certificate or [a self-signed one](docs/reverse-proxy.md#no-domain-a-self-signed-certificate) when there is no domain |
 | [Preparing a target host](docs/target-hosts.md) | SSH access, adding and checking a server, and the three ways to give tcpdump capture privilege |
 | [Filters](docs/filters.md) | The two filter languages in full, building one by clicking, and the ways a capture filter records nothing |
-| [Streaming a capture live](docs/live-streaming.md) | Why a live stream needs a target, what it costs, and the two limits on it |
 | [Security](docs/security.md) | Encryption at rest, transport policy, sign-in, what runs on the target, and what is *not* protected |
 | [Operating it](docs/operating.md) | Environment variables, admin settings, sessions, MFA recovery, TLS, rotating the master key |
 | [Architecture](docs/architecture.md) | How it is built: the envelope format, every validator, and why each exists |
@@ -79,11 +77,6 @@ has taken so far.
 You do not have to know BPF. A filter library sits under the field, grouping
 common expressions by what you are hunting — Kerberos, SMB, LDAP, DNS, database
 ports, TCP flag matching — and you can save your own alongside it.
-
-**Watch it happen.** Tick **Live stream** and the Viewer opens on the capture as
-it records, packets appearing as they arrive. Stop it when you have seen what
-you were waiting for, and it is fetched, sealed and reopened as an ordinary
-stored capture.
 
 **Read it.** A Wireshark-style packet list with protocol colouring, a decoded
 protocol tree and a hex dump. Full Wireshark display-filter syntax narrows the
@@ -229,7 +222,7 @@ cd /opt/docker/pcap
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.32/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.33/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -330,7 +323,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.32` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.33` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -346,7 +339,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcap
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.32/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.33/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -445,8 +438,7 @@ Four fields decide what the capture *contains*:
 | BPF filter | expression | which packets are captured at all |
 
 Leave the numbers blank and each falls back to the server maximum, which an
-admin sets. **Live stream** is the fifth control and changes nothing about the
-contents — see [Streaming a capture live](#streaming-a-capture-live).
+admin sets.
 
 Capturing *specific* traffic is the filter's job, and it takes full BPF syntax:
 `host 10.0.0.230`, `tcp port 443`, `port 53 and not host 8.8.8.8`,
@@ -502,23 +494,6 @@ you mean is still yours to run.
 port 443` is valid and still wrong, how filters are composed for you, and where
 the tcpdump flags went.
 
-## Streaming a capture live
-
-Tick **Live stream** on the capture form and the Viewer opens on the capture as
-it records, packets appearing as they arrive — the same display filter,
-autocomplete and saved views as a finished capture, because it is the same
-viewer running the same tshark. Stop it when you have seen what you were waiting
-for and it is fetched, sealed and reopened as an ordinary stored capture.
-
-It needs to be pointed at something: an interface other than `any`, or a BPF
-filter, or both. The preview is a fixed-size buffer held in memory, and
-everything on every link fills it in seconds.
-
-**[docs/live-streaming.md](docs/live-streaming.md)** covers why that rule
-exists, what a live stream costs, the two limits that bound it, and what
-happens when the preview fills up. (The capture itself is never affected — it
-keeps running and is saved in full.)
-
 ## Reading a capture
 
 **View** on a finished capture opens it in the packet viewer: a Wireshark-style
@@ -538,23 +513,23 @@ There is no standing **Viewer** tab. It led to an empty panel for most of a
 session, and a tab that is usually empty is one people learn not to press. The
 Viewer exists while something is open in it and not otherwise.
 
-Each tab says which capture it holds, and a capture still recording carries a
-pulsing dot so one left running in a background tab still says so. Inside the
-panel, the line above the filter box names the **server, the interface and the
-capture filter** the packets are coming from — which is the question a packet
-table cannot answer, and matters most during a live stream, when a filter
-narrower than you remember looks exactly like a quiet network.
+Each tab says which capture it holds. Inside the panel, the line above the
+filter box names the **server, the interface and the capture filter** the
+packets are coming from — which is the question a packet table cannot answer,
+and matters most when a filter narrower than you remember looks exactly like a
+quiet network.
 
 ### Which interface a packet crossed
 
 A capture on `any` has an **Interface** column: the interface each packet went
 through and which way — `eth0 out`, `docker0 in`, `bcast` for broadcast. The
 file itself only numbers interfaces, so pcap-server reads the host's names when
-the capture starts and again when it ends. Hover a cell for the number, and
-filter on it with `sll.ifindex == 3`. An interface that existed only in the
-middle of a capture shows as `#3`, and an older tcpdump that writes the first
-cooked format records no interface at all, so the column shows just the
-direction. Captures on a named interface have no such column.
+the capture starts and again when it ends. Right-click a cell for **Apply as
+filter** on `sll.ifindex`, the same menu every other column offers. An
+interface that existed only in the middle of a capture shows as `#3`, and an
+older tcpdump that writes the first cooked format records no interface at all,
+so the column shows just the direction. Captures on a named interface have no
+such column.
 
 ### The two filters
 

@@ -17,7 +17,6 @@ from backend.models import (
     CaptureStatus,
     ServerInfo,
 )
-from backend.livestream import LiveBuffer
 from backend.packet_parser import get_packet_count
 from backend.ssh_manager import MAX_INTERFACE_INDEXES, SSHManager
 
@@ -60,12 +59,6 @@ _STDERR_DRAIN_SECONDS = 5
 # that have finished one way or another and are just sitting in history.
 _ACTIVE_STATUSES = (CaptureStatus.RUNNING, CaptureStatus.STOPPING, CaptureStatus.TRANSFERRING)
 
-# How much to ask the remote host for in one SFTP read while catching a live
-# stream up. A poll reads in a loop until it runs out of new bytes, so this is
-# the granularity of that loop rather than a limit on how much a poll may take.
-_LIVE_READ_CHUNK = 512 * 1024
-
-
 class _LiveCount:
     """Applies tcpdump's running total to a capture record as it is reported.
 
@@ -94,54 +87,6 @@ class _LiveCount:
 
 class CaptureLimitExceeded(Exception):
     """Raised when starting a capture would exceed max_concurrent_captures."""
-
-
-class LiveStreamLimitExceeded(Exception):
-    """Raised when starting a capture would exceed max_live_streams.
-
-    Separate from CaptureLimitExceeded because the remedy is different and the
-    operator can act on it without waiting: an ordinary capture still starts.
-    Live streaming is the part that is full, and it is capped far lower than
-    max_concurrent_captures because it costs far more -- an SFTP channel held
-    open on the target, and a tshark spawn per poll over the whole buffer.
-    """
-
-
-class _LiveSession:
-    """A live view's buffer, and the lock that stops two polls racing it.
-
-    The lock is not optional. Both polls would read from the same offset and
-    both would feed what they read, appending the same bytes twice in the
-    middle of a record -- which desynchronises the record walk permanently,
-    with no error anywhere to say so.
-    """
-
-    __slots__ = ("buffer", "lock")
-
-    def __init__(self, cap_bytes: int) -> None:
-        self.buffer = LiveBuffer(cap_bytes)
-        self.lock = asyncio.Lock()
-
-
-class LiveStreamNotTargeted(Exception):
-    """Raised when a live stream is asked for without narrowing what is captured.
-
-    The preview buffer is a fixed number of megabytes (live_stream_buffer_mb),
-    and the whole of it is held in this container's memory. `-i any` with no
-    filter points that buffer at every packet on every link the target host
-    has, which fills it in seconds on any host doing real work: the preview
-    freezes almost immediately and the live view stops being live.
-
-    Refused rather than warned about, because the buffer is the one resource
-    here the operator cannot get back by waiting -- once it is full the view is
-    frozen for the rest of the capture, and the only fix is to start again.
-    Raising the cap instead would trade a frozen preview for this container's
-    memory, which is the worse of the two.
-
-    An interface OR a filter is enough. Either one bounds the traffic, and
-    which one is right depends on what is being hunted: `-i eth0` when the
-    question is about one link, a filter when it is about one conversation.
-    """
 
 
 class InterfaceAlreadyCapturing(Exception):
@@ -235,10 +180,6 @@ class CaptureManager:
         # so closing one closes both.
         self._processes: dict[str, object] = {}
         self._tasks: dict[str, asyncio.Task] = {}
-        # Live-stream buffers, keyed the same way. Purely a view onto a running
-        # capture: created on the first poll, dropped when the capture ends, and
-        # never the source of anything that gets stored.
-        self._live: dict[str, _LiveSession] = {}
         self._restore()
 
     def _restore(self) -> None:
@@ -273,20 +214,6 @@ class CaptureManager:
     def active_count(self) -> int:
         return sum(1 for c in self._captures.values() if c.status in _ACTIVE_STATUSES)
 
-    def live_count(self) -> int:
-        """Live-streamed captures still holding resources.
-
-        Counted over _ACTIVE_STATUSES rather than RUNNING alone, the same as
-        active_count: a capture in TRANSFERRING is no longer being watched, but
-        it is still holding the connection and the file handle that the cap
-        exists to bound, and a limit that lets a resource go uncounted while it
-        is still held is not a limit.
-        """
-        return sum(
-            1 for c in self._captures.values()
-            if c.live_stream and c.status in _ACTIVE_STATUSES
-        )
-
     def build_command_args(self, req: CaptureRequest) -> list[str]:
         """The complete set of things that change what a -w capture contains.
 
@@ -299,15 +226,6 @@ class CaptureManager:
         # Under -w it prints no packets, so it changes the progress reporting
         # and nothing about the capture file.
         args: list[str] = ["-v"]
-        if req.live_stream:
-            # Packet-buffered. Without it tcpdump fills a buffer before writing,
-            # so the remote file -- which is the only thing a live view can read
-            # -- lags the traffic by a whole buffer, which on a quiet link is
-            # many seconds of watching nothing happen.
-            #
-            # It changes when bytes reach the file, not which bytes, so the
-            # saved capture is identical either way.
-            args.append("-U")
         args += ["-i", req.interface]
         if req.count:
             count = min(req.count, max_packets)
@@ -323,18 +241,6 @@ class CaptureManager:
         return args
 
     async def start(self, req: CaptureRequest, server: ServerInfo, user_id: str) -> CaptureInfo:
-        # Before the resource limits, because this one is about the shape of the
-        # request rather than what else is running: an operator who gets "too
-        # many captures" for a form that would never have worked is sent looking
-        # in the wrong place, and the message they need is the one below.
-        if req.live_stream and req.interface == ANY_INTERFACE and not req.bpf_filter.strip():
-            raise LiveStreamNotTargeted(
-                "a live stream needs to be pointed at something: choose an interface "
-                f'instead of "{ANY_INTERFACE}", or set a BPF filter -- or both. Watching '
-                "every packet on every link fills the preview buffer in seconds, and it "
-                "does not refill. Capturing without live streaming has no such limit."
-            )
-
         # Checked first, before any connection is opened or file created: each
         # running capture holds an SSH connection to a target host plus a local
         # file handle, and neither this container's descriptor table nor the
@@ -373,19 +279,6 @@ class CaptureManager:
                 f"({held}) -- stop it first, or capture a different interface"
             )
 
-        # In the same await-free stretch as the two checks above and the
-        # _captures insert below, for the same reason: an await here would open
-        # the window where two simultaneous live-stream requests both pass the
-        # cap and then both register, which is exactly the third live stream the
-        # cap exists to refuse.
-        if req.live_stream:
-            max_live = self._get_setting("max_live_streams")
-            if self.live_count() >= max_live:
-                raise LiveStreamLimitExceeded(
-                    f"{max_live} live stream(s) already running -- stop one before "
-                    "starting another, or start this capture without live streaming"
-                )
-
         max_seconds = self._get_setting("max_capture_seconds")
         capture_id = str(uuid.uuid4())
         remote_path = f"/tmp/pcap_{capture_id}.pcap"
@@ -423,7 +316,6 @@ class CaptureManager:
             server_label=server_label(server),
             interface=req.interface,
             user_id=user_id,
-            live_stream=req.live_stream,
             bpf_filter=req.bpf_filter,
             status=CaptureStatus.RUNNING,
             started_at=datetime.now(timezone.utc),
@@ -481,82 +373,6 @@ class CaptureManager:
             await self._ssh.stop_tcpdump(process)
 
         return info
-
-    def live_buffer(self, capture_id: str) -> LiveBuffer | None:
-        """What a live view already holds, without going to the remote host."""
-        session = self._live.get(capture_id)
-        return session.buffer if session else None
-
-    async def live_poll(self, capture_id: str) -> LiveBuffer:
-        """Catch a live stream up with the remote file, and hand back the buffer.
-
-        Reads in a loop rather than once, because a poll that only ever took one
-        chunk would fall permanently behind a link busier than the chunk size
-        per poll interval -- and would never say so. The loop ends when the
-        remote file has no more to give, or the buffer reaches its cap.
-        """
-        info = self._captures.get(capture_id)
-        if not info:
-            raise KeyError(f"capture {capture_id} not found")
-
-        # No await between the lookup and the insert, deliberately, and for the
-        # same reason start()'s limit checks have none: two first polls landing
-        # together would otherwise each build a session and each keep a
-        # different lock, which is the one arrangement the lock cannot save.
-        session = self._live.get(capture_id)
-        if session is None:
-            session = _LiveSession(self._live_buffer_bytes())
-            self._live[capture_id] = session
-        buffer = session.buffer
-
-        process = self._processes.get(capture_id)
-        if process is None:
-            # The capture is over and its connection released. Whatever was
-            # read is still worth serving -- the viewer is about to move to the
-            # saved capture anyway.
-            return buffer
-
-        async with session.lock:
-            while not buffer.frozen and not buffer.problem:
-                room = buffer.capacity - buffer.size
-                if room <= 0:
-                    buffer.frozen = True
-                    break
-                want = min(_LIVE_READ_CHUNK, room)
-                try:
-                    data = await process.read_at(info.remote_path, buffer.offset, want)
-                except Exception as exc:
-                    # Not fatal and not silent. A capture whose connection has
-                    # gone is about to reach a terminal status on its own, and a
-                    # momentary failure is one the next poll may well recover
-                    # from -- so this is recorded for the operator to see and
-                    # cleared by the next read that works, rather than ending
-                    # the stream.
-                    # Truncated because an SFTP error can carry text from the
-                    # target host, which is frequently the machine under
-                    # investigation. It reaches the browser as textContent, the
-                    # same way a capture's own failure message already does.
-                    buffer.read_error = str(exc)[:200] or exc.__class__.__name__
-                    logger.warning(
-                        "live stream %s could not read the remote capture: %s",
-                        capture_id, buffer.read_error,
-                    )
-                    break
-                buffer.read_error = ""
-                if not data:
-                    break
-                buffer.feed(data)
-                if len(data) < want:
-                    # Short read: the file has nothing more yet.
-                    break
-
-        return buffer
-
-    def _live_buffer_bytes(self) -> int:
-        # Floored at one megabyte. A cap below the pcap header plus a packet
-        # would freeze every live stream before its first frame, which looks
-        # exactly like live streaming being broken rather than misconfigured.
-        return max(1, self._get_setting("live_stream_buffer_mb")) * 1024 * 1024
 
     def rename(self, capture_id: str, name: str) -> CaptureInfo:
         info = self._captures.get(capture_id)
@@ -626,7 +442,6 @@ class CaptureManager:
                     )
             await process.close()
 
-        self._live.pop(capture_id, None)
         self._db.delete_capture(capture_id)
         info = self._captures.pop(capture_id, None)
         if info and info.local_path:
@@ -661,7 +476,6 @@ class CaptureManager:
             # loop has already closed.
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
-        self._live.clear()
 
     async def _monitor(
         self,
@@ -720,11 +534,6 @@ class CaptureManager:
             pump.cancel()
             if names is not None:
                 names.cancel()
-            # The live buffer goes with the capture, on every path. It is up to
-            # megabytes of packet data held only to be looked at, and the viewer
-            # moves to the sealed file from here -- keeping it would be holding
-            # the whole capture in memory for as long as the process lives.
-            self._live.pop(capture_id, None)
             # The SSH connection is released here, on every path -- success,
             # failure, timeout and cancellation alike.
             capture = self._processes.pop(capture_id, None)

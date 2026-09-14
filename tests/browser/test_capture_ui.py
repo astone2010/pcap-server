@@ -624,7 +624,6 @@ def _capture(**over):
         "server_label": "web-01 (root@10.0.0.5)",
         "status": "completed",
         "interface": "eth0",
-        "live_stream": False,
         "bpf_filter": "",
         "packet_count": 12,
         "file_size": 2048,
@@ -772,7 +771,7 @@ async def test_a_blank_duration_is_described_rather_than_shown_as_blank(app_page
     await _capture_tab(app_page)
     summary = await app_page.evaluate(
         """() => describeCapture({
-            name: 'x', interface: 'any', bpf_filter: '', live_stream: false,
+            name: 'x', interface: 'any', bpf_filter: '',
         }, 'web-01')"""
     )
     assert "the server maximum" in summary
@@ -791,7 +790,7 @@ async def test_an_open_capture_gets_a_tab_labelled_with_its_name(app_page):
     await app_page.evaluate(
         """() => {
             captures = [{ id: 'cap-1', name: 'slow logons', status: 'completed',
-                          server_id: 's1', live_stream: false, bpf_filter: '' }];
+                          server_id: 's1', bpf_filter: '' }];
             openCaptures = ['cap-1'];
             viewingCaptureId = 'cap-1';
             renderCaptureTabs();
@@ -808,8 +807,8 @@ async def test_two_captures_open_at_once_are_two_tabs(app_page):
     await app_page.evaluate(
         """() => {
             captures = [
-                { id: 'a', name: 'before', status: 'completed', server_id: 's', live_stream: false, bpf_filter: '' },
-                { id: 'b', name: 'after', status: 'completed', server_id: 's', live_stream: false, bpf_filter: '' },
+                { id: 'a', name: 'before', status: 'completed', server_id: 's', bpf_filter: '' },
+                { id: 'b', name: 'after', status: 'completed', server_id: 's', bpf_filter: '' },
             ];
             openCaptures = ['a', 'b'];
             viewingCaptureId = 'b';
@@ -831,7 +830,7 @@ async def test_a_capture_with_no_name_falls_back_to_a_short_id(app_page):
     await app_page.evaluate(
         """() => {
             captures = [{ id: 'abcdef0123456789', name: '', status: 'completed',
-                          server_id: 's', live_stream: false, bpf_filter: '' }];
+                          server_id: 's', bpf_filter: '' }];
             openCaptures = ['abcdef0123456789'];
             viewingCaptureId = 'abcdef0123456789';
             renderCaptureTabs();
@@ -848,7 +847,7 @@ async def test_closing_the_last_tab_leaves_the_viewer_altogether(app_page):
     await app_page.evaluate(
         """() => {
             captures = [{ id: 'only', name: 'only', status: 'completed',
-                          server_id: 's', live_stream: false, bpf_filter: '' }];
+                          server_id: 's', bpf_filter: '' }];
             openCaptures = ['only'];
             viewingCaptureId = 'only';
             renderCaptureTabs();
@@ -866,8 +865,8 @@ async def test_closing_a_background_tab_leaves_the_open_one_alone(app_page):
     await app_page.evaluate(
         """() => {
             captures = [
-                { id: 'a', name: 'before', status: 'completed', server_id: 's', live_stream: false, bpf_filter: '' },
-                { id: 'b', name: 'after', status: 'completed', server_id: 's', live_stream: false, bpf_filter: '' },
+                { id: 'a', name: 'before', status: 'completed', server_id: 's', bpf_filter: '' },
+                { id: 'b', name: 'after', status: 'completed', server_id: 's', bpf_filter: '' },
             ];
             openCaptures = ['a', 'b'];
             viewingCaptureId = 'b';
@@ -888,7 +887,7 @@ async def test_a_capture_deleted_elsewhere_loses_its_tab(app_page):
     await app_page.evaluate(
         """() => {
             captures = [{ id: 'gone', name: 'gone', status: 'completed',
-                          server_id: 's', live_stream: false, bpf_filter: '' }];
+                          server_id: 's', bpf_filter: '' }];
             openCaptures = ['gone'];
             viewingCaptureId = 'gone';
             renderCaptureTabs();
