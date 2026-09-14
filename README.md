@@ -81,7 +81,10 @@ ports, TCP flag matching — and you can save your own alongside it.
 **Read it.** A Wireshark-style packet list with protocol colouring, a decoded
 protocol tree and a hex dump. Full Wireshark display-filter syntax narrows the
 list, with autocomplete as you type; a filter tshark cannot parse comes back
-with tshark's own message rather than an empty list.
+with tshark's own message rather than an empty list. Right-click anything for
+Apply/And/Or as filter, **Follow TCP/UDP Stream**, or one of the two
+toolbar-level views — **Protocol Hierarchy** and **Conversations** — for the
+shape of a capture without reading it packet by packet.
 
 A filter worth keeping can be **saved as a view** — a named tab on that capture,
 still there when you come back next week, and downloadable as its own pcap
@@ -531,6 +534,16 @@ older tcpdump that writes the first cooked format records no interface at all,
 so the column shows just the direction. Captures on a named interface have no
 such column.
 
+**The name does not survive a download.** The mapping lives only in
+pcap-server's own database; the `.pcap` file itself — classic pcap, the same
+format tcpdump always wrote — has nowhere to carry it. Opened elsewhere, a
+downloaded capture still shows the raw interface **index** (`sll.ifindex`,
+under *Linux cooked capture v2* in any real Wireshark's own packet detail —
+no plugin needed), just not the name that went with it here. If you need a
+specific interface's traffic to stay identifiable after download, filter to
+it first — right-click the column, **Apply as filter**, then download that —
+rather than downloading the whole `any` capture and losing the mapping.
+
 ### The two filters
 
 The one thing worth getting straight before you use either.
@@ -779,7 +792,9 @@ so read the skip list.
 | `backend/ssh_manager.py` | connections, the prerequisite probe, key handling |
 | `backend/crypto.py`, `vault.py`, `pcapsource.py`, `rekey.py` | encryption at rest, and reading it back without a plaintext file |
 | `backend/resetmfa.py` | host-side second-factor reset, for when nobody can sign in to press the button |
-| `backend/packet_parser.py` | everything that shells out to tshark or capinfos |
+| `backend/packet_parser.py` | everything that shells out to tshark or capinfos, including Protocol Hierarchy, Conversations and Follow Stream |
+| `backend/sanitizer.py` | the sanitized-download pipeline: the tshark pass, field rules, pcap record walking |
+| `backend/anonymize.py`, `framewalk.py` | keyed stand-ins for addresses and names, and the checksum updates that keep a sanitized frame valid |
 | `backend/database.py` | the SQLite schema and every query |
 | `backend/serve.py` | the container's entry point: opens the vault, then starts uvicorn, over TLS when a certificate is stored |
 | `backend/tls/` | built-in HTTPS, self-contained: DNS provider allowlist, sealed storage, the one place lego runs, renewal, Admin routes and `python -m backend.tls` |
@@ -789,14 +804,30 @@ so read the skip list.
 | `tests/` | API and unit suites |
 | `tests/browser/` | playwright suites driving the real UI |
 
-**Running it against your own changes:**
+**Running it against your own changes.** `docker-compose.yml` as published has
+no `build:` section — only `image:`, pointing at the release tag — so
+`docker compose up --build` against it as-is builds nothing; it just starts
+the same published image everyone else runs. Give it one locally with a
+`docker-compose.override.yml` next to it — Compose picks this up
+automatically, no `-f` needed:
+
+```yaml
+# docker-compose.override.yml
+services:
+  pcap-server:
+    build: .
+```
+
+Then the same directory and master-key setup as [Quick start](#quick-start)
+(steps 3–4 — you need `ssh-keys/`, `data/`, `captures/` and
+`secrets/master.key`), and:
 
 ```bash
 docker compose up --build
 ```
 
-The compose file bind-mounts `./data` and `./captures`, so state survives a
-rebuild.
+`./data` and `./captures` are bind-mounted, so state survives a rebuild.
+Edit source and re-run the same command to rebuild and restart on top of it.
 
 **A note on style.** Comments in this codebase explain *why*, and frequently
 name the bug that made the code what it is. That is on purpose: a check with no
