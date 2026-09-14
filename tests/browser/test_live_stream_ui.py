@@ -82,13 +82,15 @@ async def test_the_live_option_says_the_capture_is_still_saved(app_page):
 async def test_the_live_option_lines_up_with_the_fields_beside_it(app_page):
     """It used to stack: the generic form rules made its label a block and gave
     the tickbox a full-width input box. Its control should now sit at the same
-    height as the snap length box next to it."""
+    height as the field next to it -- the Interface dropdown since dev.30, which
+    grouped Server, Interface and Live stream onto one row and moved the limits
+    (Snap length among them) to a row of their own."""
     await _capture_tab(app_page)
     toggle = await app_page.locator(".live-stream-toggle").bounding_box()
-    snaplen = await app_page.locator("#cap-snaplen").bounding_box()
+    beside = await app_page.locator("#cap-interface").bounding_box()
     tick = await app_page.locator("#cap-live").bounding_box()
-    assert abs(toggle["y"] - snaplen["y"]) <= 2
-    assert abs(toggle["height"] - snaplen["height"]) <= 2
+    assert abs(toggle["y"] - beside["y"]) <= 2
+    assert abs(toggle["height"] - beside["height"]) <= 2
     assert tick["width"] < 30, "the tickbox is back to being a full-width input"
 
 

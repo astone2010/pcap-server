@@ -8,9 +8,12 @@ read-only, and this is the shortest way out of that: request a certificate,
 switch over, done. Renewal is automatic. Everything is in the Admin panel —
 nothing to install, no files to edit, no commands to run.
 
-A reverse proxy is still the right answer if you already run one — see
-[Setting up a reverse proxy](reverse-proxy.md). Use this when pcap-server is the
-only thing on the box that needs a certificate.
+**This is the recommended way to turn on HTTPS.** A reverse proxy is still the
+right answer if you already run one — see
+[Setting up a reverse proxy](reverse-proxy.md). And if you have no domain, or do
+not want a DNS provider account, a proxy with
+[a self-signed certificate](reverse-proxy.md#no-domain-a-self-signed-certificate)
+gets you HTTPS without either.
 
 ## What you need
 
@@ -86,6 +89,10 @@ Run it from the directory holding `docker-compose.yml` — elsewhere, `docker
 compose` answers `no configuration file provided`. From anywhere,
 `docker exec -it <container> python -m backend.tls ...` does the same, with the
 container's name from `docker ps` (for example `pcap-server-1`).
+
+**Admin → HTTPS → Set up certificate** shows this command under **Prefer the
+command line?**, already filled in with the domain, email, provider, wait and
+staging choice entered in the steps — everything except the credentials.
 
 It prompts for each of the provider's credentials, without echoing the secret
 ones. They are typed into the container, not sent to it, so they never cross a

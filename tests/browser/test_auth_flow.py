@@ -252,6 +252,35 @@ async def test_going_back_a_step_keeps_what_was_typed(app_page):
     assert await app_page.input_value("#tls-var-CF_DNS_API_TOKEN") == "typed-token-value"
 
 
+async def test_the_command_line_is_filled_in_from_the_wizard(app_page):
+    """Someone who fills the form in and then decides to keep the token off the
+    network should not have to type the rest a second time -- but the token
+    itself must never be copied into a command that lands in shell history."""
+    await _start_tls_setup(app_page)
+    await app_page.fill("#tls-domain", "cap.example.net")
+    await app_page.fill("#tls-email", "ops@example.net")
+    await app_page.click("#btn-tls-next")
+    await app_page.select_option("#tls-provider", "route53")
+    await app_page.fill("#tls-var-AWS_SECRET_ACCESS_KEY", "never-in-the-command")
+    await app_page.click("#btn-tls-next")
+    await app_page.fill("#tls-validation-delay", "90")
+    await app_page.check("#tls-staging")
+    cli = await app_page.text_content("#tls-cli")
+    assert "--domain cap.example.net --email ops@example.net --provider route53" in cli
+    assert "--validation-delay 90" in cli and "--staging" in cli
+    assert "never-in-the-command" not in cli
+
+
+async def test_a_typed_value_cannot_break_out_of_the_command(app_page):
+    await _start_tls_setup(app_page)
+    await app_page.fill("#tls-domain", "x.example.com; rm -rf /")
+    await app_page.fill("#tls-email", "a'b@example.com")
+    await app_page.click("#btn-tls-next")
+    cli = await app_page.text_content("#tls-cli")
+    assert "--domain 'x.example.com; rm -rf /'" in cli
+    assert "--email 'a'\\''b@example.com'" in cli
+
+
 async def test_step_one_needs_a_domain_and_email(app_page):
     await _start_tls_setup(app_page)
     await app_page.click("#btn-tls-next")

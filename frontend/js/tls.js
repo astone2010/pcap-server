@@ -187,6 +187,10 @@ function tlsSetupWizard(st) {
         wrap.append(step);
     }
     wrap.append(tlsWizardNav(st));
+    // Every field the command mirrors lives inside the wizard, and steps are
+    // hidden rather than re-rendered, so one listener here keeps it current.
+    wrap.addEventListener("input", () => updateTlsCli(st));
+    wrap.addEventListener("change", () => updateTlsCli(st));
     return wrap;
 }
 
@@ -220,6 +224,7 @@ function tlsWizardNav(st) {
 // into one survives going to the next and back.
 function tlsGoToStep(n) {
     tlsStep = n;
+    updateTlsCli();
     tlsMessage("", false);
     document.querySelectorAll(".tls-wizard [data-tls-step]").forEach((el) => {
         el.hidden = Number(el.dataset.tlsStep) !== n;
@@ -306,16 +311,44 @@ function tlsCliHint(st) {
     const more = tlsEl("details", "learn-more tls-cli-hint");
     more.append(tlsEl("summary", "", "Prefer the command line?"));
     more.append(tlsEl("p", "",
-        "From the Docker host, in the folder holding docker-compose.yml. The credentials are "
-        + "prompted for, so they never cross the network:"));
+        "From the Docker host, in the folder holding docker-compose.yml. It is filled in from "
+        + "the steps above, except the credentials: those are prompted for, so they never "
+        + "cross the network and never appear in the command:"));
     const cli = tlsEl("pre", "enc-howto");
     cli.id = "tls-cli";
-    cli.textContent = `docker compose exec -it pcap-server python -m backend.tls issue \\\n`
-        + `    --domain ${st.config?.domain || "pcap.example.com"} --email ${st.config?.email || "you@example.com"}`
-        + ` --provider ${tlsSelectedProvider}\n`
-        + `docker compose restart pcap-server`;
     more.append(cli);
+    updateTlsCli(st, cli);
     return more;
+}
+
+// Single quotes unless the value is plainly safe. Domains and emails are
+// typed by the admin, and a command meant for pasting into a root-capable
+// shell must not be able to become a different command.
+function tlsShellArg(value) {
+    if (/^[A-Za-z0-9._@+-]+$/.test(value)) return value;
+    return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+// The CLI equivalent of the wizard as it stands: re-read on every edit, so
+// someone who fills in the form and then decides to keep the token off the
+// network does not have to type the domain, email and provider a second time.
+function updateTlsCli(st = tlsLastStatus, cli = $("tls-cli")) {
+    if (!cli) return;
+    const domain = $("tls-domain")?.value.trim() || st?.config?.domain || "pcap.example.com";
+    const email = $("tls-email")?.value.trim() || st?.config?.email || "you@example.com";
+    const provider = $("tls-provider")?.value || tlsSelectedProvider || "cloudflare";
+    const lines = [
+        "docker compose exec -it pcap-server python -m backend.tls issue",
+        `    --domain ${tlsShellArg(domain)} --email ${tlsShellArg(email)} --provider ${tlsShellArg(provider)}`,
+    ];
+    const flags = [];
+    const delayBox = $("tls-validation-delay");
+    const delay = delayBox ? delayBox.value.trim() : String(st?.config?.validation_delay || "");
+    if (/^\d+$/.test(delay)) flags.push(`--validation-delay ${delay}`);
+    const staging = $("tls-staging");
+    if (staging ? staging.checked : st?.config?.staging) flags.push("--staging");
+    if (flags.length) lines.push(`    ${flags.join(" ")}`);
+    cli.textContent = lines.join(" \\\n") + "\ndocker compose restart pcap-server";
 }
 
 function renderProviderFields(container, st) {
@@ -324,8 +357,7 @@ function renderProviderFields(container, st) {
     if (!provider) return;
     const stored = st.stored_provider === provider.code ? new Set(st.stored_credentials) : new Set();
 
-    const cli = $("tls-cli");
-    if (cli) cli.textContent = cli.textContent.replace(/--provider \S+/, `--provider ${provider.code}`);
+    updateTlsCli(st);
 
     const docs = tlsEl("div", "field-hint");
     const link = tlsEl("a", "", `lego's guide for ${provider.name}`);

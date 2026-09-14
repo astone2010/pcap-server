@@ -8,8 +8,10 @@ first capture. Putting it behind TLS is what restores full access.
 
 **You may not need a proxy at all.** pcap-server can obtain and renew its own
 Let's Encrypt certificate and serve HTTPS itself — see
-[Built-in HTTPS](tls.md). A proxy is the better fit when you already run one,
-or in passphrase mode.
+[Built-in HTTPS](tls.md), which is the recommended route. A proxy is the better
+fit when you already run one, in passphrase mode, or when there is no domain to
+get a certificate for — in which case see
+[No domain: a self-signed certificate](#no-domain-a-self-signed-certificate).
 
 This page is the setup, start to finish, for the three proxies people actually
 use. Pick one and follow it; you do not need the other two.
@@ -48,6 +50,11 @@ environment:
 
 Without **both**, pcap-server sees a plain-HTTP request and stays read-only. The
 header is only trusted when that variable is set, because anyone can send one.
+
+**Apply it with `docker compose up -d`, not `docker compose restart`.** A
+restart — or a stop and start — keeps the environment the container was created
+with, so the app carries on read-only as if nothing had changed. `up -d`
+recreates the container with the new values.
 
 ### 2. Once you trust that header, control who can reach the app directly
 
@@ -107,7 +114,7 @@ in front of the real address.
 ```yaml
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.29
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.30
     # No `ports:` at all. Caddy reaches it by name over the shared network,
     # and nothing else can reach it directly.
     environment:
@@ -226,6 +233,97 @@ is on another machine.
 
 ---
 
+## No domain: a self-signed certificate
+
+Every certificate authority that browsers trust wants proof that you control a
+domain. Without one — or without wanting to set up an account at a DNS provider
+— you can still have HTTPS: the proxy serves a certificate you made, and
+everything behind it works as it does with a real one. pcap-server never sees
+the certificate; it only sees the proxy's `X-Forwarded-Proto: https`.
+
+**What it costs.** Browsers warn that they do not recognise the certificate.
+You can click through, but the better fix is to import the certificate — or, for
+Caddy, its local root — into the trust store of each machine you browse from,
+once. **Do not get into the habit of clicking through**: a warning you always
+dismiss is one you will also dismiss when something really is intercepting the
+connection.
+
+**What does not change.** [The three settings above](#the-three-settings-that-matter)
+apply exactly as written: `TRUST_PROXY_HEADERS=true` and `COOKIE_SECURE=true`,
+nothing but the proxy able to reach the app's port, and no response buffering.
+
+### Making the certificate
+
+Caddy makes its own (below). For nginx and NPM, one command on any machine with
+OpenSSL. Put in **every name and address you will type into the browser** —
+a browser checks the `subjectAltName`, not the common name:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -sha256 -days 825 -nodes \
+    -keyout pcap.key -out pcap.crt -subj "/CN=pcap.lan" \
+    -addext "subjectAltName=DNS:pcap.lan,IP:192.168.1.50" \
+    -addext "extendedKeyUsage=serverAuth"
+chmod 0600 pcap.key
+```
+
+The 825 days and the `serverAuth` line are not arbitrary: macOS and iOS refuse a TLS certificate
+valid for more than 825 days, or without `serverAuth`, even one you have told
+them to trust. `pcap.key` is the private key: it stays on the proxy.
+`pcap.crt` is the part you import into browsers.
+
+### Caddy: `tls internal`
+
+Caddy runs its own small certificate authority, issues from it and renews by
+itself, so there is no certificate to make. The Caddyfile from
+[the Caddy section](#caddy) with one line added, and the site named by the
+address or name you browse to:
+
+```caddy
+https://192.168.1.50, https://pcap.lan {
+	tls internal
+	reverse_proxy pcap-server:8080 {
+		header_up X-Forwarded-For {remote_host}
+	}
+}
+```
+
+The compose file is the one in the Caddy section. Only port 443 has to be
+reachable, and only from your own network. The root to import into browsers is
+in the `caddy_data` volume:
+
+```bash
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
+```
+
+### nginx
+
+Use [`nginx.conf.example`](nginx.conf.example) as it is, with these changes:
+
+```nginx
+server_name pcap.lan 192.168.1.50;     # in both server blocks
+ssl_certificate     /etc/nginx/certs/pcap.crt;
+ssl_certificate_key /etc/nginx/certs/pcap.key;
+# and delete the two ssl_stapling lines: there is no issuer to staple from
+```
+
+No certbot. Steps 3 and 4 of [the nginx section](#nginx) — loopback binding and
+reload — are unchanged.
+
+### Nginx Proxy Manager
+
+1. **SSL Certificates → Add SSL Certificate → Custom.** Upload `pcap.key` as the
+   certificate key and `pcap.crt` as the certificate. Leave the intermediate
+   empty.
+2. On the pcap-server proxy host, **SSL** tab: choose that certificate and turn
+   on **Force SSL**.
+3. Paste the **Advanced** block from [the NPM section](#nginx-proxy-manager) —
+   buffering off matters as much here as anywhere.
+
+Then [check it worked](#checking-it-worked) as for any proxy. The checks are the
+same; the only difference is the warning you accepted to get there.
+
+---
+
 ## Running the proxy in the same stack
 
 Both Caddy and NPM can be services in **this** compose file rather than
@@ -271,7 +369,7 @@ run.
 ```yaml
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.29
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.30
     # No `ports:`. NPM reaches it by name; nothing else can reach it at all,
     # which is what makes trusting X-Forwarded-Proto safe here.
     environment:
@@ -441,15 +539,16 @@ Sign in through the proxy and look for three things:
 
 | | |
 | --- | --- |
-| The red **"Read-only: this connection is not encrypted"** banner | gone |
+| The amber **Read-only** bar across the top of the app | gone |
 | A completed capture's button | **Download**, not **Download (HTTPS only)** |
 | Admin → Settings | saves, rather than refusing with an HTTPS message |
 
-If the banner is still there, the app is not seeing `X-Forwarded-Proto: https`.
-Check both halves: the proxy sending the header, and `TRUST_PROXY_HEADERS=true`
+If the bar is still there, the app is not seeing `X-Forwarded-Proto: https`.
+Check both halves, and that the container was recreated with `docker compose
+up -d` rather than restarted: the proxy sending the header, and `TRUST_PROXY_HEADERS=true`
 in the container's environment. One without the other does nothing.
 
-Then check the part that has no banner — that the app is **not** reachable
+Then check the part nothing on screen shows — that the app is **not** reachable
 except through the proxy. From a third machine:
 
 ```bash

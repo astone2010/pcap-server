@@ -8,8 +8,16 @@ Built for the case where the machine you need to capture on is not the machine
 you want to analyse from: a firewall, a hypervisor, a container host, a box you
 only reach over SSH.
 
+> **HTTPS is not optional.** Over plain HTTP pcap-server is read-only: it will
+> not add a server, start a capture or hand one over, so a fresh install cannot
+> take its first capture until HTTPS is on. **The recommended way is built in** —
+> pcap-server gets its own Let's Encrypt certificate, with no proxy and no open
+> ports. No domain? A reverse proxy with a self-signed certificate works too.
+> **[Choose one →](#https)**
+
 **Start here** — [What it does](#what-it-does) · [Requirements](#requirements) ·
-[Quick start](#quick-start) · [Your first capture](#your-first-capture)
+[**HTTPS**](#https) · [Quick start](#quick-start) ·
+[Your first capture](#your-first-capture)
 
 **Using it** — [Preparing a target host](#preparing-a-target-host) ·
 [Taking a capture](#taking-a-capture) ·
@@ -25,12 +33,12 @@ full, for when you need it.
 
 | | |
 | --- | --- |
+| [Built-in HTTPS](docs/tls.md) | **Recommended.** Letting pcap-server get and renew its own Let's Encrypt certificate — no proxy, no inbound ports, DNS-01 through about two hundred DNS providers |
+| [Reverse proxy setup](docs/reverse-proxy.md) | Getting it behind TLS — Caddy, nginx or Nginx Proxy Manager, with a real certificate or [a self-signed one](docs/reverse-proxy.md#no-domain-a-self-signed-certificate) when there is no domain |
 | [Preparing a target host](docs/target-hosts.md) | SSH access, adding and checking a server, and the three ways to give tcpdump capture privilege |
 | [Filters](docs/filters.md) | The two filter languages in full, building one by clicking, and the ways a capture filter records nothing |
 | [Streaming a capture live](docs/live-streaming.md) | Why a live stream needs a target, what it costs, and the two limits on it |
 | [Security](docs/security.md) | Encryption at rest, transport policy, sign-in, what runs on the target, and what is *not* protected |
-| [Built-in HTTPS](docs/tls.md) | Letting pcap-server get and renew its own Let's Encrypt certificate — no proxy, no inbound ports, DNS-01 through about two hundred DNS providers |
-| [Reverse proxy setup](docs/reverse-proxy.md) | Getting it behind TLS — Caddy, nginx or Nginx Proxy Manager, external or as a sidecar in this stack, with DNS challenges for hosts that are not exposed |
 | [Operating it](docs/operating.md) | Environment variables, admin settings, sessions, MFA recovery, TLS, rotating the master key |
 | [Architecture](docs/architecture.md) | How it is built: the envelope format, every validator, and why each exists |
 
@@ -94,12 +102,73 @@ the SSH client all live inside the image. It listens on port 8080.
 **In the browser:** anything current. There is no build step and no framework —
 the UI is plain HTML, CSS and JavaScript served by the app itself.
 
-**HTTPS is not required to start, but the app is read-only without it** — and
-read-only is enough to block a first capture. pcap-server can
-[get its own certificate](docs/tls.md), or sit behind a
-[reverse proxy](docs/reverse-proxy.md). See also
-[Traffic in transit](docs/security.md#traffic-in-transit) and
-[Running it without a reverse proxy](docs/operating.md#running-it-without-a-reverse-proxy).
+**HTTPS.** Not needed to install, but needed before anything useful — see the
+next section.
+
+## HTTPS
+
+**pcap-server does not work properly without HTTPS, and that is on purpose.**
+Over plain HTTP you can sign in and read captures you already have, and nothing
+else: no trusting a host's keys, no adding a server, no starting a capture, no
+uploading an SSH key, no downloads. A capture holds whatever crossed the wire,
+credentials included, and the app will not move one — or accept a private key —
+over a connection anyone on the path can read. There is no setting that turns
+this off. ([Why](docs/security.md#traffic-in-transit).)
+
+So decide how you will get HTTPS **before you install**. There are three ways:
+
+| | What you need | Browser warning | Guide |
+| --- | --- | --- | --- |
+| **1. Built-in Let's Encrypt (ACME)** — **recommended** | A domain whose DNS is at one of about two hundred supported providers — Cloudflare, Route 53, DigitalOcean, Hetzner, Porkbun and more — and an API token for it | None. A real certificate, renewed automatically | [Built-in HTTPS](docs/tls.md) |
+| **2. A reverse proxy with a real certificate** | Nginx Proxy Manager, Caddy or nginx, getting a certificate for your domain | None | [Reverse proxy setup](docs/reverse-proxy.md) |
+| **3. A reverse proxy with a self-signed certificate** | Nginx Proxy Manager, Caddy or nginx. **No domain, no DNS account** | Yes, until each browser is told to trust the certificate | [Self-signed certificate](docs/reverse-proxy.md#no-domain-a-self-signed-certificate) |
+
+### Recommended: let pcap-server get its own certificate
+
+This is the least to run and the least to expose. There is no proxy to maintain,
+**no inbound port** — Let's Encrypt checks a DNS record, not a connection to the
+machine, so a box on a private LAN address gets a real, browser-trusted
+certificate — and it renews itself.
+
+1. **Install it and create the admin account** — [Quick start](#quick-start),
+   steps 1–6. That much works over plain HTTP.
+2. **Point a name at the machine** — say `pcap.example.com` → its address. A
+   private LAN address is fine.
+3. **Make an API token at your DNS provider**, limited to DNS edits on that one
+   zone. On Cloudflare: **My Profile → API Tokens → Create Token → Edit zone
+   DNS**, with the zone set to yours. It is the same token Nginx Proxy Manager
+   asks for.
+4. **Admin → HTTPS → Set up certificate.** Enter the domain and a contact email,
+   pick the provider and paste the token, then **Request certificate** (about a
+   minute) and **Switch to HTTPS**.
+5. **Browse to `https://pcap.example.com:8080`** and sign in again.
+
+Two things to know. Typed into the Admin panel over plain HTTP, the token
+crosses your network unencrypted — the
+[command-line route](docs/tls.md#from-the-docker-host) keeps it on the host
+instead. And it needs a master key the app can read unattended, so it is not
+available in [passphrase mode](docs/tls.md#passphrase-mode).
+
+**No domain of your own?** Free names from [Duck DNS](https://www.duckdns.org/)
+and [deSEC](https://desec.io) are among the supported providers.
+
+### No domain: a proxy with a self-signed certificate
+
+If you do not own a domain, or would rather not set up a DNS provider account,
+put **Nginx Proxy Manager, Caddy or nginx** in front of pcap-server with a
+certificate you make yourself. The app never sees the certificate: the proxy
+terminates HTTPS and tells the app the connection was encrypted, so everything
+works exactly as it does with a real one.
+
+The cost is the browser: it warns that it does not recognise the certificate
+until you import it (or Caddy's local root) as trusted on each machine you
+browse from. The proxy settings are the same as for a real certificate, and
+they matter just as much: the app must be told to trust the proxy, and **nothing
+but the proxy may be able to reach the app's port**.
+
+**[Self-signed certificate](docs/reverse-proxy.md#no-domain-a-self-signed-certificate)**
+has each of the three worked through, with the one command that makes the
+certificate.
 
 ## Quick start
 
@@ -127,7 +196,7 @@ cd /opt/docker/pcap
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.29/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.30/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -196,11 +265,17 @@ an admin can reset another account's MFA from **Admin → Users → Reset MFA**,
 a locked-out *sole* admin has a host-side way back in — see
 [If you lose your authenticator](docs/operating.md#if-you-lose-your-authenticator).
 
-Once you are in, expect the app to be **read-only** — that is intended rather
-than broken, and it is enough to block a first capture. See
-[Running it without a reverse proxy](docs/operating.md#running-it-without-a-reverse-proxy) for
-what that allows, what it refuses, and what to do about it. Then
-[Your first capture](#your-first-capture).
+Once you are in, expect the app to be **read-only**, with a bar across the top
+saying so. That is intended rather than broken — and it is why the next step is not
+optional.
+
+### 7. Turn on HTTPS
+
+**Admin → HTTPS → Set up certificate**, as in
+[the recommended route](#recommended-let-pcap-server-get-its-own-certificate) —
+or put a proxy in front, with a real certificate or a
+[self-signed one](#no-domain-a-proxy-with-a-self-signed-certificate). When the
+read-only bar is gone, go on to [Your first capture](#your-first-capture).
 
 ### If it does not come up
 
@@ -222,7 +297,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.29` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.30` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -238,7 +313,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcap
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.29/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.30/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -256,6 +331,9 @@ Dockerfile. See [Development](#development). Running it needs nothing from the
 repo but that one file.
 
 ## Your first capture
+
+HTTPS first — [step 7 of the Quick start](#7-turn-on-https). Every step below
+changes something, and none of them work over plain HTTP.
 
 1. **Upload an SSH key.** Admin → SSH keys. It is sealed under the master key
    the moment it lands, the same way captures are.
@@ -283,8 +361,9 @@ repo but that one file.
 5. **Sort out capture privilege** if the check says it is missing. It prints the
    exact command for the host in front of you — see
    [Preparing a target host](#preparing-a-target-host).
-6. **Capture.** Capture tab: name it, pick the server and interface, set a
-   duration, add a filter. It shows you what it is about to do and asks; say
+6. **Capture.** **Capture from this server** on the server's page opens the
+   Capture tab with it already chosen. Name the capture, pick the interface, set
+   a duration, add a filter. It shows you what it is about to do and asks; say
    yes and the packet count starts climbing.
 7. **Read it.** View on a finished capture. Click a packet for its protocol tree
    and hex dump.
@@ -508,15 +587,19 @@ Two things are worth knowing before you read any of it:
 
 - **Over plain HTTP the app is read-only.** It will not start a capture, hand a
   capture over, or change any setting. This is intended, and it is enough to
-  block your first capture. **[Built-in HTTPS](docs/tls.md)** fixes it with no
-  proxy at all — pcap-server requests and renews its own Let's Encrypt
-  certificate — or **[Setting up a reverse proxy](docs/reverse-proxy.md)**
-  does, with Caddy, nginx or Nginx Proxy Manager each worked start to finish; and
+  block your first capture — see [HTTPS](#https) for the three ways out:
+  **[built-in HTTPS](docs/tls.md)** (recommended), a
+  **[reverse proxy](docs/reverse-proxy.md)**, or a proxy with a
+  **[self-signed certificate](docs/reverse-proxy.md#no-domain-a-self-signed-certificate)**.
   [Running it without a reverse proxy](docs/operating.md#running-it-without-a-reverse-proxy)
-  covers what you can still do if you would rather not.
+  covers what you can still do on plain HTTP.
 - **`COOKIE_SECURE=false` is already set** in the published compose file, which
   is what lets sign-in work over plain HTTP at all. Set it back to `true` once
-  you are behind TLS.
+  you are behind a reverse proxy (built-in HTTPS does not need it).
+- **After changing `COOKIE_SECURE` or `TRUST_PROXY_HEADERS`, run
+  `docker compose up -d`, not `docker compose restart`.** A restart — or a stop
+  and start — keeps the environment the container was created with, so the
+  change does nothing. `up -d` recreates the container with it.
 
 ## Architecture
 
@@ -616,6 +699,16 @@ add.
 
 ## Roadmap
 
+- **Windows targets** — capture on Windows machines as well as Linux and other
+  Unix hosts. Windows' built-in OpenSSH server already covers the connection and
+  the file transfer; what differs is everything run on the far end. Today that
+  is `tcpdump` writing to `/tmp`, `sudo`, and interfaces read from
+  `/sys/class/net`. The likely route is Wireshark's `dumpcap.exe` over Npcap,
+  which takes the same interface, BPF filter, packet count, duration and snap
+  length and writes a pcapng the Viewer already reads; `pktmon`, built into
+  Windows, needs nothing installed but has no BPF filters and writes a format
+  that has to be converted first. It would be a per-server platform choice, with
+  its own prerequisite check.
 - **MCP server** — expose servers, captures and packet queries over the Model
   Context Protocol, so an agent can drive pcap-server as tools rather than by
   imitating a browser session. The open questions are authorisation, since an

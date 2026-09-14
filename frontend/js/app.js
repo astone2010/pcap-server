@@ -5,6 +5,8 @@ let currentUser = null;
 let activeServers = [];
 // DOM-only until now: re-rendering the list dropped the highlight with it.
 let selectedServerId = null;
+// The last /api/auth/status answer, for the pieces of UI that link out.
+let authStatus = null;
 // Whether this page reached the server over a connection a capture may cross.
 let secureTransport = true;
 let knownUsernames = [];
@@ -70,41 +72,67 @@ async function api(path, options = {}) {
 // A blocked action must say so plainly. This puts the reason on screen, scrolls
 // it into view and keeps it until dismissed -- an alert() is easy to click away
 // without reading, and a console error is invisible.
+// The same advice the server sends with an https_required refusal
+// (_HTTPS_REMEDY in main.py), for the refusals the page makes without asking.
+const HTTPS_REMEDY = "Turn on HTTPS. Recommended: Admin \u2192 HTTPS, where pcap-server gets its "
+    + "own Let's Encrypt certificate \u2014 no proxy, no inbound ports. Or put it behind a "
+    + "reverse proxy (Nginx Proxy Manager, Caddy or nginx) with TRUST_PROXY_HEADERS=true; "
+    + "with no domain, the proxy can use a self-signed certificate.";
+
 function showHttpsRefusal(detail) {
-    showBlockingAlert("Blocked: this needs an encrypted connection",
-                      detail.reason || "", detail.remedy || "");
+    showBlockingAlert("This needs an encrypted connection",
+                      detail.reason || "", detail.remedy || "", { httpsAction: true });
 }
 
 // One visible, dismissible panel for anything the server refuses on safety
 // grounds. Deliberately not an alert(): this needs to be readable and to stay
 // on screen while the user reads it.
-function showBlockingAlert(title, reason, detail) {
+function showBlockingAlert(title, reason, detail, { httpsAction = false } = {}) {
     let box = $("https-refusal");
     if (!box) {
         box = document.createElement("div");
         box.id = "https-refusal";
         box.className = "https-refusal";
+        box.setAttribute("role", "alertdialog");
         document.body.prepend(box);
     }
     box.textContent = "";
 
     const titleEl = document.createElement("div");
     titleEl.className = "https-refusal-title";
-    titleEl.textContent = title;
+    const icon = document.createElement("span");
+    icon.className = "banner-icon";
+    icon.setAttribute("aria-hidden", "true");
+    titleEl.append(icon, title);
 
     const reasonEl = document.createElement("div");
+    reasonEl.className = "https-refusal-reason";
     reasonEl.textContent = reason;
 
     const detailEl = document.createElement("div");
     detailEl.className = "https-refusal-remedy";
     detailEl.textContent = detail;
 
+    const actions = document.createElement("div");
+    actions.className = "https-refusal-actions";
+    if (httpsAction && currentUser && currentUser.is_admin) {
+        const go = document.createElement("button");
+        go.type = "button";
+        go.className = "btn btn-sm btn-primary";
+        go.textContent = "Set up HTTPS";
+        go.onclick = openHttpsSetup;
+        actions.append(go);
+    }
     const close = document.createElement("button");
-    close.className = "https-refusal-close";
+    close.type = "button";
+    close.className = "btn btn-sm btn-secondary https-refusal-close";
     close.textContent = "Dismiss";
     close.onclick = () => { box.hidden = true; };
+    actions.append(close);
 
-    box.append(titleEl, reasonEl, detailEl, close);
+    box.append(titleEl, reasonEl);
+    if (detail) box.append(detailEl);
+    box.append(actions);
     box.hidden = false;
     box.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -166,28 +194,91 @@ function toggleTheme() {
 
 // --- auth flow ---
 
-function setBanner(kind, lead, parts) {
-    const banner = $("config-banner");
-    banner.textContent = "";
-    banner.className = "config-banner banner-" + kind;
-    const strong = document.createElement("strong");
-    strong.textContent = lead;
-    banner.append(strong, " ");
+// Inline rich text for the banners and notices: strings as text, {strong},
+// {code}. Built with text nodes throughout -- nothing here is ever HTML.
+function appendParts(el, parts) {
     for (const part of parts) {
         if (typeof part === "string") {
-            banner.append(part);
+            el.append(part);
         } else if (part.strong) {
             const emphasis = document.createElement("strong");
             emphasis.textContent = part.strong;
-            banner.append(emphasis);
-        } else {
+            el.append(emphasis);
+        } else if (part.code) {
             const code = document.createElement("code");
             code.textContent = part.code;
-            banner.append(code);
+            el.append(code);
         }
+    }
+}
+
+// Where the README explains the three ways to get HTTPS. The repo URL comes
+// from the server, which is the only place it is configured.
+function httpsGuideUrl() {
+    return authStatus && authStatus.repo_url ? `${authStatus.repo_url}#https` : "";
+}
+
+// The sign-in card's banner: a headline, one or two sentences of why, and the
+// fixes as a short list rather than a paragraph. It used to be one block of
+// about a hundred words, which on a 400px card was taller than the form.
+function setBanner(kind, title, body, fixes = []) {
+    const banner = $("config-banner");
+    banner.textContent = "";
+    banner.className = "config-banner banner-" + kind;
+
+    const head = document.createElement("div");
+    head.className = "banner-head";
+    const icon = document.createElement("span");
+    icon.className = "banner-icon";
+    icon.setAttribute("aria-hidden", "true");
+    const strong = document.createElement("strong");
+    strong.textContent = title;
+    head.append(icon, strong);
+
+    const text = document.createElement("p");
+    text.className = "banner-body";
+    appendParts(text, body);
+    banner.append(head, text);
+
+    if (fixes.length) {
+        const list = document.createElement("ul");
+        list.className = "banner-fixes";
+        for (const { tag, parts } of fixes) {
+            const li = document.createElement("li");
+            if (tag) {
+                const t = document.createElement("span");
+                t.className = "banner-tag";
+                t.textContent = tag;
+                li.append(t);
+            }
+            const span = document.createElement("span");
+            appendParts(span, parts);
+            li.append(span);
+            list.append(li);
+        }
+        banner.append(list);
+    }
+
+    const href = httpsGuideUrl();
+    if (href) {
+        const link = document.createElement("a");
+        link.className = "banner-link";
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "How to set up HTTPS \u2192";
+        banner.append(link);
     }
     banner.hidden = false;
 }
+
+// Said wherever COOKIE_SECURE is: docker compose reads the environment when it
+// creates a container, so `restart` -- and `stop` then `start` -- keep running
+// with the old value. Only `up -d`, which recreates it, applies the edit.
+const RECREATE_PARTS = [
+    " in ", { code: "docker-compose.yml" }, ", then run ", { code: "docker compose up -d" },
+    ". A restart keeps the old value.",
+];
 
 function checkCookieConfig(cookieSecure) {
     const httpsPage = location.protocol === "https:";
@@ -195,39 +286,32 @@ function checkCookieConfig(cookieSecure) {
     const localhost = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 
     if (!httpsPage && cookieSecure && !localhost) {
-        setBanner("danger", "Sign-in will not work on this address.", [
-            "The server requires Secure cookies, but this page was loaded over plain HTTP — your browser will discard the session cookie, so sign-in appears to succeed and then every request fails. Put pcap-server behind an HTTPS reverse proxy, or set ",
-            { code: "COOKIE_SECURE=false" },
-            " for HTTP/LAN use and restart the container.",
+        setBanner("danger", "Sign-in will not work on this address", [
+            "The server requires Secure cookies, but this page is plain HTTP, so your browser ",
+            "throws the session cookie away: sign-in seems to succeed, then every request fails.",
+        ], [
+            { tag: "Fix", parts: ["Set ", { code: "COOKIE_SECURE=false" }, ...RECREATE_PARTS,
+                " Then sign in and turn on HTTPS."] },
         ]);
     } else if (httpsPage && !cookieSecure) {
-        setBanner("warning", "Session cookies are not protected.", [
-            "This page is HTTPS, but the server is running with ",
-            { code: "COOKIE_SECURE=false" },
-            ", so the session cookie is sent without the Secure flag and can leak over any plain-HTTP request to this host. Set ",
-            { code: "COOKIE_SECURE=true" },
-            " and restart the container.",
+        setBanner("warning", "Session cookies are not protected", [
+            "This page is HTTPS, but the session cookie is sent without the Secure flag, ",
+            "so it can leak over any plain-HTTP request to this host.",
+        ], [
+            { tag: "Fix", parts: ["Set ", { code: "COOKIE_SECURE=true" }, ...RECREATE_PARTS] },
         ]);
     } else if (!httpsPage && !cookieSecure && !localhost) {
         // The override case. Sign-in works, which is exactly why this needs
         // saying: nothing looks wrong, and every request is in the clear.
-        setBanner("warning", "Not encrypted \u2014 signing in here is read-only.", [
-            "This page was loaded over plain HTTP, so your password and TOTP code will cross ",
-            "the network in cleartext and your session cookie can be copied and replayed. ",
-            "Because of that pcap-server runs read-only on this connection: you can browse ",
-            "servers and view captures, but ",
-            { strong: "captures cannot be downloaded, SSH keys cannot be uploaded, and nothing can be changed" },
-            ". To get full access, serve it over HTTPS \u2014 two ways. ",
-            { strong: "Built in:" },
-            " an admin requests a Let's Encrypt certificate (ACME, DNS-01) under ",
-            { strong: "Admin \u2192 HTTPS" },
-            " and pcap-server serves HTTPS itself \u2014 no proxy, no inbound ports, renewed automatically. ",
-            { strong: "Reverse proxy:" },
-            " put Caddy, Nginx Proxy Manager or Traefik in front, set ",
-            { code: "TRUST_PROXY_HEADERS=true" },
-            " and ",
-            { code: "COOKIE_SECURE=true" },
-            ", and restart the container.",
+        setBanner("warning", "Not encrypted \u2014 read-only", [
+            "This page came over plain HTTP, where your password, code and session can be read ",
+            "on the network. So you can sign in and look around, but ",
+            { strong: "nothing can be changed or downloaded" }, " until HTTPS is on.",
+        ], [
+            { tag: "Recommended", parts: [{ strong: "Admin \u2192 HTTPS" },
+                " \u2014 a free Let's Encrypt certificate, no proxy needed"] },
+            { tag: "Or", parts: ["a reverse proxy \u2014 Nginx Proxy Manager, Caddy or nginx. ",
+                "No domain? It can use a self-signed certificate"] },
         ]);
     } else {
         $("config-banner").hidden = true;
@@ -264,6 +348,7 @@ function applyBuildLinks(status) {
 
 async function checkAuth() {
     const status = await api("/api/auth/status");
+    authStatus = status;
     checkCookieConfig(status.cookie_secure);
     applyBuildLinks(status);
     secureTransport = status.secure_transport !== false;
@@ -553,8 +638,13 @@ async function loadServers() {
 
 function renderServerList() {
     const el = $("server-list");
+    const count = $("server-count");
+    if (count) {
+        count.textContent = String(activeServers.length);
+        count.hidden = !activeServers.length;
+    }
     if (!activeServers.length) {
-        el.innerHTML = '<div class="empty-state" style="padding:20px;font-size:0.8125rem">No servers added</div>';
+        el.innerHTML = '<div class="empty-state server-list-empty">No servers added</div>';
         return;
     }
     el.innerHTML = activeServers
@@ -571,21 +661,25 @@ function renderServerList() {
             // The delegator resolves e.target.closest("[data-action]"), so the
             // nested button wins over the row and trusting does not also
             // select the server.
-            const warning = s.host_trusted === false
-                ? `<div class="detail" style="color:var(--warning,#d29922);margin-top:4px">
-                       Host not trusted &mdash; connections to it are refused.
+            const untrusted = s.host_trusted === false;
+            const warning = untrusted
+                ? `<div class="server-warn">
+                       <span>Host not trusted &mdash; connections to it are refused.</span>
                        ${currentUser && currentUser.is_admin
-                            ? `<button class="btn btn-sm btn-secondary" style="margin-left:6px"
+                            ? `<button class="btn btn-xs btn-secondary"
                                  data-action="trust-server-host"
-                                 data-id="${escHtml(s.hostname)}:${s.port}">Trust host</button>`
-                            : "<br>Ask an admin to trust it under Admin \u2192 Known Hosts."}
+                                 data-id="${escHtml(s.hostname)}:${escHtml(s.port)}">Trust host</button>`
+                            : "<span>Ask an admin to trust it under Admin \u2192 Known Hosts.</span>"}
                    </div>`
                 : "";
             return `
-        <div class="server-item" data-action="select-server" data-id="${escHtml(s.id)}">
-            <div class="name">${escHtml(s.name || s.hostname)}</div>
-            <div class="detail">${escHtml(s.username)}@${escHtml(s.hostname)}:${s.port}</div>
-            ${warning}
+        <div class="server-item${untrusted ? " untrusted" : ""}" data-action="select-server" data-id="${escHtml(s.id)}">
+            <span class="server-dot${untrusted ? " server-dot-warn" : ""}" aria-hidden="true"></span>
+            <div class="server-item-body">
+                <div class="name">${escHtml(s.name || s.hostname)}</div>
+                <div class="detail">${escHtml(s.username)}@${escHtml(s.hostname)}:${escHtml(s.port)}</div>
+                ${warning}
+            </div>
         </div>`;
         })
         .join("");
@@ -610,30 +704,74 @@ async function trustServerHost(endpoint) {
     await loadServers();
 }
 
+// What the right-hand pane holds when no server is chosen: at first load (it
+// is also the markup in index.html) and after the chosen one is removed.
+const SERVERS_WELCOME = `
+    <div class="welcome">
+        <div class="welcome-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <h3>Capture from anywhere you can SSH</h3>
+        <p>Pick a server on the left to test it, check it has what a capture
+            needs, or start one straight away. Nothing is installed on the host.</p>
+        <button type="button" class="btn btn-primary" data-action="show-add-server">+ Add a server</button>
+    </div>`;
+
 function selectServer(id) {
     const srv = activeServers.find((s) => s.id === id);
     if (!srv) return;
     selectedServerId = id;
     document.querySelectorAll(".server-item").forEach((el) => el.classList.remove("active"));
-    document.querySelector(`.server-item[data-id="${id}"]`)?.classList.add("active");
+    document.querySelector(`.server-item[data-id="${CSS.escape(id)}"]`)?.classList.add("active");
 
+    // Read as facts, not as a form. These used to be disabled inputs, which
+    // look exactly like fields that ought to take typing and quietly do not;
+    // Edit is the way in, and it is on the action row below.
+    const untrusted = srv.host_trusted === false;
+    const trust = srv.host_trusted === undefined
+        ? ""
+        : untrusted
+            ? '<span class="pill pill-warn">Not trusted</span>'
+            : '<span class="pill pill-good">Trusted</span>';
+    const sid = escHtml(srv.id);
     $("server-form-area").innerHTML = `
-        <h3>${escHtml(srv.name || srv.hostname)}</h3>
-        <div class="form-group"><label>Host</label><input type="text" value="${escHtml(srv.hostname)}" disabled></div>
-        <div class="form-row">
-            <div class="form-group"><label>Port</label><input type="text" value="${srv.port}" disabled></div>
-            <div class="form-group"><label>Username</label><input type="text" value="${escHtml(srv.username)}" disabled></div>
+        <div class="server-detail">
+            <header class="server-detail-head">
+                <div class="server-detail-title">
+                    <h3>${escHtml(srv.name || srv.hostname)}</h3>
+                    <div class="server-detail-endpoint">${escHtml(srv.username)}@${escHtml(srv.hostname)}:${escHtml(srv.port)}</div>
+                </div>
+                ${trust}
+            </header>
+            <dl class="server-facts">
+                <div><dt>Host</dt><dd>${escHtml(srv.hostname)}</dd></div>
+                <div><dt>Port</dt><dd>${escHtml(srv.port)}</dd></div>
+                <div><dt>Username</dt><dd>${escHtml(srv.username)}</dd></div>
+                <div><dt>SSH key</dt><dd>${escHtml(srv.ssh_key_name)}</dd></div>
+                <div><dt>sudo</dt><dd>${srv.use_sudo ? "yes &mdash; tcpdump runs under sudo" : "no"}</dd></div>
+            </dl>
+            <div class="form-actions server-detail-actions">
+                <button class="btn btn-sm btn-primary" data-action="capture-from-server" data-id="${sid}"
+                        ${untrusted ? 'disabled title="This host is not trusted yet, so a capture would be refused. Trust it first."' : ""}>Capture from this server</button>
+                <button class="btn btn-sm btn-secondary" data-action="test-server" data-id="${sid}">Test connection</button>
+                <button class="btn btn-sm btn-secondary" data-action="prereq-check" data-id="${sid}">Check prerequisites</button>
+                <button class="btn btn-sm btn-secondary" data-action="edit-server" data-id="${sid}">Edit</button>
+                <button class="btn btn-sm btn-danger btn-quiet" data-action="remove-server" data-id="${sid}">Remove</button>
+            </div>
+            <div id="server-test-result" style="margin-top:8px;font-size:0.8125rem"></div>
+            <div id="prereq-result"></div>
         </div>
-        <div class="form-group"><label>SSH Key</label><input type="text" value="${escHtml(srv.ssh_key_name)}" disabled></div>
-        <div class="form-actions">
-            <button class="btn btn-sm btn-secondary" data-action="test-server" data-id="${escHtml(srv.id)}">Test connection</button>
-            <button class="btn btn-sm btn-secondary" data-action="prereq-check" data-id="${escHtml(srv.id)}">Check prerequisites</button>
-            <button class="btn btn-sm btn-secondary" data-action="edit-server" data-id="${escHtml(srv.id)}">Edit</button>
-            <button class="btn btn-sm btn-danger" data-action="remove-server" data-id="${escHtml(srv.id)}">Remove</button>
-        </div>
-        <div id="server-test-result" style="margin-top:8px;font-size:0.8125rem"></div>
-        <div id="prereq-result"></div>
     `;
+}
+
+// The step that used to mean leaving this tab, finding the same server again in
+// the Capture tab's dropdown, and hoping it was the right one of two similarly
+// named hosts. The interface list is reloaded for it, as a change would.
+function captureFromServer(id) {
+    const sel = $("cap-server");
+    if (!sel || ![...sel.options].some((o) => o.value === id)) return;
+    sel.value = id;
+    loadInterfaces();
+    selectStaticTab("capture");
+    $("cap-name")?.focus();
 }
 
 // Read-only capability probe. The backend installs nothing; anything that comes
@@ -750,9 +888,11 @@ function sshKeyPicker(idPrefix, keys, current = "") {
 // but a container on a bridge network knows nothing about the host's LAN
 // address, so pointing pcap-server at the very machine it runs on is the one
 // case detection cannot see. Hence saying so here, before the address is typed.
+// The rule stays on screen; the reasoning is one click away. As a paragraph it
+// was the first and largest thing on the form, above the field it is about.
 const SELF_CAPTURE_WARNING = `
-    <div class="form-warning">
-        <strong>Do not point this at the machine running pcap-server.</strong>
+    <details class="form-warning">
+        <summary><strong>Do not point this at the machine running pcap-server.</strong> <span class="form-warning-why">Why?</span></summary>
         Capturing from its own host records pcap-server's own traffic — your
         session cookie and TOTP code, and over plain HTTP your password — into a
         capture this UI then stores and serves back. On a Docker host the
@@ -760,9 +900,13 @@ const SELF_CAPTURE_WARNING = `
         Obvious cases (localhost, this container's own addresses, its gateway)
         are refused automatically, but a Docker host's LAN address looks like any
         other target from in here. Capture this host from a different machine.
-    </div>`;
+    </details>`;
 
 function showAddServer() {
+    // The list kept the last server highlighted while its pane showed a form
+    // for a different, not-yet-existing one.
+    selectedServerId = null;
+    document.querySelectorAll(".server-item.active").forEach((el) => el.classList.remove("active"));
     Promise.all([loadSSHKeys(), loadUsernames()]).then(([keys, usernames]) => {
         // A datalist suggests without constraining: previous usernames are offered,
         // and a new one can still be typed straight over them.
@@ -844,7 +988,7 @@ function usernamePicker(idPrefix, current) {
                placeholder="e.g. serveradmin" autocomplete="off"${useNew ? "" : " hidden"}>
         <div class="field-hint">${onlyNew
             ? "The first username you use is saved and offered next time."
-            : "Pick a saved username, or choose \u201c+ New username\u201d to type one \u2014 you do not have to add it in the Admin panel first."}</div>`;
+            : "Pick a saved username, or choose \u201c+ New username\u201d to type one \u2014 it is saved to SSH usernames for next time."}</div>`;
 }
 
 // The select is the source of truth unless "+ New username" is chosen.
@@ -995,7 +1139,8 @@ function renderTestResult(res) {
 async function removeServer(id) {
     await api(`/api/servers/${id}`, { method: "DELETE" });
     await loadServers();
-    $("server-form-area").innerHTML = '<div class="empty-state">Server removed</div>';
+    selectedServerId = null;
+    $("server-form-area").innerHTML = SERVERS_WELCOME;
 }
 
 const SUDO_HINT = "Needed when the SSH user isn't root. Requires passwordless sudo scoped to tcpdump on that host — not blanket NOPASSWD: ALL. Check prerequisites prints the exact rule.";
@@ -2119,9 +2264,66 @@ async function loadCaptures() {
     renderCaptures();
 }
 
+// "512.0 KB" for half a megabyte made every size in the list read as KB, and
+// a multi-gigabyte capture as a seven-digit number of them.
+function formatBytes(n) {
+    if (!n) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+    return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`;
+}
+
+// Wall-clock length of a capture that has both ends recorded; "" otherwise,
+// so a missing timestamp shows nothing rather than a made-up duration.
+function captureDuration(c) {
+    if (!c.started_at || !c.stopped_at) return "";
+    const secs = Math.round((new Date(c.stopped_at) - new Date(c.started_at)) / 1000);
+    if (!(secs >= 0)) return "";
+    if (secs < 60) return `${secs}s`;
+    const m = Math.floor(secs / 60);
+    if (m < 60) return `${m}m ${secs % 60}s`;
+    return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function captureStat(label, value, extra = "") {
+    return `<span class="capture-stat${extra}"><span class="capture-stat-label">${label}</span>${value}</span>`;
+}
+
+// The buttons a capture offers depend on its state; `id` arrives escaped.
+function captureActions(c, id) {
+    let actions = "";
+    if (c.status === "running") {
+        // A live capture is watchable while it runs; an ordinary one has
+        // nothing to show until it has been fetched, so it gets no
+        // button rather than one that opens an empty viewer.
+        if (c.live_stream) {
+            actions = `<button class="btn btn-sm btn-primary" data-action="view-capture" data-id="${id}">Watch live</button> `;
+        }
+        actions += `<button class="btn btn-sm btn-secondary" data-action="stop-capture" data-id="${id}">Stop</button>`;
+    } else if (c.status === "completed") {
+        // Downloads are refused over plain HTTP, so say why here rather
+        // than letting the button fail with a 403 when clicked.
+        const dl = secureTransport
+            ? `<button class="btn btn-sm btn-secondary" data-action="download-capture" data-id="${id}">Download</button>`
+            : `<button class="btn btn-sm btn-secondary" disabled
+                 title="Downloads require HTTPS. A pcap can contain credentials, so it is not sent over an unencrypted connection.">Download (HTTPS only)</button>`;
+        actions = `<button class="btn btn-sm btn-primary" data-action="view-capture" data-id="${id}">View</button>
+                   ${dl}`;
+    }
+    actions += ` <button class="btn btn-sm btn-secondary" data-action="rename-capture" data-id="${id}">Rename</button>`;
+    actions += ` <button class="btn btn-sm btn-danger btn-quiet" data-action="delete-capture" data-id="${id}">Delete</button>`;
+    return actions;
+}
+
 function renderCaptures() {
     syncCaptureTabs();
     const el = $("capture-list");
+    const count = $("capture-count");
+    if (count) {
+        const running = captures.filter((c) => c.status === "running").length;
+        count.textContent = running ? `${captures.length} \u00b7 ${running} running` : String(captures.length);
+        count.hidden = !captures.length;
+    }
     if (!captures.length) {
         el.innerHTML = '<div class="empty-state">No captures yet</div>';
         return;
@@ -2132,49 +2334,40 @@ function renderCaptures() {
             // and outlives the server it came from.
             const srv = activeServers.find((s) => s.id === c.server_id);
             const srvName = c.server_label || (srv ? srv.hostname : c.server_id);
-            const statusClass = `status-${c.status}`;
-            let actions = "";
-            if (c.status === "running") {
-                // A live capture is watchable while it runs; an ordinary one has
-                // nothing to show until it has been fetched, so it gets no
-                // button rather than one that opens an empty viewer.
-                if (c.live_stream) {
-                    actions = `<button class="btn btn-sm btn-primary" data-action="view-capture" data-id="${c.id}">Watch live</button> `;
-                }
-                actions += `<button class="btn btn-sm btn-secondary" data-action="stop-capture" data-id="${c.id}">Stop</button>`;
-            } else if (c.status === "completed") {
-                // Downloads are refused over plain HTTP, so say why here rather
-                // than letting the button fail with a 403 when clicked.
-                const dl = secureTransport
-                    ? `<button class="btn btn-sm btn-secondary" data-action="download-capture" data-id="${c.id}">Download</button>`
-                    : `<button class="btn btn-sm btn-secondary" disabled
-                         title="Downloads require HTTPS. A pcap can contain credentials, so it is not sent over an unencrypted connection.">Download (HTTPS only)</button>`;
-                actions = `<button class="btn btn-sm btn-primary" data-action="view-capture" data-id="${c.id}">View</button>
-                           ${dl}`;
-            }
-            actions += ` <button class="btn btn-sm btn-secondary" data-action="rename-capture" data-id="${c.id}">Rename</button>`;
-            actions += ` <button class="btn btn-sm btn-danger" data-action="delete-capture" data-id="${c.id}">Delete</button>`;
+            const status = escHtml(c.status);
+            const id = escHtml(c.id);
+            const actions = captureActions(c, id);
             const origin = `${escHtml(srvName)} &mdash; ${escHtml(c.command || "")}`;
             // A running capture reports its own count, so 0 there means "none
             // yet" rather than "not counted" and is worth showing.
             const live = c.status === "running";
-            const count = (live || c.packet_count)
-                ? ` | ${c.packet_count} packets${live ? " so far" : ""}`
-                : "";
+            const stats = [];
+            if (c.interface) stats.push(captureStat("if", escHtml(c.interface)));
+            if (live || c.packet_count) {
+                stats.push(captureStat("packets", `${Number(c.packet_count).toLocaleString()}${live ? " so far" : ""}`));
+            }
+            if (c.file_size) stats.push(captureStat("size", formatBytes(c.file_size)));
+            const took = captureDuration(c);
+            if (took) stats.push(captureStat("took", took));
+            if (c.started_at) {
+                stats.push(captureStat("started", escHtml(formatStoredAt(c.started_at))));
+            }
+            // The full id is still one hover away, and selectable there; eight
+            // characters are enough to tell two captures apart at a glance.
+            stats.push(`<span class="capture-stat capture-id" title="Capture ID: ${id}">#${escHtml(String(c.id).slice(0, 8))}</span>`);
             return `
-            <div class="capture-item">
+            <div class="capture-item capture-${status}">
                 <div class="info">
                     <div class="title">${c.name ? escHtml(c.name) : origin}</div>
-                    <div class="meta">
-                        ${c.name ? origin + "<br>" : ""}ID: ${c.id}
-                        ${count}
-                        ${c.file_size ? " | " + (c.file_size / 1024).toFixed(1) + " KB" : ""}
-                        ${c.error ? ' | <span style="color:var(--danger)">' + escHtml(c.error) + "</span>" : ""}
-                    </div>
+                    ${c.name ? `<div class="meta">${origin}</div>` : ""}
+                    <div class="capture-stats">${stats.join("")}</div>
+                    ${c.error ? `<div class="capture-error">${escHtml(c.error)}</div>` : ""}
                 </div>
-                ${c.bpf_filter ? filterBadge(c.bpf_filter) : ""}
-                ${c.live_stream ? '<span class="status-badge badge-live" title="Started with live streaming: the packets were watched in the Viewer as they were captured. The saved capture is complete either way.">live stream</span>' : ""}
-                <span class="status-badge ${statusClass}">${c.status}</span>
+                <div class="capture-badges">
+                    ${c.bpf_filter ? filterBadge(c.bpf_filter) : ""}
+                    ${c.live_stream ? '<span class="status-badge badge-live" title="Started with live streaming: the packets were watched in the Viewer as they were captured. The saved capture is complete either way.">live stream</span>' : ""}
+                    <span class="status-badge status-${status}">${status}</span>
+                </div>
                 <div class="capture-actions">${actions}</div>
             </div>`;
         })
@@ -2293,22 +2486,47 @@ function renderEncryptionNotice(status) {
     el.hidden = true;
 }
 
+// One line across the top of the app, not a paragraph: the sign-in banner has
+// already explained it, and this stays on screen for the whole session. For an
+// admin it carries the way out; everyone else is told who has it.
 function renderReadOnlyNotice(status) {
     const el = $("readonly-notice");
     if (!el) return;
-    if (!status.read_only) {
+    // Signed out, the sign-in card's own banner says all of this and more.
+    if (!status.read_only || !status.user) {
         el.hidden = true;
         return;
     }
     el.textContent = "";
-    const strong = document.createElement("strong");
-    strong.textContent = "Read-only: this connection is not encrypted. ";
-    const rest = document.createElement("span");
-    rest.textContent = "Captures cannot be downloaded, SSH keys cannot be uploaded, and "
-        + "nothing can be changed, because those would cross the network in the clear. "
-        + "Viewing is allowed. Serve pcap-server over HTTPS to restore full access.";
-    el.append(strong, rest);
+    el.className = "readonly-notice readonly-bar";
+    const tag = document.createElement("span");
+    tag.className = "readonly-tag";
+    tag.textContent = "Read-only";
+    const text = document.createElement("span");
+    text.className = "readonly-text";
+    text.textContent = "Not encrypted \u2014 changes and downloads are off.";
+    el.append(tag, text);
+    const admin = status.user && status.user.is_admin;
+    if (admin) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-xs readonly-action";
+        btn.textContent = "Set up HTTPS";
+        btn.addEventListener("click", openHttpsSetup);
+        el.append(btn);
+    } else if (status.user) {
+        const ask = document.createElement("span");
+        ask.className = "readonly-ask";
+        ask.textContent = "Ask an admin to turn on HTTPS.";
+        el.append(ask);
+    }
     el.hidden = false;
+}
+
+function openHttpsSetup() {
+    $("https-refusal")?.setAttribute("hidden", "");
+    selectStaticTab("admin");
+    selectAdminPage("https");
 }
 
 function downloadCaptureById(id) {
@@ -2316,8 +2534,7 @@ function downloadCaptureById(id) {
         showHttpsRefusal({
             reason: "A capture routinely contains credentials in cleartext. Downloading it "
                 + "over an unencrypted connection would put the whole capture on the wire.",
-            remedy: "Serve pcap-server over HTTPS, then set TRUST_PROXY_HEADERS=true if a "
-                + "reverse proxy terminates TLS.",
+            remedy: HTTPS_REMEDY,
         });
         return;
     }
@@ -2574,8 +2791,7 @@ function downloadView(viewId) {
             reason: "A filtered view is still packet data -- often the most sensitive slice "
                 + "of a capture rather than a less sensitive one. Downloading it over an "
                 + "unencrypted connection would put it on the wire in the clear.",
-            remedy: "Serve pcap-server over HTTPS, then set TRUST_PROXY_HEADERS=true if a "
-                + "reverse proxy terminates TLS.",
+            remedy: HTTPS_REMEDY,
         });
         return;
     }
@@ -4834,6 +5050,8 @@ function initEventDelegation() {
         "edit-server": (id) => editServer(id),
         "save-server-edit": (id) => saveServerEdit(id),
         "select-server": (id) => selectServer(id),
+        "show-add-server": () => showAddServer(),
+        "capture-from-server": (id) => captureFromServer(id),
     });
     delegate("capture-list", {
         "stop-capture": (id) => stopCapture(id),

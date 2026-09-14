@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.1.0-dev.30 — 2026-09-13
+
+### Changed
+
+- **The Servers tab.**
+  - Each server in the list carries a trust dot — green when connections are
+    allowed, amber when its host keys are not trusted yet — and the heading
+    counts them.
+  - A chosen server reads as facts instead of greyed-out input boxes that looked
+    editable and were not, with a Trusted / Not trusted pill.
+  - **Capture from this server** opens the Capture tab with that server already
+    chosen and the cursor in Name. It is disabled while the host is untrusted,
+    since the capture would be refused.
+  - Before anything is chosen the pane says what the tab is for and offers
+    **+ Add a server**, instead of one sentence in an empty pane.
+  - The Add server warning about pointing pcap-server at its own host is one
+    line with **Why?** behind it, instead of a paragraph above the first field.
+  - **SSH usernames** moved into the server list's sidebar.
+- **The Capture tab.** The form is one card, top to bottom in the order a
+  capture is thought about: name; server, interface and live stream; filter and
+  the filter library; then the optional limits in a quieter row. **Start
+  capture** is a real button in the card's footer rather than a thin full-width
+  bar. "Where are the tcpdump flags?" moved below the list.
+- **The capture list.**
+  - A heading with a count, and how many are running.
+  - A coloured left edge per status, with a pulse while running.
+  - Stats as small chips: interface, packets, size in KB/MB/GB rather than
+    always KB, how long it took, when it started.
+  - A short ID with the full one on hover.
+  - Errors on a line of their own.
+  - Delete is outlined rather than solid red.
+- **Plain-HTTP warnings.**
+  - On the sign-in page: a headline, two sentences, and the fixes as a short
+    list — built-in Let's Encrypt recommended, a reverse proxy (self-signed if
+    there is no domain) otherwise — with a link to the README's HTTPS section.
+    It was about a hundred words in one block.
+  - Inside the app: one line, with **Set up HTTPS** for an admin, which opens
+    Admin → HTTPS.
+  - A refused action shows a laid-out panel with the same button.
+- **The command line in HTTPS setup is filled in** from the steps: domain,
+  email, provider, wait and staging. Credentials are still prompted for, never
+  copied into the command, and typed values are shell-quoted.
+- **Every "restart the container" for `COOKIE_SECURE` now says
+  `docker compose up -d`.** Compose reads the environment when it creates a
+  container, so `docker compose restart` — or stop and start — keeps the old
+  value and the change silently does nothing. The same is true of
+  `TRUST_PROXY_HEADERS`.
+- Focus rings, hover states and a small logo mark that follows the theme.
+  Animations stop under reduced motion.
+
+### Fixed
+
+- **A phone could not hold the toolbar.** At 400px it was 505px wide and the
+  whole app scrolled sideways.
+- **Built-in HTTPS no longer warns "Session cookies are not protected".** The
+  status endpoint reported the `COOKIE_SECURE` variable rather than the cookie
+  flag actually applied, so every built-in HTTPS install that kept the shipped
+  `COOKIE_SECURE=false` — as the docs say it may — was told to change it.
+- Opening Add server no longer leaves the previously chosen server highlighted.
+
+### Documentation
+
+- **The README leads with HTTPS.** A note under the introduction, and an HTTPS
+  section before the Quick start comparing the three ways: built-in Let's
+  Encrypt (recommended), a reverse proxy with a real certificate, and a reverse
+  proxy with a self-signed certificate when there is no domain. The Quick start
+  gains step 7, Turn on HTTPS.
+- **Self-signed certificates**, new in the reverse proxy guide: one `openssl`
+  command, Caddy's `tls internal`, nginx, and Nginx Proxy Manager's custom
+  certificate.
+- **Roadmap: Windows targets** — what carries over, what does not, and
+  `dumpcap` versus `pktmon`.
+
 ## 0.1.0-dev.29 — 2026-09-13
 
 ### Fixed

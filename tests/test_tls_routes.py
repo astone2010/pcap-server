@@ -186,6 +186,16 @@ def test_cookies_are_secure_whenever_https_is_built_in(monkeypatch):
     assert main._cookie_secure() is True
 
 
+def test_the_status_reports_the_cookie_flag_actually_applied(http_client, monkeypatch):
+    """The sign-in page warns when an HTTPS page has insecure cookies. Reading
+    the raw variable, it warned on every built-in HTTPS install that kept the
+    shipped COOKIE_SECURE=false -- which tls.md tells people they may keep."""
+    monkeypatch.setattr(main, "_COOKIE_SECURE", False)
+    assert http_client.get("/api/auth/status").json()["cookie_secure"] is False
+    monkeypatch.setattr(main.tls_manager, "_context", object())
+    assert http_client.get("/api/auth/status").json()["cookie_secure"] is True
+
+
 # --- DATA_DIR permissions -----------------------------------------------------
 
 @pytest.mark.parametrize("mode,warns", [(0o700, False), (0o750, True), (0o755, True), (0o701, True)])

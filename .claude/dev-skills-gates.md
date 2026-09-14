@@ -1,5 +1,67 @@
 # Dev Skills gate state
-Track: 0.1.0-dev.29 CLOSED AND SHIPPED 2026-09-13. Ship record uncommitted.
+
+## Current session — opened 2026-09-13 (local CLI, Fedora 44, bash)
+Track: release sequence 0.1.0-dev.30 — UI refresh of Servers + Capture (visual + flow).
+User decisions 2026-09-13: scope "Visual + flow"; stay on Opus 5 for this task only.
+ Branch claude/admiring-wright-k20ptf = origin 8832614.
+Next version would be 0.1.0-dev.30. All prior versions tagged (dev.25..dev.29).
+Implementation DONE (uncommitted), gates not yet run: index.html (servers welcome,
+usernames in sidebar, capture card/limits/footer, captures heading, flags explainer
+after list), app.js (server dots/count/facts detail, captureFromServer, SERVERS_WELCOME,
+capture stats chips/short id/error block, formatBytes, captureDuration, compact
+self-capture warning, add-form clears selection), style.css (btn focus/quiet danger,
+pills, logo mark, cards, phone toolbar fix), test_live_stream_ui alignment test now
+compares against #cap-interface.
+Docs (user request 2026-09-13): README HTTPS section high up (callout under intro,
+TOC link, ## HTTPS before Quick start: ACME recommended, proxy real cert, proxy
+self-signed; Quick start step 7 Turn on HTTPS; first-capture lead-in); roadmap
+Windows targets (README + architecture.md); reverse-proxy.md new "No domain: a
+self-signed certificate" (openssl w/ SAN+EKU, Caddy tls internal, nginx, NPM
+Custom); tls.md + operating.md pointers. Anchor check: 0 broken.
+HTTP warnings (user request): sign-in banner rebuilt (head/body/fix list/guide
+link), read-only bar one line + admin "Set up HTTPS" -> Admin HTTPS (verified over
+LAN IP 10.0.0.56), refusal panel restyled with action; _HTTPS_REMEDY + JS
+HTTPS_REMEDY shortened (ACME recommended, proxy, self-signed); "restart the
+container" -> docker compose up -d everywhere. BUG FIXED: /api/auth/status
+cookie_secure now _cookie_secure() (built-in HTTPS + COOKIE_SECURE=false falsely
+warned); test added in test_tls_routes. Recreate-not-restart note: README,
+operating.md, reverse-proxy.md, nginx-proxy-manager.md, docker-compose.yml comment.
+check.sh (all changes so far): 1265 passed, 0 failed, exit 0. Not yet a gate pass
+(version not bumped).
+Browser screenshots dark+light, 1440 and 400px:
+no horizontal overflow. check.sh before fixes: 2 failed (both fixed, re-run passed).
+
+TLS CLI hint now mirrors wizard fields (domain/email/provider/delay/staging,
+shell-quoted, never credentials) + 2 browser tests; tls.md sentence.
+
+🔢 VERSION    ✅ 0.1.0-dev.30 in all seven refs: backend/main.py:83,
+                docker-compose.yml:96, README.md:199/300/316,
+                docs/reverse-proxy.md:117/372. tls.md:245 names dev.28/dev.29
+                deliberately. v0.1.0-dev.29 on remote -> 1d9e528.
+🔨 BUILD      ✅ check.sh after bump: 1267 passed, 0 failed, exit 0. podman build
+                localhost/pcap-server:0.1.0-dev.30 ok; container serves
+                /api/auth/status, new UI markup, tls.js updateTlsCli, lego 5.4.1,
+                encryption enabled, no errors. After Gate 3 refactor
+                (captureActions): capture + live browser suites 89 passed.
+🔒 SECURITY   ✅ 0 Critical, 0 High. pip-audit clean. Diff reviewed: every new
+                innerHTML interpolation escaped (escHtml) or constant/numeric;
+                banners/bar/refusal built with textContent; CLI command shell-
+                quotes typed values, credentials never included; status
+                cookie_secure now the applied flag (no new endpoint).
+                Standing Medium (user decision): credentials over plain HTTP.
+                Quality: renderCaptures split (captureActions). selectServer ~50
+                lines, mostly one template -- accepted.
+📄 DOCS       ✅ CHANGELOG dev.30 (Changed/Fixed/Documentation). README HTTPS
+                section, step 7, roadmap Windows; reverse-proxy self-signed;
+                operating/NPM/compose recreate note; stale "red banner" refs
+                fixed; tls.md CLI prefill sentence.
+📦 RELEASE    ⏳ commit + push by Claude on the user's instruction ("do a commit
+                and push and tag"); tag handed back per §5.8. PR ➖ N/A (as
+                dev.27-29: branch is canonical).
+🚀 SHIP       ⬜
+
+---
+Track: 0.1.0-dev.29 CLOSED AND SHIPPED 2026-09-13. Ship record committed (8832614).
        0.1.0-dev.28 CLOSED AND SHIPPED 2026-09-13 (below).
 
 ## PENDING WORK — read before starting a session

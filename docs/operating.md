@@ -14,6 +14,14 @@ behind TLS — or what you give up by not.
 | `DATA_DIR` | `/app/data` | Directory for the SQLite database. Users, servers, known hosts, settings and capture history all live here, so keep it on a persistent volume. |
 | `COOKIE_SECURE` | `true` | Require HTTPS for the session cookie. Set to `false` for plain-HTTP/LAN use, or sign-in will not work. |
 
+> **Changing `COOKIE_SECURE` or `TRUST_PROXY_HEADERS`? Recreate the container,
+> do not restart it.** Edit `docker-compose.yml`, then run `docker compose up -d`
+> from its directory. Compose reads the environment when it *creates* a
+> container, so `docker compose restart` — and `docker compose stop` followed by
+> `start` — carry on with the old value, and the app behaves exactly as before.
+> `up -d` sees the change and recreates it. Everyone is signed out, as on any
+> restart.
+
 ## Settings in the Admin tab
 
 These are configurable from the Admin tab by the admin user:
@@ -232,7 +240,8 @@ as a service in this stack's own compose file, so the install carries its own
 TLS and pcap-server publishes no port at all — see
 [Running the proxy in the same stack](reverse-proxy.md#running-the-proxy-in-the-same-stack),
 which also covers DNS challenges, for a host with no inbound ports from the
-internet.
+internet. With no domain at all, a proxy can serve
+[a self-signed certificate](reverse-proxy.md#no-domain-a-self-signed-certificate).
 
 Three settings are load-bearing and easy to miss, whichever proxy you use:
 

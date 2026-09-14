@@ -95,6 +95,8 @@ environment:
   - COOKIE_SECURE=true
 ```
 
+Then `docker compose up -d` — not `restart`, which keeps the old environment.
+
 Note that NPM uses `$proxy_add_x_forwarded_for`, which appends the real peer to
 whatever the client sent — so the leftmost entry is attacker-controlled.
 pcap-server reads the **rightmost** entry for its login rate limiter precisely
@@ -132,6 +134,6 @@ replacing the first.
 
 ## Checking it worked
 
-Sign in over the proxy. If the red **"Read-only: this connection is not
-encrypted"** banner is gone and the capture list shows **Download** rather than
+Sign in over the proxy. If the amber **Read-only** bar across the top is
+gone and the capture list shows **Download** rather than
 **Download (HTTPS only)**, the proxy headers are getting through.

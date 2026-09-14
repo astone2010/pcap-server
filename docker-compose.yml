@@ -86,10 +86,14 @@
 # SSH keys are managed via the Admin panel in the web UI.
 #
 # Cookies require HTTPS by default. Set COOKIE_SECURE=false for plain HTTP.
+#
+# After changing COOKIE_SECURE or TRUST_PROXY_HEADERS, run `docker compose up -d`.
+# `docker compose restart` (or stop + start) keeps the environment the container
+# was created with, so the change silently does nothing.
 
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.29
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.30
     ports:
       - "8080:8080"
     volumes:

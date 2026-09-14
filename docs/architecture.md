@@ -711,6 +711,22 @@ subprocess handling get driven in a real browser against a real server.
 
 ## Roadmap
 
+**Windows targets.** Capture from Windows machines as well as Linux and other
+Unix hosts. The SSH half carries over: Windows ships an OpenSSH server, and
+asyncssh's SFTP client fetches from it like any other. The target side does
+not, because it is POSIX throughout: interfaces are listed from
+`/sys/class/net`, the capture is staged in `/tmp` and run as `tcpdump -v -w`
+(under `sudo -n` when the server is set to), the running packet count is parsed
+from tcpdump's stderr, and the prerequisite probe is a shell script. A Windows
+target needs its own version of each, chosen per server rather than guessed.
+The likely capture tool is Wireshark's `dumpcap.exe` over Npcap: it takes an
+interface, a BPF capture filter, a packet count, a duration and a snap length,
+and writes pcapng, which tshark already reads. `pktmon` is built in and needs
+nothing installed, but has no BPF filter and writes ETL that has to be
+converted with `pktmon etl2pcap` before tshark can open it. The argument
+validation is written for tcpdump and would need a counterpart for whichever
+tool is chosen.
+
 **MCP server.** Expose pcap-server's capabilities over the Model Context
 Protocol, so an agent can list servers, start a capture, and query the resulting
 packets as tools rather than by driving the HTTP API. The interesting questions

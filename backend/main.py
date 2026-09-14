@@ -80,7 +80,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.29"
+APP_VERSION = "0.1.0-dev.30"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -393,11 +393,10 @@ _INSECURE_ALLOWED_PATHS = frozenset({
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 _HTTPS_REMEDY = (
-    "Serve pcap-server over HTTPS. Built in: an admin requests a Let's Encrypt "
-    "certificate (ACME, DNS-01) under Admin, HTTPS, and pcap-server serves "
-    "HTTPS itself with no proxy and no inbound ports. Or put it behind a reverse proxy "
-    "that obtains its own certificates (Caddy, Nginx Proxy Manager, Traefik) and set "
-    "TRUST_PROXY_HEADERS=true so pcap-server recognises the proxy's TLS."
+    "Turn on HTTPS. Recommended: Admin \u2192 HTTPS, where pcap-server gets its own "
+    "Let's Encrypt certificate \u2014 no proxy, no inbound ports. Or put it behind a "
+    "reverse proxy (Nginx Proxy Manager, Caddy or nginx) with TRUST_PROXY_HEADERS=true; "
+    "with no domain, the proxy can use a self-signed certificate."
 )
 
 
@@ -577,7 +576,11 @@ async def auth_status(request: Request):
     user = validate_session(db, token) if token else None
     return {
         "has_users": has_users,
-        "cookie_secure": _COOKIE_SECURE,
+        # The flag actually applied, not the variable. With built-in HTTPS the
+        # cookie is Secure whatever COOKIE_SECURE says, and reporting the raw
+        # variable made the sign-in page warn "session cookies are not
+        # protected" on exactly the install that had just protected them.
+        "cookie_secure": _cookie_secure(),
         # The repo and its releases page are public; the exact running version
         # is not published to unauthenticated callers, since it tells anyone who
         # can reach the login page which build to match advisories against.
