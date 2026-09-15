@@ -13,6 +13,7 @@ behind TLS — or what you give up by not.
 | `CAPTURES_DIR` | `/app/captures` | Directory for downloaded pcap files |
 | `DATA_DIR` | `/app/data` | Directory for the SQLite database. Users, servers, known hosts, settings and capture history all live here, so keep it on a persistent volume. |
 | `COOKIE_SECURE` | `true` | Require HTTPS for the session cookie. Set to `false` for plain-HTTP/LAN use, or sign-in will not work. |
+| `HOST_ADDRESSES` | empty | Comma-separated IP addresses of the machine pcap-server runs on. Capturing from that machine is refused, but from inside a bridge network the container cannot see its host's LAN address — which is the address someone would type for their own Docker host. Naming it here closes that gap with no connection to the target needed, so it applies even to a host that is unreachable or not yet trusted. IP addresses only; anything else is logged and ignored. |
 
 > **Changing `COOKIE_SECURE` or `TRUST_PROXY_HEADERS`? Recreate the container,
 > do not restart it.** Edit `docker-compose.yml`, then run `docker compose up -d`

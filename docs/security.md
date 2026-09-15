@@ -131,14 +131,48 @@ in. The negotiated algorithm is reported, and a negotiation weaker than what
 the host offered is flagged.
 
 Trust is stored per endpoint, not per server: several server entries can point
-at one host and they share a single trust decision. Establishing it is
-admin-only, since re-pinning a host decides what every user's connections to it
-are checked against.
+at one host and they share a single trust decision.
 
-Establishing it is also a two-step review. Scanning a host asks it for its keys
-and stores nothing; the fingerprints are displayed, and only the keys the
-admin accepts are pinned — the ones that were on screen, not the result of a
+**Establishing trust and replacing it are different powers, and only the second
+is admin-only.** Accepting the fingerprints of a host you are adding a server
+for is part of adding a server, which every user can do — so any user can pin
+keys for an endpoint that has none. Two rules bound that: the keys must be for
+an endpoint the caller owns a server at, and an endpoint that already has keys
+stored is refused outright. Without the second rule a user could add a server
+pointing at a host an admin trusts, re-pin keys of their own choosing, and
+stand in the middle of the admin's connections to it. Replacing and forgetting
+keys for any endpoint at all remain admin operations, under **Admin → Known
+hosts**.
+
+Establishing it is a two-step review either way. Scanning a host asks it for
+its keys and stores nothing; the fingerprints are displayed, and only the keys
+you accept are pinned — the ones that were on screen, not the result of a
 second scan, so a key cannot change between being read and being accepted.
+
+**Keys are pinned as part of creating the server, and are rolled back with it.**
+Adding a server pins the accepted keys, connects, checks that the target is not
+the machine pcap-server runs on, and creates the row last. The invariant is
+that stored keys survive if and only if a server row references them: an
+abandoned form, a target that proves to be this machine, a key that will not
+parse — each leaves the store exactly as it found it. Trust never outlives the
+request that asked for it.
+
+A host that answered the scan but could not then be connected to is the other
+side of that same rule rather than an exception to it: the server *is* created,
+so its keys are kept, and it is marked **Never checked** until something
+connects. A host that could not be scanned at all can still be added
+deliberately — nothing is trusted and nothing is checked, and captures are
+refused until both are put right.
+
+**Deleting the last server for an endpoint forgets that endpoint's keys.** Trust
+used to outlive its subject, so re-adding a host silently inherited a pinning
+nobody had re-verified. The count is across every user's servers, because the
+keys are global: forgetting keys another user's server still verifies against
+would break their connections to prove a point about this one. The consequence
+runs the other way too — when the last server for an endpoint belongs to a
+non-admin, deleting it drops a trust decision an admin may have made. Key sets
+that no server references are listed as orphaned in **Admin → Known hosts**,
+with an action to forget them all.
 
 ## Signing in
 

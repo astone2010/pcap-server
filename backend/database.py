@@ -220,6 +220,36 @@ class Database:
             conn.execute(
                 "ALTER TABLE active_servers ADD COLUMN self_target_reason TEXT NOT NULL DEFAULT ''"
             )
+        # When something last connected to this server and proved, by boot id,
+        # that it is NOT the machine pcap-server runs on. Empty means no such
+        # proof exists -- which is not the same as "proved to be this machine",
+        # the same distinction self_target_reason above is careful about.
+        if "kernel_verified_at" not in active_columns:
+            conn.execute(
+                "ALTER TABLE active_servers ADD COLUMN kernel_verified_at TEXT NOT NULL DEFAULT ''"
+            )
+        # Every row that predates the column reads as unverified, because it
+        # is -- nothing ever recorded a check for it. Refusing all of their
+        # captures on upgrade would be a poor trade: the capture's own
+        # connection already runs the boot-id check (run_tcpdump), so the
+        # refusal those rows would gain is a better *message*, not a new
+        # protection, and it would arrive as every existing server breaking at
+        # once.
+        #
+        # So the enforcement start is written down instead of backfilling the
+        # column with a verification that never happened. Rows added from here
+        # on go through the new add flow, which verifies before it creates;
+        # rows older than this timestamp are grandfathered and still covered by
+        # the capture-time checks. On a fresh database this is written before
+        # any server exists, so nothing is ever grandfathered there.
+        enforced_from = conn.execute(
+            "SELECT value FROM settings WHERE key = 'kernel_verify_enforced_from'"
+        ).fetchone()
+        if not enforced_from:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('kernel_verify_enforced_from', ?)",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
         session_columns = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
         if "last_seen" not in session_columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN last_seen TEXT")
@@ -466,17 +496,22 @@ class Database:
     # added vanished on restart. Persisting it here makes a server permanent
     # until it is explicitly deleted, and scopes it to the user who added it.
 
-    def add_active_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool) -> None:
+    def add_active_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool, kernel_verified_at: str = "") -> None:
         """Also records the username in the suggestion list.
 
         Here rather than in the route, so the invariant holds for every caller:
         a server can never exist with a login name the Username dropdown has
         never heard of.
+
+        kernel_verified_at arrives already filled in when the add flow probed
+        the host on the way in, which is the normal path now: the row is
+        created after the boot-id check rather than before it. Empty means the
+        host could not be reached and the server was pre-staged unverified.
         """
         self._conn().execute(
-            """INSERT OR REPLACE INTO active_servers (id, user_id, name, hostname, port, username, ssh_key_name, use_sudo, added_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (server_id, user_id, name, hostname, port, username, ssh_key_name, int(use_sudo), _utcnow().isoformat()),
+            """INSERT OR REPLACE INTO active_servers (id, user_id, name, hostname, port, username, ssh_key_name, use_sudo, added_at, kernel_verified_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (server_id, user_id, name, hostname, port, username, ssh_key_name, int(use_sudo), _utcnow().isoformat(), kernel_verified_at),
         )
         self._conn().commit()
         self.remember_username(user_id, username)
@@ -518,6 +553,47 @@ class Database:
         self._conn().commit()
         return cur.rowcount > 0
 
+    def set_active_server_kernel_verified(self, server_id: str, user_id: str, when: str = "") -> bool:
+        """Record that a connection to this server proved it is not this machine.
+
+        Written only where a boot id actually came back and did not match, so
+        the column means "checked, and it was fine" rather than "nothing went
+        wrong". Passing an empty string clears it, which is what an endpoint
+        change has to do: the proof was about the old host.
+        """
+        cur = self._conn().execute(
+            "UPDATE active_servers SET kernel_verified_at = ? WHERE id = ? AND user_id = ?",
+            (when or datetime.now(timezone.utc).isoformat(), server_id, user_id),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
+    def kernel_verify_enforced_from(self) -> str:
+        """The instant after which an unverified server is refused a capture.
+
+        Servers added before it predate the column and are covered by the
+        capture-time checks instead -- see the migration for why they are not
+        backfilled.
+        """
+        return self.get_setting("kernel_verify_enforced_from")
+
+    def count_servers_for_endpoint(self, hostname: str, port: int) -> int:
+        """How many servers, belonging to ANY user, point at this endpoint.
+
+        Deliberately not scoped to a user, unlike every other active_servers
+        query here. Host keys are global -- known_hosts is UNIQUE(hostname,
+        port, key_type) with no reference to a server row -- so "is anything
+        still using this trust?" is a question about the whole install. Asking
+        it per-user would forget keys another user's server is still verifying
+        against, which is the failure mode that makes this a refcount rather
+        than a delete.
+        """
+        row = self._conn().execute(
+            "SELECT COUNT(*) AS n FROM active_servers WHERE hostname = ? AND port = ?",
+            (hostname, port),
+        ).fetchone()
+        return int(row["n"])
+
     def update_active_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool) -> bool:
         # tcpdump_path is cleared: it was discovered on the old host and says
         # nothing about wherever this server now points. os_name describes the
@@ -526,13 +602,19 @@ class Database:
         # self_target_reason is a finding about the same machine and follows the
         # same rule -- a new endpoint has not been examined yet, and carrying a
         # finding across to it would flag the wrong host.
+        # kernel_verified_at is the same claim in the other direction: a proof
+        # that the OLD host was not this machine says nothing about the new one,
+        # and keeping it would let a server be repointed at the host and keep a
+        # verification it never earned.
         cur = self._conn().execute(
             """UPDATE active_servers
                SET name = ?, hostname = ?, port = ?, username = ?, ssh_key_name = ?, use_sudo = ?, tcpdump_path = '',
                    os_name = CASE WHEN hostname = ? AND port = ? THEN os_name ELSE '' END,
-                   self_target_reason = CASE WHEN hostname = ? AND port = ? THEN self_target_reason ELSE '' END
+                   self_target_reason = CASE WHEN hostname = ? AND port = ? THEN self_target_reason ELSE '' END,
+                   kernel_verified_at = CASE WHEN hostname = ? AND port = ? THEN kernel_verified_at ELSE '' END
                WHERE id = ? AND user_id = ?""",
-            (name, hostname, port, username, ssh_key_name, int(use_sudo), hostname, port, hostname, port, server_id, user_id),
+            (name, hostname, port, username, ssh_key_name, int(use_sudo),
+             hostname, port, hostname, port, hostname, port, server_id, user_id),
         )
         self._conn().commit()
         if cur.rowcount:

@@ -10,7 +10,83 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Nothing but habit stopped a red commit reaching :dev. This workflow builds
+  # and publishes on a tag push and ran no tests at all, so a tag on a commit
+  # whose Check went red published exactly the same way a green one did.
+  #
+  # Re-running the suite here instead would add ~8 minutes to every release
+  # (Check took 8m13s on dev.35) to re-prove what the branch push already
+  # proved. So this asks the API about the run that already exists, keyed on
+  # the commit the tag points at.
+  #
+  # That key is the right one because of how this repo releases: the tag is
+  # pushed at the branch head, so the tag's commit and the branch push's commit
+  # are the same SHA. check.yml deliberately does not run on tag pushes
+  # (branches: ['**'], added in dev.34), which is why there is a run to look up
+  # rather than one about to start alongside this job.
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require a passing Check run for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Tagging straight after pushing the branch is the normal thing to
+          # do, and Check takes minutes -- so an in-progress run is waited on
+          # rather than treated as a failure. The deadline is generous against
+          # an 8-minute suite; exceeding it fails the release rather than
+          # publishing something whose tests never finished.
+          deadline=$(( $(date +%s) + 1800 ))
+
+          while true; do
+            # One line per run: "<status> <conclusion> <url>". Shaped by gh's
+            # own --jq rather than piping into jq(1), so this step depends on
+            # one tool instead of two.
+            runs=$(gh api \
+              "repos/${REPO}/actions/workflows/check.yml/runs?head_sha=${SHA}&per_page=100" \
+              --jq '.workflow_runs[] | "\(.status) \(.conclusion) \(.html_url)"')
+
+            if [ -z "$runs" ]; then
+              echo "::error::Check has never run for ${SHA}, so nothing has tested this commit."
+              {
+                echo "Push the branch so Check runs on it and then re-tag, or run Check"
+                echo "by hand against this commit (Actions -> Check -> Run workflow)."
+                echo "A commit touching only README.md, CHANGELOG.md, docs/ or .claude/"
+                echo "is skipped by check.yml's paths-ignore and lands here."
+              } >&2
+              exit 1
+            fi
+
+            if printf '%s\n' "$runs" | awk '$2 == "success" { hit = 1 } END { exit !hit }'; then
+              echo "Check passed for ${SHA}."
+              exit 0
+            fi
+
+            unfinished=$(printf '%s\n' "$runs" | awk '$1 != "completed"' | wc -l)
+            if [ "$unfinished" -eq 0 ]; then
+              echo "::error::Check ran for ${SHA} and did not pass. Refusing to publish."
+              printf '%s\n' "$runs" | sed 's/^/  /' >&2
+              exit 1
+            fi
+
+            echo "Check is still running for ${SHA} (${unfinished} unfinished) -- waiting."
+
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for Check on ${SHA} to finish."
+              exit 1
+            fi
+            sleep 20
+          done
+
   release:
+    needs: gate
     runs-on: ubuntu-latest
     permissions:
       contents: write

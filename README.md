@@ -228,7 +228,7 @@ cd /opt/docker/pcapserver
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.35/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.36/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -329,7 +329,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.35` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.36` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -345,7 +345,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcapserver
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.35/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.36/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -374,11 +374,13 @@ changes something, and none of them work over plain HTTP.
    pcap-server runs on records pcap-server's own traffic, including your
    sign-in, so it is refused — see
    [Adding a server](docs/target-hosts.md#adding-a-server).
-3. **Trust the host's keys.** Admin → Known hosts → Trust keys, or the **Trust
-   host** button on the server itself. This has to happen before anything will
-   connect: a host with no trusted keys is refused rather than connected to
-   unverified, so **Test connection**, **Check prerequisites** and captures all
-   fail until it is done.
+3. **Accept the host's keys, which Add asks for on the way in.** Nothing can
+   connect to a host whose identity is not pinned, and the check that this is
+   not the machine pcap-server runs on needs a connection — so the fingerprints
+   come first, and the server is created after the host has answered. If the
+   host is already trusted because another server points at it, you are not
+   asked. (An existing server can be trusted later with the **Trust host**
+   button on it; admins can also work from Admin → Known hosts.)
 
    You are shown each key's SHA256 fingerprint and asked to accept before
    anything is pinned. Compare them against the host itself first — on the
@@ -392,6 +394,11 @@ changes something, and none of them work over plain HTTP.
    should match character for character. Accepting without comparing pins
    whatever answered on that address, which is the one thing host key
    verification exists to prevent.
+
+   Declining, or an add that fails for any other reason, leaves nothing pinned:
+   keys accepted for a server that is not created are forgotten again. If the
+   host is not up yet you can still add it, unverified — it is marked **Never
+   checked** and its captures are refused until something connects to it.
 4. **Test connection** and **Check prerequisites**, now that they can run.
 5. **Sort out capture privilege** if the check says it is missing. It prints the
    exact command for the host in front of you — see

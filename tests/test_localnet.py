@@ -121,6 +121,65 @@ def test_the_case_address_checks_cannot_catch(monkeypatch):
     assert localnet.describe_if_local(host_lan_address) == ""
 
 
+# --- HOST_ADDRESSES: the operator closing that gap by hand ----------------------
+#
+# The only check that works with no connection, no trusted host keys and no
+# reachable target -- so it covers the case above even when the boot-id check,
+# which needs a connection by definition, cannot run at all.
+
+
+def test_a_declared_host_address_catches_what_the_address_layer_cannot(monkeypatch):
+    """The same scenario as the test above, with HOST_ADDRESSES set."""
+    host_lan_address = "192.168.1.50"
+    monkeypatch.setenv("HOST_ADDRESSES", host_lan_address)
+    _stub(
+        monkeypatch,
+        resolves_to={host_lan_address},
+        own={"172.17.0.5"},
+        gateways={"172.17.0.1"},
+    )
+    result = localnet.describe_if_local(host_lan_address)
+    assert "HOST_ADDRESSES" in result, "the reason must name what refused it"
+    assert host_lan_address in result
+
+
+def test_declared_addresses_do_not_flag_an_unrelated_target(monkeypatch):
+    """It must not become a wall: naming the host does not refuse everything."""
+    monkeypatch.setenv("HOST_ADDRESSES", "192.168.1.50")
+    _stub(monkeypatch, resolves_to={"192.168.1.99"}, own={"172.17.0.5"})
+    assert localnet.describe_if_local("some-other-box") == ""
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("192.168.1.50", {"192.168.1.50"}),
+    ("192.168.1.50,10.0.0.5", {"192.168.1.50", "10.0.0.5"}),
+    ("  192.168.1.50 , 10.0.0.5  ", {"192.168.1.50", "10.0.0.5"}),
+    ("192.168.1.50;10.0.0.5", {"192.168.1.50", "10.0.0.5"}),
+    ("", set()),
+    (",,", set()),
+    # IPv6 is normalised, so a declared address matches getaddrinfo's spelling
+    # of the same address rather than the operator's.
+    ("2001:DB8::0001", {"2001:db8::1"}),
+])
+def test_host_addresses_parsing(monkeypatch, raw, expected):
+    monkeypatch.setenv("HOST_ADDRESSES", raw)
+    assert localnet._declared_host_addresses() == expected
+
+
+def test_a_typo_in_host_addresses_is_dropped_and_does_not_take_the_rest_with_it(monkeypatch):
+    """A typo here silently removes a protection the operator believes they
+    turned on, so the valid entries must survive it -- and it is logged."""
+    monkeypatch.setenv("HOST_ADDRESSES", "not-an-ip,192.168.1.50")
+    assert localnet._declared_host_addresses() == {"192.168.1.50"}
+
+
+def test_declared_addresses_are_part_of_local_addresses(monkeypatch):
+    monkeypatch.setenv("HOST_ADDRESSES", "192.168.1.50")
+    monkeypatch.setattr(localnet, "_own_addresses", lambda: {"127.0.0.1"})
+    monkeypatch.setattr(localnet, "_default_gateways", lambda: {"172.17.0.1"})
+    assert "192.168.1.50" in localnet.local_addresses()
+
+
 # --- resolve(): IP literals and failure handling --------------------------------
 
 

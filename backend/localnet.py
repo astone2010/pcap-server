@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import re
 import socket
 import struct
@@ -178,9 +179,39 @@ def _own_addresses() -> set[str]:
     return addrs
 
 
+def _declared_host_addresses() -> set[str]:
+    """Addresses the operator has told us belong to the host, via HOST_ADDRESSES.
+
+    The one answer to the gap this module's docstring describes at length: a
+    bridged container cannot see its host's LAN address, and that address is
+    exactly what a person types when they mean their own Docker host. Every
+    other way of catching it needs a connection -- the boot-id check needs one
+    by definition -- so this is the only check that works with no connection,
+    no trusted host keys and no reachable target at all.
+
+    Read from the environment on each call rather than captured at import, so
+    the value can be changed without a code path caring when it was set.
+    Anything that is not an IP address is dropped with a warning rather than
+    quietly ignored: a typo here silently removes a protection the operator
+    believes they turned on.
+    """
+    addresses: set[str] = set()
+    for entry in os.environ.get("HOST_ADDRESSES", "").replace(";", ",").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            addresses.add(str(ipaddress.ip_address(entry)))
+        except ValueError:
+            logger.warning(
+                "HOST_ADDRESSES entry %r is not an IP address and will be ignored", entry
+            )
+    return addresses
+
+
 def local_addresses() -> set[str]:
     """Addresses that mean 'this machine' or 'the machine hosting it'."""
-    return _own_addresses() | _default_gateways()
+    return _own_addresses() | _default_gateways() | _declared_host_addresses()
 
 
 def resolve(hostname: str) -> set[str]:
@@ -231,6 +262,16 @@ def describe_if_local(hostname: str) -> str:
         return (
             f"{hostname!r} resolves to {sorted(overlap)[0]}, which is an address "
             "pcap-server itself answers on"
+        )
+
+    # Checked before the gateway, and phrased so it names HOST_ADDRESSES: an
+    # operator who set this wants to know it is what refused the target, and an
+    # operator who set it wrongly has no other way to find out.
+    declared = _declared_host_addresses() & targets
+    if declared:
+        return (
+            f"{hostname!r} resolves to {sorted(declared)[0]}, which HOST_ADDRESSES "
+            "names as an address of the machine pcap-server runs on"
         )
 
     gateways = _default_gateways()

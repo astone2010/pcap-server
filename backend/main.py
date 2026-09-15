@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
@@ -59,6 +59,7 @@ from backend.models import (
     KnownHostConfirm,
     KnownHostEndpoint,
     ServerAuth,
+    ServerCreate,
     ServerInfo,
     UsernameRequest,
 )
@@ -103,7 +104,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.35"
+APP_VERSION = "0.1.0-dev.36"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -126,6 +127,7 @@ async def _housekeeping() -> None:
             packet_rate_limiter.prune()
             capture_start_rate_limiter.prune()
             filter_check_rate_limiter.prune()
+            host_scan_rate_limiter.prune()
             # Renews under 30 days left, and picks up a certificate renewed from
             # the CLI. lego can take minutes, so it runs off the event loop.
             await asyncio.to_thread(tls_manager.maybe_renew)
@@ -245,6 +247,18 @@ capture_start_rate_limiter = SlidingWindowLimiter(
 # before a start, and giving it a separate admin knob would be one more number
 # to keep in step for no benefit.
 filter_check_rate_limiter = SlidingWindowLimiter(
+    max_per_minute=db.get_setting_int("rate_limit_packets_per_min"),
+)
+
+# Scanning a host for its keys spawns ssh-keyscan against an address the caller
+# chose, and it is now reachable by any signed-in user rather than admins only
+# -- the add form has to show fingerprints before the server exists, and every
+# user can add a server. Two consequences follow from the widening, and this
+# budget is the answer to both: a process spawn per call, and an outbound
+# connection to an arbitrary host, neither of which should be available in a
+# tight loop. The same per-minute figure as the filter check, for the same
+# reason -- it is a spawn driven by a form button.
+host_scan_rate_limiter = SlidingWindowLimiter(
     max_per_minute=db.get_setting_int("rate_limit_packets_per_min"),
 )
 
@@ -1019,6 +1033,7 @@ def _server_from_row(row: dict) -> ServerInfo:
         tcpdump_path=row["tcpdump_path"] if "tcpdump_path" in row.keys() else "",
         os_name=row.get("os_name", ""),
         self_target_reason=row.get("self_target_reason", ""),
+        kernel_verified_at=row.get("kernel_verified_at", ""),
         added_at=datetime.fromisoformat(row["added_at"]),
     )
 
@@ -1069,6 +1084,23 @@ def _record_self_target(server_id: str, user_id: str, reason: str) -> None:
         logger.warning("could not record self-target finding for %s", server_id, exc_info=True)
 
 
+def _record_kernel_verified(server_id: str, user_id: str) -> None:
+    """Note that a connection ran the self-target check and it did not refuse.
+
+    Deliberately not "proved remote". A target that reports no boot id -- a BSD
+    host, a masked /proc -- proves nothing either way, and localnet is explicit
+    that this must never become a refusal. So what is recorded is the weaker,
+    true statement: something connected, the check ran, and the answer was not
+    "this is the machine pcap-server runs on". That is exactly the claim the
+    capture gate needs, and it is not a claim about the boot id being readable.
+    """
+    try:
+        db.set_active_server_kernel_verified(server_id, user_id)
+    except Exception:
+        # Never turn a successful check into a 500 over bookkeeping.
+        logger.warning("could not record kernel check for %s", server_id, exc_info=True)
+
+
 async def _reject_self_kernel(boot_id: str, server_id: str, user_id: str, action: str) -> None:
     """Refuse a target that proves, over its own connection, to be this machine.
 
@@ -1079,6 +1111,59 @@ async def _reject_self_kernel(boot_id: str, server_id: str, user_id: str, action
     _record_self_target(server_id, user_id, finding)
     if finding:
         _refuse_self_target(finding, action)
+    _record_kernel_verified(server_id, user_id)
+
+
+def _server_is_grandfathered(srv: ServerInfo) -> bool:
+    """True for a server that predates the self-target check being recorded.
+
+    Those rows read as unverified because nothing ever recorded a check for
+    them, not because a check failed. Refusing their captures on upgrade would
+    be a regression dressed as a security improvement: the capture's own
+    connection already runs the boot-id check, so what they would gain is a
+    better message, and what they would cost is every existing server breaking
+    at once. The migration writes the cutoff; see it for the full reasoning.
+    """
+    enforced = db.kernel_verify_enforced_from()
+    if not enforced:
+        return True
+    try:
+        cutoff = datetime.fromisoformat(enforced)
+    except ValueError:
+        logger.warning("kernel_verify_enforced_from is not a timestamp: %r", enforced)
+        return True
+    added = srv.added_at
+    if added.tzinfo is None:
+        added = added.replace(tzinfo=timezone.utc)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    return added < cutoff
+
+
+def _require_kernel_checked(srv: ServerInfo) -> None:
+    """Refuse a capture from a server nothing has ever successfully connected to.
+
+    This is the honest state for a server added while its host was down: the
+    add flow pins its keys and creates the row, but no connection ever ran the
+    self-target check against it, so nothing has ruled out that it is this very
+    machine. run_tcpdump checks the capture's own connection and would refuse
+    it there anyway -- what this adds is the refusal arriving before a capture
+    is started on the remote host, with a sentence saying what to do about it.
+    """
+    if srv.kernel_verified_at or _server_is_grandfathered(srv):
+        return
+    raise HTTPException(400, {
+        "code": "server_unverified",
+        "reason": (
+            f"Nothing has successfully connected to {srv.hostname}:{srv.port} yet, "
+            "so it has never been checked against this machine."
+        ),
+        "explanation":
+            "This server was added while its host could not be reached, so the check "
+            "that it is not the machine pcap-server runs on has never had a "
+            "connection to run over. Use Check prerequisites on this server -- once "
+            "that connects, captures are allowed.",
+    })
 
 
 def _key_path(key_name: str) -> Path:
@@ -1111,27 +1196,246 @@ async def list_servers(user: dict = Depends(get_current_user)):
         servers.append({
             **info.model_dump(),
             "host_trusted": bool(db.get_known_hosts(info.hostname, info.port)),
+            # Reported rather than left to be discovered at capture time, for
+            # the same reason host_trusted is: a list that does not say which
+            # entries cannot be used sends people to a failure they cannot
+            # explain. Grandfathered rows report True because the gate lets
+            # them through -- this field is what the gate will do, not a claim
+            # about what was checked.
+            "verified": bool(info.kernel_verified_at) or _server_is_grandfathered(info),
         })
     return servers
 
 
+@app.post("/api/host-keys/scan")
+async def scan_host_keys(req: KnownHostEndpoint, user: dict = Depends(get_current_user)):
+    """Ask a host for its keys and hand them back for review. Stores nothing.
+
+    The non-admin twin of /api/admin/known-hosts/scan, and the first half of
+    adding a server. It exists because the add form has to show fingerprints
+    before the server row is created, and adding a server is something every
+    user can do -- see ServerCreate for why the ordering had to change.
+
+    Widening this to non-admins is safe in a way the *confirm* half is not:
+    scanning is non-mutating by construction, so calling it cannot change what
+    this server trusts. What it can do is spawn ssh-keyscan against an address
+    the caller chose, which is why it is rate limited.
+    """
+    if not host_scan_rate_limiter.allow(user["id"]):
+        raise HTTPException(429, "too many host key scans, slow down")
+    keys = await ssh_manager.scan_host_keys(req.hostname, req.port)
+    if not keys:
+        raise HTTPException(502, "no host keys found")
+    return {"ok": True, "keys": keys}
+
+
 @app.post("/api/servers")
-async def add_server(auth: ServerAuth, user: dict = Depends(get_current_user)):
-    await _reject_self_target(auth.hostname)
-    _require_key(auth.ssh_key_name)
-    info = ServerInfo(**auth.model_dump())
-    db.add_active_server(
-        info.id, user["id"], info.name, info.hostname, info.port,
-        info.username, info.ssh_key_name, info.use_sudo,
+async def add_server(req: ServerCreate, user: dict = Depends(get_current_user)):
+    """Trust the reviewed keys, probe the host, and only then create the row.
+
+    The old order made the strong check unreachable here by construction: the
+    kernel check needs a connection, a connection needs trusted host keys, and
+    trusting was only offered once a server existed to trust it for. So a
+    server pointing at this very machine was always created, and refused later.
+
+    Reversing it costs one invariant, enforced by the `finally` below: host
+    keys pinned by this request survive only if a row is created. An abandoned
+    form, a refused self-target and a host that turns out to be unreachable all
+    leave known_hosts exactly as they found it. Trust never outlives the
+    request that asked for it, so this flow manufactures no orphans of the kind
+    the delete path now cleans up.
+    """
+    await _reject_self_target(req.hostname)
+    _require_key(req.ssh_key_name)
+
+    auth = ServerAuth(**{
+        k: v for k, v in req.model_dump().items()
+        if k not in ("host_keys", "add_unverified")
+    })
+
+    # Only ever pinned when the endpoint has nothing stored. An endpoint another
+    # server already trusts keeps the keys it has: re-pinning from this request
+    # would let one user silently replace a key an admin reviewed, and the
+    # rollback below could then not restore it.
+    pinned = False
+    if not db.get_known_hosts(req.hostname, req.port):
+        if not req.host_keys and not req.add_unverified:
+            raise HTTPException(400, {
+                "code": "host_keys_required",
+                "reason": f"{req.hostname}:{req.port} has no trusted host keys yet.",
+                "explanation":
+                    "Scan the host and accept its fingerprints before adding it. "
+                    "Until its identity is pinned, nothing can connect to it -- "
+                    "including the check that this is not the machine pcap-server "
+                    "runs on.",
+            })
+        if req.host_keys:
+            _pin_reviewed_keys(req.hostname, req.port, req.host_keys, user["id"])
+            pinned = True
+        else:
+            # add_unverified: a host that could not be scanned because it is
+            # not up yet. The probe below still runs and still fails closed --
+            # _connect refuses a host with no trusted keys -- so this lands in
+            # the unreachable path and creates an untrusted, unverified row.
+            logger.info(
+                "user %s added %s:%d unverified -- no host keys could be scanned",
+                user["id"], req.hostname, req.port,
+            )
+
+    created = False
+    try:
+        verified_at, unreachable = await _probe_before_create(auth)
+        info = ServerInfo(**auth.model_dump(), kernel_verified_at=verified_at)
+        db.add_active_server(
+            info.id, user["id"], info.name, info.hostname, info.port,
+            info.username, info.ssh_key_name, info.use_sudo,
+            kernel_verified_at=verified_at,
+        )
+        created = True
+        return {**info.model_dump(), "unreachable": unreachable}
+    finally:
+        # The whole invariant, in one place: keys are kept if and only if a row
+        # references them.
+        if pinned and not created:
+            forgotten = db.forget_known_host(req.hostname, req.port)
+            logger.info(
+                "rolled back %d host key(s) for %s:%d -- the server was not created",
+                forgotten, req.hostname, req.port,
+            )
+
+
+@app.post("/api/servers/{server_id}/trust-host")
+async def trust_server_host(
+    server_id: str,
+    req: KnownHostConfirm,
+    user: dict = Depends(get_current_user),
+):
+    """Pin reviewed keys for a server the caller owns.
+
+    The counterpart to accepting fingerprints in the add form, for a server
+    that already exists -- one added before this flow, or one whose keys were
+    forgotten when a sibling was deleted. Trusting was admin-only, which is now
+    theatre rather than a control: a non-admin who can accept fingerprints
+    while adding a server can reach the same state by deleting this row and
+    adding it again, and that path is strictly longer for no gain.
+
+    So the authorisation is 'you own a server at this endpoint' rather than
+    'you are an admin'. Two things keep that bounded:
+
+      * the keys must be for THIS server's endpoint, not any host the caller
+        can name; and
+      * an endpoint that already has keys is refused outright. This route
+        establishes trust where there is none -- it never replaces it. Without
+        that rule a non-admin could add a server pointing at an endpoint an
+        admin trusts, re-pin keys of their own choosing, and stand in the
+        middle of the admin's connections to it.
+
+    Admin -> Known Hosts keeps the operations this one refuses: replacing and
+    forgetting keys for any endpoint at all.
+    """
+    srv = _require_server(server_id, user["id"])
+    if (req.hostname, req.port) != (srv.hostname, srv.port):
+        raise HTTPException(400, "those keys are for a different host than this server")
+    if db.get_known_hosts(srv.hostname, srv.port):
+        raise HTTPException(409, {
+            "code": "host_already_trusted",
+            "reason": f"{srv.hostname}:{srv.port} already has stored host keys.",
+            "explanation":
+                "Replacing keys that are already pinned is an admin action, under "
+                "Admin -> Known Hosts. If this host has genuinely been rebuilt, an "
+                "admin has to forget the old keys before new ones can be accepted.",
+        })
+    fingerprints = _pin_reviewed_keys(srv.hostname, srv.port, req.keys, user["id"])
+    return {"ok": True, "stored": len(fingerprints), "keys": fingerprints}
+
+
+def _pin_reviewed_keys(hostname: str, port: int, keys, user_id: str) -> list[dict]:
+    """Store the keys the user accepted, exactly as they were shown.
+
+    The same rule /api/admin/known-hosts/confirm follows and for the same
+    reason: what gets pinned is what was on screen, never a fresh scan, so a
+    key cannot change between the review and the acceptance. Every key is
+    fingerprinted again on the way in, because a blob that will not parse
+    cannot have been reviewed whatever the UI displayed.
+    """
+    fingerprints = []
+    for key in keys:
+        fingerprint = host_key_fingerprint(key.key_type, key.host_key)
+        if not fingerprint:
+            raise HTTPException(400, f"{key.key_type} key is not a usable public key")
+        fingerprints.append({"key_type": key.key_type, "fingerprint": fingerprint})
+
+    ssh_manager.store_host_keys(
+        hostname, port,
+        [{"key_type": k.key_type, "host_key": k.host_key} for k in keys],
+        user_id,
     )
-    return info
+    logger.info(
+        "user %s pinned %d host key(s) for %s:%d: %s",
+        user_id, len(keys), hostname, port,
+        ", ".join(f["fingerprint"] for f in fingerprints),
+    )
+    return fingerprints
+
+
+async def _probe_before_create(auth: ServerAuth) -> tuple[str, str]:
+    """Connect, run the self-target check, and report what was learned.
+
+    Returns (kernel_verified_at, unreachable_reason). A self-target raises --
+    that is the point of probing here at all. An unreachable host does not:
+    pre-staging a server for a machine that is not up yet is a capability the
+    old flow had, and taking it away to close this hole would be a poor trade.
+    Such a row is created unverified, and the capture gate refuses it until
+    something has actually connected.
+    """
+    try:
+        result = await ssh_manager.test_connection(auth)
+    except FileNotFoundError as exc:
+        # A missing key is the caller's mistake, not an unreachable host.
+        raise HTTPException(400, str(exc))
+    except ConnectionError as exc:
+        return "", str(exc)
+    except Exception:
+        logger.exception("probe failed while adding %s", auth.hostname)
+        return "", "the host could not be reached"
+
+    finding = describe_if_same_kernel(result.get("boot_id", ""))
+    if finding:
+        # No row to record it against, which is the whole improvement: this
+        # refusal now happens before the server exists rather than after.
+        _refuse_self_target(finding, "This server cannot be added")
+    return datetime.now(timezone.utc).isoformat(), ""
 
 
 @app.delete("/api/servers/{server_id}")
 async def remove_server(server_id: str, user: dict = Depends(get_current_user)):
+    """Delete the server, and the host's keys with it when nothing else needs them.
+
+    Trust used to outlive its subject: known_hosts carries no reference to any
+    server row, so deleting a server left its keys pinned and re-adding that
+    host silently inherited a pinning nobody had re-verified. In a multi-user
+    install the same free pass went to anyone else who added that hostname.
+
+    The refcount is across ALL users, not the caller's own servers, because the
+    table it guards is global -- forgetting keys another user's server still
+    verifies against would break their connections to prove a point about this
+    one. Accepted consequence, decided with the user: when the last server for
+    an endpoint belongs to a non-admin, deleting it drops a decision an admin
+    made. Admin -> Known hosts is where that becomes visible.
+    """
+    srv = _require_server(server_id, user["id"])
     if not db.delete_active_server(server_id, user["id"]):
         raise HTTPException(404, "server not found")
-    return {"ok": True}
+
+    forgotten = 0
+    if db.count_servers_for_endpoint(srv.hostname, srv.port) == 0:
+        forgotten = db.forget_known_host(srv.hostname, srv.port)
+        if forgotten:
+            logger.info(
+                "forgot %d host key(s) for %s:%d -- no server points at it any more",
+                forgotten, srv.hostname, srv.port,
+            )
+    return {"ok": True, "host_keys_forgotten": forgotten}
 
 
 @app.get("/api/servers/{server_id}/interfaces")
@@ -1612,6 +1916,13 @@ async def start_capture(req: CaptureRequest, user: dict = Depends(get_current_us
     if finding:
         _record_self_target(srv.id, user["id"], finding)
         _refuse_self_target(finding, "This capture cannot start")
+    # Last of the pre-flight refusals, deliberately. "Nothing has ever checked
+    # this server" is the weakest thing that can be said about a target, and it
+    # must never be said in place of "this IS the machine pcap-server runs on"
+    # -- both are 400s, but only the self-capture code raises the blocking
+    # alert in the UI, and an unverified row that is also a self-target would
+    # have been reported as the lesser problem.
+    _require_kernel_checked(srv)
     try:
         info = await capture_manager.start(req, srv, user["id"])
         return info

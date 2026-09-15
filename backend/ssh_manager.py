@@ -20,7 +20,20 @@ from backend.models import ServerAuth
 
 logger = logging.getLogger(__name__)
 
-LOGIN_TIMEOUT = 15          # seconds to complete TCP connect + SSH auth
+# asyncssh's login_timeout covers authentication only -- it starts once the TCP
+# connection is up. connect_timeout is the one that bounds the whole outbound
+# attempt, and asyncssh disables it by default, "relying on the system's default
+# TCP connect timeout". That default is around two minutes on Linux, so a host
+# that black-holes SYNs (a firewall that drops rather than refuses -- the common
+# case) hung the request for that long. The comment here has always claimed
+# login_timeout covered TCP connect; this makes that true rather than fixing the
+# comment, because the claim was the right intent.
+#
+# It matters more now than it did: adding a server probes the host before the
+# row is created, so this bound is what a person waits on when they type an
+# address that is not there, rather than something only a Test connection hit.
+CONNECT_TIMEOUT = 15        # seconds for TCP connect + SSH handshake + auth
+LOGIN_TIMEOUT = 15          # seconds to complete SSH auth, once connected
 KEEPALIVE_INTERVAL = 30     # seconds between keepalives on a long capture
 KEEPALIVE_COUNT_MAX = 3     # missed keepalives before the connection is dropped
 FETCH_TIMEOUT = 300        # seconds for the pcap download before it is abandoned
@@ -346,6 +359,9 @@ class SSHManager:
                 # A host that accepts TCP but never finishes the handshake would
                 # otherwise hang the request indefinitely.
                 login_timeout=LOGIN_TIMEOUT,
+                # And one that never answers the SYN at all would hang it for
+                # the system's TCP timeout, which login_timeout never sees.
+                connect_timeout=CONNECT_TIMEOUT,
                 # A capture can run for minutes. Without keepalives a peer that
                 # disappears mid-capture leaves us waiting on a dead socket.
                 keepalive_interval=KEEPALIVE_INTERVAL,

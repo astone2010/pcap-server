@@ -192,6 +192,13 @@ async def test_an_unreachable_server_still_leaves_any_in_the_interface_list(app_
             "username": "capture-user",
             "ssh_key_name": KEY_NAME,
             "use_sudo": False,
+            # Adding a server now scans the host for its keys and shows the
+            # fingerprints first, so the self-target check can run before the
+            # row exists. This host answers nothing by definition, so there are
+            # no keys to review -- and this is the flag for exactly that case:
+            # pre-staging a server for a machine that is not up. Which is what
+            # "unreachable" means here.
+            "add_unverified": True,
         },
     ).raise_for_status()
 

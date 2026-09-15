@@ -273,6 +273,44 @@ class ServerAuth(BaseModel):
         return v
 
 
+class ServerCreate(ServerAuth):
+    """Adding a server, with the host keys the user accepted on the way in.
+
+    The keys are part of the create request rather than a separate call
+    because the two have to succeed or fail together. Trusting a host used to
+    be reachable only after the server existed -- the button lived on the
+    server list -- which meant the probe could not connect, so the boot-id
+    check could not run, so a server pointing at this very machine was created
+    and only refused later, at capture time.
+
+    Sending the reviewed keys with the create inverts that: they are pinned,
+    the probe runs, the kernel check gets its connection, and a self-target is
+    refused before any row exists. Keys pinned for a server that is then not
+    created are rolled back, so trust never outlives the request that asked
+    for it.
+
+    Empty is valid and means "this host is already trusted" -- the add form
+    only asks when there is nothing stored for the endpoint.
+    """
+
+    host_keys: list[KnownHostKey] = Field(default_factory=list, max_length=8)
+
+    # Adding a host that could not be scanned at all, on purpose.
+    #
+    # A key-first add has an obvious hole in it: keys come from ssh-keyscan,
+    # and a host that is down answers with none -- so requiring them would mean
+    # a server could no longer be configured before the machine it points at
+    # exists. Pre-staging is a capability the old flow had and this must not
+    # quietly remove it.
+    #
+    # So the caller can say "I know, add it anyway". Nothing is trusted and
+    # nothing is verified: the row is created untrusted and unchecked, exactly
+    # as every row was before this release, and it cannot capture until
+    # something has connected to it. It is never a default -- the form asks,
+    # and only after the scan has actually failed.
+    add_unverified: bool = False
+
+
 class ServerInfo(ServerAuth):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     # PRETTY_NAME from the host's /etc/os-release, as of the last prerequisite
@@ -282,6 +320,11 @@ class ServerInfo(ServerAuth):
     # last time anything connected to it. Empty is "no such finding", which is
     # not the same as "proved remote". Server-set, like os_name.
     self_target_reason: str = ""
+    # When something last connected and proved, by boot id, that this target is
+    # NOT the machine pcap-server runs on. Empty means no connection has ever
+    # proved that -- a host added while it was unreachable, or a row older than
+    # the column. Server-set, like the two above.
+    kernel_verified_at: str = ""
     added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

@@ -1,5 +1,108 @@
 # Changelog
 
+## 0.1.0-dev.36 — 2026-09-15
+
+### Security
+
+- **A host's fingerprints are now reviewed and accepted while the server is
+  being added, not after it exists.** The old order made the strongest check
+  unreachable at exactly the moment it mattered: the kernel check needs a
+  connection, a connection needs trusted host keys, and trusting a host was
+  only offered once there was a server to trust it for. So a server pointing at
+  the machine pcap-server runs on was always created, and only refused later.
+  **Add** now pins the keys you accepted, connects, runs the check, and creates
+  the row last — a self-target is refused before anything is stored.
+- **Keys pinned by an add that does not complete are rolled back.** The rule is
+  that stored keys survive if and only if a server row references them: an
+  abandoned form, a host that turns out to be this machine, a key that will not
+  parse — each leaves `known_hosts` exactly as it found it. Trust never
+  outlives the request that asked for it. A host whose keys you accepted but
+  which then could not be reached is the other side of the same rule: that
+  server *is* created, so its keys are kept, and it is marked **Never checked**
+  until something connects.
+- **A host that is not running yet can still be added, on purpose.** A
+  key-first add has an obvious hole in it — keys come from `ssh-keyscan`, and a
+  host that is down answers with none — so requiring them would have quietly
+  removed the ability to configure a server before the machine it points at
+  exists. When the scan cannot reach the host, the form offers to add it
+  anyway: nothing trusted, nothing checked, and no captures until both are put
+  right. It is never the default, and it is never offered after fingerprints
+  were shown and declined — that answer is not one to talk anybody out of.
+- **Accepting a host's fingerprints is no longer admin-only.** Adding a server
+  is something every user can do, and it now includes accepting the host's
+  keys, so this is a real widening of who can establish trust — stated here
+  rather than buried as a UX change. What bounds it: the new route pins keys
+  only for an endpoint the caller already owns a server at, and it refuses
+  outright when that endpoint already has keys stored. It establishes trust
+  where there is none; it never replaces it. **Replacing** and **forgetting**
+  keys for arbitrary endpoints stay admin-only, under Admin → Known hosts.
+- **Deleting the last server for a host forgets that host's keys.** Trust used
+  to outlive its subject: nothing in `known_hosts` referenced a server row, so
+  deleting a server left its keys pinned and re-adding that host silently
+  inherited a pinning nobody had re-verified — and in a multi-user install, so
+  did anyone else who added that hostname. The count is across every user's
+  servers, because the keys are global: forgetting keys another user's server
+  still verifies against would break their connections. The consequence is
+  accepted and worth knowing: when the last server for an endpoint belongs to a
+  non-admin, deleting it drops a trust decision an admin may have made.
+- **Admin → Known hosts now names orphaned key sets and offers to forget them
+  all.** New orphans should not appear after this release; an install that
+  predates it carries whatever its earlier deletions left behind.
+- **A capture is refused from a server nothing has ever successfully connected
+  to.** That is the honest state of a server added while its host was down: its
+  keys may be pinned, but the check that it is not this machine has never had a
+  connection to run over. The server list and its detail page both say so, and
+  **Check prerequisites** clears it. Servers that predate this release are not
+  refused — the capture's own connection already runs the check, so what they
+  would gain is a better message and what it would cost is every existing
+  server breaking at once.
+- **`HOST_ADDRESSES` closes the one gap the address checks could never see.**
+  From inside a bridge network the container can see loopback, its own
+  addresses, the default gateway and `host.docker.internal` — but not the
+  host's LAN address, which is exactly what a person types when they mean their
+  own Docker host. The kernel check catches it, but only once something can
+  connect. Naming the host's addresses in `docker-compose.yml` refuses it with
+  no connection at all, so it applies to a host that is unreachable or not yet
+  trusted. Entries that are not IP addresses are logged and ignored rather than
+  silently dropped.
+- **The release workflow will no longer publish a commit that Check has not
+  passed.** Tagging built and pushed to ghcr regardless of whether the test
+  suite went green — nothing but habit stopped a red commit reaching `:dev`.
+  The release job now asks the API for Check's result on the tagged commit,
+  waits if it is still running, and refuses to publish without a success. It
+  does not re-run the suite: that would add eight minutes to every release to
+  re-prove what the branch push already proved.
+
+### Fixed
+
+- **`entrypoint.sh` no longer fails silently when the data directories are
+  unset or unwritable.** The chown loop was keyed off `$DATA_DIR`,
+  `$CAPTURES_DIR` and `$SSH_KEYS_DIR`, which `docker-compose.yml` always sets —
+  so a hand-rolled `docker run` that omitted them chowned nothing, and the app
+  then died with `unable to open database file` and nothing pointing at
+  ownership as the cause. The three paths now default to the same values the
+  backend falls back to, a failing chown says what failed instead of being
+  swallowed by `|| true`, and each directory is proved writable by `appuser`
+  with an actual write. An unwritable `DATA_DIR` refuses to start, naming the
+  directory and what to do about it; the other two warn and carry on, because a
+  read-only SSH-key mount can be a deliberate choice.
+- **A host that drops SYNs no longer hangs the request for two minutes.**
+  asyncssh's `login_timeout` starts once the TCP connection is up, so nothing
+  bounded the connect itself and it fell back to the system's TCP timeout. This
+  matters more now that adding a server probes the host: it is what you wait on
+  after typing an address that is not there.
+- `host.docker.internal` resolves on plain Linux hosts again — `docker-compose.yml`
+  now sets the `host-gateway` mapping Docker Desktop provides for free. The
+  refusal already treated that name as the host; now there is an address behind
+  it for the check to see.
+
+### Documentation
+
+- `docs/security.md`, `docs/architecture.md`, `docs/target-hosts.md` and the
+  README describe the new add flow, who may establish host-key trust and who
+  may replace it, and what happens to a host's keys when its last server is
+  deleted. `docs/operating.md` documents `HOST_ADDRESSES`.
+
 ## 0.1.0-dev.35 — 2026-09-15
 
 ### Security

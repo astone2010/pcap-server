@@ -26,6 +26,11 @@ on:
       - '.claude/**'
       - '.github/workflows/**'
   pull_request:
+  # The escape hatch release.yml's gate points at. That gate refuses to publish
+  # a commit Check has never run for, and paths-ignore above means a commit
+  # touching only docs can be exactly that commit. Running Check by hand on the
+  # branch gives it the run it is looking for, keyed on the branch head's SHA.
+  workflow_dispatch:
 
 jobs:
   test:

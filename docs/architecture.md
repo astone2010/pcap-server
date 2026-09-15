@@ -571,11 +571,41 @@ behaviour, which 0.1.0-dev.17 replaced.) The negotiated algorithm is reported
 after connecting, and a negotiation weaker than what the host had available is
 flagged.
 
-Keys are taken on in two steps. `POST /api/admin/known-hosts/scan` runs
-ssh-keyscan and returns each key with its OpenSSH SHA256 fingerprint, storing
-nothing; `POST /api/admin/known-hosts/confirm` pins the keys handed back to it.
-Confirm deliberately does not re-scan: the keys it stores are the ones the
-admin read, so nothing can change between the display and the acceptance.
+Keys are taken on in two steps. A scan runs ssh-keyscan and returns each key
+with its OpenSSH SHA256 fingerprint, storing nothing; a confirm pins the keys
+handed back to it. Confirm deliberately does not re-scan: the keys it stores
+are the ones the operator read, so nothing can change between the display and
+the acceptance.
+
+There are two scan routes and they differ only in who may call them.
+`POST /api/admin/known-hosts/scan` is admin-only and pairs with
+`/api/admin/known-hosts/confirm`. `POST /api/host-keys/scan` is the same
+non-mutating scan open to any signed-in user, because the add-server form has
+to show fingerprints before the server exists — scanning cannot change what
+this install trusts, so widening it costs nothing but an ssh-keyscan spawn
+against a caller-chosen address, which is rate limited on the same budget as
+the filter check.
+
+The confirm half is where the powers separate. `POST /api/servers` carries the
+accepted keys with the create; `POST /api/servers/{id}/trust-host` does the
+same for a server that already exists. Both are open to the server's owner, and
+both refuse an endpoint that already has keys stored — they establish trust
+where there is none and never replace it. Replacing and forgetting stay on the
+admin pair.
+
+**Ordering, and why it was inverted.** The kernel check below needs a
+connection; a connection needs pinned host keys; pinning was once only offered
+for a server that already existed. A server pointing at this very machine was
+therefore always created and only refused later. `add_server` now pins, probes,
+checks and creates in that order, with one invariant enforced in a `finally`:
+keys pinned by a request survive only if that request creates a row. So the
+flow manufactures no orphans of its own.
+
+**Lifetime.** `known_hosts` carries no reference to a server row, so deleting a
+server used to leave its keys behind for the next person to add that hostname.
+`count_servers_for_endpoint` — deliberately unscoped by user, unlike every
+other `active_servers` query, because the table it guards is global — makes the
+delete path forget the keys when the count reaches zero.
 
 ---
 
@@ -591,10 +621,16 @@ sweeps the bridge interfaces and records every other container's traffic.
 
 **The address layer** (`describe_if_local`) runs before anything connects, in
 decreasing order of certainty: loopback and any address the container holds
-(unambiguous), the default gateway (on a Docker bridge network, that is the
-host), and the names Docker publishes for the host. It cannot see the host's own
-LAN address when the container has never been told what the host is called — and
-that is the address an operator would actually type for their own Docker host.
+(unambiguous), any address `HOST_ADDRESSES` names, the default gateway (on a
+Docker bridge network, that is the host), and the names Docker publishes for
+the host. `HOST_ADDRESSES` is the one answer to the host's own LAN address,
+which a bridged container cannot otherwise see and which is exactly what an
+operator would type for their own Docker host. It is read from the environment
+on each call rather than captured at import, and an entry that is not an IP
+address is logged and dropped rather than quietly ignored — a typo there would
+silently remove a protection the operator believes they turned on. It is also
+the only layer that works with no connection, no trusted keys and an
+unreachable target.
 
 **The kernel layer** (`describe_if_same_kernel`) covers exactly that case.
 Containers share the host's kernel, so `/proc/sys/kernel/random/boot_id` inside
@@ -614,9 +650,10 @@ Where each one runs:
 
 | Point | Checks | Why there |
 |---|---|---|
-| Add / edit server, probe before adding | address, then kernel once the probe connects | Stops the server existing at all |
-| Check prerequisites, Test connection | kernel (the probe already connected) | The two actions an operator reaches for when a server misbehaves |
-| Start a capture | stored finding, then address | A row added before the guard existed, or a hostname DNS has moved, is otherwise never re-examined |
+| Add server | address, then kernel over the probe's own connection | Stops the server existing at all. The keys accepted on the way in are what lets the probe connect, which is the whole reason the order was inverted |
+| Edit server | address only | No probe: an edit can repoint a row, so its verification is cleared and has to be earned again rather than re-proved here |
+| Check prerequisites, Test connection | kernel (the probe already connected) | The two actions an operator reaches for when a server misbehaves — and what clears a **Never checked** server |
+| Start a capture | stored finding, then address, then "has anything ever checked this?" | A row added before the guard existed, or a hostname DNS has moved, is otherwise never re-examined. The last of the three is weakest and runs last on purpose: it must never be reported in place of a self-target finding |
 | `run_tcpdump`, on the capture's own connection | kernel | The only check with no window between it and the capture — this is the connection tcpdump is about to run on |
 
 A finding from a connection is stored on the server row (`self_target_reason`)

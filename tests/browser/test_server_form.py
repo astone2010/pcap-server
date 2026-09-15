@@ -57,25 +57,68 @@ async def _fill_add_form(page, hostname: str, username: str = "capture-user") ->
     await page.select_option("#new-srv-key", KEY_NAME)
 
 
+class accepting_dialogs:
+    """Answer yes to whatever the add flow asks, for the length of a block.
+
+    Adding a server scans the host for its keys first and shows the
+    fingerprints before creating anything -- so that the probe, and therefore
+    the check that this is not the machine pcap-server runs on, can happen
+    before the row exists. Against TEST-NET-3 the scan cannot succeed, so the
+    form offers to add the server unverified instead. That is the pre-staging
+    path, and it is what these tests want: a server row, untrusted and
+    unchecked, which is exactly the state every added server used to be in.
+
+    Registered around the submit rather than for the whole test, because the
+    Trust host tests install a dialog handler of their own afterwards and
+    playwright lets only the first one answer.
+    """
+
+    def __init__(self, page):
+        self.page = page
+        self.messages: list[str] = []
+
+    async def _accept(self, dialog):
+        self.messages.append(dialog.message)
+        await dialog.accept()
+
+    async def __aenter__(self):
+        self.page.on("dialog", self._accept)
+        return self
+
+    async def __aexit__(self, *exc):
+        self.page.remove_listener("dialog", self._accept)
+        return False
+
+
+async def _add_via_form(page, hostname: str, username: str = "capture-user", *, submit=None):
+    """Fill the add form, submit it, and wait for the row to appear."""
+    await _fill_add_form(page, hostname, username)
+    async with accepting_dialogs(page):
+        if submit is None:
+            await page.click("button[data-action='add-server']")
+        else:
+            await submit()
+        await page.wait_for_selector(f"#server-list >> text={hostname}")
+
+
 async def test_enter_in_the_server_form_adds_the_server(app_page):
     """The regression this suite exists for.
 
     Enter is pressed in the hostname field -- not the last field, not a field
     anyone wired up by name -- and the form's own primary button is what runs.
     """
-    await _fill_add_form(app_page, HOST)
-    await app_page.press("#new-srv-host", "Enter")
+    await _add_via_form(
+        app_page, HOST, submit=lambda: app_page.press("#new-srv-host", "Enter")
+    )
 
-    await app_page.wait_for_selector(f"#server-list >> text={HOST}")
     assert f"capture-user@{HOST}:22" in await app_page.text_content("#server-list")
 
 
 async def test_enter_in_the_last_field_of_the_server_form_adds_it_too(app_page):
     """Every field, not one lucky one: the old bug was a list of ids."""
-    await _fill_add_form(app_page, HOST)
-    await app_page.press("#new-srv-user", "Enter")
-
-    await app_page.wait_for_selector(f"#server-list >> text={HOST}")
+    await _add_via_form(
+        app_page, HOST, submit=lambda: app_page.press("#new-srv-user", "Enter")
+    )
 
 
 async def test_enter_reports_what_the_form_is_still_missing(app_page):
@@ -95,16 +138,12 @@ async def test_enter_reports_what_the_form_is_still_missing(app_page):
 
 async def test_the_add_button_and_enter_agree(app_page):
     """Enter goes through the button, so the two cannot drift apart."""
-    await _fill_add_form(app_page, HOST)
-    await app_page.click("button[data-action='add-server']")
-
-    await app_page.wait_for_selector(f"#server-list >> text={HOST}")
+    await _add_via_form(app_page, HOST)
 
 
 async def test_enter_in_the_edit_form_saves_the_change(app_page, api_client):
     """The edit form is a second form in the same area, with its own button."""
-    await _fill_add_form(app_page, HOST)
-    await app_page.click("button[data-action='add-server']")
+    await _add_via_form(app_page, HOST)
     await app_page.wait_for_selector("button[data-action='edit-server']")
 
     await app_page.click("button[data-action='edit-server']")
@@ -118,8 +157,7 @@ async def test_enter_in_the_edit_form_saves_the_change(app_page, api_client):
 
 async def test_adding_a_server_opens_it_rather_than_leaving_an_empty_form(app_page):
     """Testing the connection is the usual next step and lives on that page."""
-    await _fill_add_form(app_page, HOST)
-    await app_page.click("button[data-action='add-server']")
+    await _add_via_form(app_page, HOST)
 
     await app_page.wait_for_selector("button[data-action='test-server']")
     assert await app_page.is_visible("button[data-action='prereq-check']")
@@ -127,8 +165,7 @@ async def test_adding_a_server_opens_it_rather_than_leaving_an_empty_form(app_pa
 
 
 async def test_removing_a_server_takes_it_off_the_list(app_page):
-    await _fill_add_form(app_page, HOST)
-    await app_page.click("button[data-action='add-server']")
+    await _add_via_form(app_page, HOST)
     await app_page.wait_for_selector("button[data-action='remove-server']")
 
     app_page.on("dialog", lambda dialog: dialog.accept())
@@ -158,8 +195,7 @@ async def test_a_username_added_on_this_tab_is_offered_by_the_server_form(app_pa
 
 async def test_a_username_introduced_by_a_new_server_shows_up_without_a_reload(app_page):
     """Adding a server is the other way a username gets stored."""
-    await _fill_add_form(app_page, HOST, username="from-the-form")
-    await app_page.click("button[data-action='add-server']")
+    await _add_via_form(app_page, HOST, username="from-the-form")
     await app_page.wait_for_selector("button[data-action='test-server']")
 
     await _open_usernames(app_page)
@@ -202,8 +238,9 @@ async def test_enter_in_the_stored_username_box_saves_it(app_page):
 async def test_a_new_server_says_its_host_is_not_trusted(app_page):
     """A connection to an untrusted host is refused, so the list has to say so
     -- otherwise the first sign is a capture that will not start."""
-    await _fill_add_form(app_page, HOST)
-    await app_page.press("#new-srv-host", "Enter")
+    await _add_via_form(
+        app_page, HOST, submit=lambda: app_page.press("#new-srv-host", "Enter")
+    )
 
     await app_page.wait_for_selector("#server-list >> text=Host not trusted")
 
@@ -227,8 +264,9 @@ async def test_the_trust_host_button_is_wired_to_something(app_page):
     it is does not matter here. That one arrives at all is the regression this
     test exists for, and it costs the ssh-keyscan timeout to find out.
     """
-    await _fill_add_form(app_page, HOST)
-    await app_page.press("#new-srv-host", "Enter")
+    await _add_via_form(
+        app_page, HOST, submit=lambda: app_page.press("#new-srv-host", "Enter")
+    )
     await app_page.wait_for_selector('#server-list [data-action="trust-server-host"]')
 
     asked: list[str] = []
@@ -260,8 +298,9 @@ async def test_declining_the_trust_prompt_leaves_the_host_untrusted(app_page):
     host with real keys to review, so it is covered against the API in
     test_servers.py rather than here.
     """
-    await _fill_add_form(app_page, HOST)
-    await app_page.press("#new-srv-host", "Enter")
+    await _add_via_form(
+        app_page, HOST, submit=lambda: app_page.press("#new-srv-host", "Enter")
+    )
     await app_page.wait_for_selector('#server-list [data-action="trust-server-host"]')
 
     seen: list[str] = []
@@ -290,9 +329,9 @@ async def test_returning_to_the_servers_tab_refetches_the_list(app_page):
     rendered a copy of the data taken before the trust existed, and the host
     still read as untrusted. The API was correct the whole time.
     """
-    await _fill_add_form(app_page, HOST)
-    await app_page.press("#new-srv-host", "Enter")
-    await app_page.wait_for_selector(f"#server-list >> text={HOST}")
+    await _add_via_form(
+        app_page, HOST, submit=lambda: app_page.press("#new-srv-host", "Enter")
+    )
 
     refetches: list[str] = []
 
@@ -315,9 +354,9 @@ async def test_returning_to_the_servers_tab_refetches_the_list(app_page):
 
 async def test_a_refetch_keeps_the_open_server_highlighted(app_page):
     """Selection lived only as a class on an element the refetch replaces."""
-    await _fill_add_form(app_page, HOST)
-    await app_page.press("#new-srv-host", "Enter")
-    await app_page.wait_for_selector(f"#server-list >> text={HOST}")
+    await _add_via_form(
+        app_page, HOST, submit=lambda: app_page.press("#new-srv-host", "Enter")
+    )
     await app_page.click(f"#server-list .server-item")
     await app_page.wait_for_selector("#server-list .server-item.active")
 

@@ -13,6 +13,25 @@ The SSH key field starts empty and has to be chosen. Add, Test connection and
 Check prerequisites all refuse until a hostname, a username and a key are
 present, so a server is never created with a key nobody picked.
 
+**Add asks for the host's fingerprints, then connects, then creates the
+server** — in that order, and the order is the point. Nothing can connect to a
+host whose identity is not pinned, and the strongest check that this is not the
+machine pcap-server runs on needs a connection to make, so the keys have to be
+accepted first for that check to have anything to run over. If the check
+refuses the host, or you close the dialog, the keys are forgotten again: an add
+that does not complete leaves nothing pinned behind it.
+
+You do not need to be an admin for this. If the host already has trusted keys —
+because another server points at it — you are not asked, and the keys it has
+are kept.
+
+**Adding a server whose host is not up yet still works.** A host that is down
+answers no scan, so you are asked whether to add it anyway. Such a server is
+created untrusted and unchecked, exactly as every server used to be, and it is
+marked **Never checked** in the list. Captures from it are refused until
+something has actually connected: trust its keys with **Trust host**, then run
+**Check prerequisites**.
+
 **Never add the machine pcap-server itself runs on.** Capturing from its own
 host records pcap-server's own traffic — your session cookie and TOTP code, and
 over plain HTTP your password — into a capture this UI then stores and serves
@@ -26,6 +45,12 @@ its host's kernel, and a target reporting the same kernel boot id as
 pcap-server is this machine, whatever address was used to reach it. A server
 found that way keeps its place in the list, marked, with captures from it
 refused; it is not deleted for you. Capture this host from a different machine.
+
+The kernel check needs a connection, so it cannot help while a host is
+unreachable or untrusted. If you run pcap-server in a container on a machine
+you might plausibly point it at, name that machine's addresses in
+`HOST_ADDRESSES` (see [Environment variables](operating.md#environment-variables)):
+the refusal then happens before anything connects.
 
 ## Checking a server before you capture
 

@@ -58,6 +58,24 @@ async function api(path, options = {}) {
                               detail.explanation);
             throw new Error(detail.reason);
         }
+        // A capture refused because nothing has ever connected to that server.
+        // Shown the same way as a self-capture refusal: it is a blocked action
+        // with a specific remedy, and the remedy is the useful half.
+        if (detail && typeof detail === "object" && detail.code === "server_unverified") {
+            showBlockingAlert("This server has not been checked yet", detail.reason,
+                              detail.explanation);
+            throw new Error(detail.reason);
+        }
+        // Any other structured refusal. The reason is the part written for a
+        // person to read, and the code rides along on the error so a caller can
+        // branch on it without matching against prose -- which is what the add
+        // form does with host_keys_required.
+        if (detail && typeof detail === "object" && typeof detail.code === "string") {
+            const err = new Error(detail.reason || detail.code);
+            err.code = detail.code;
+            err.explanation = detail.explanation || "";
+            throw err;
+        }
         // FastAPI reports a 422 as an array of {loc, msg, type}. Dumping that as
         // JSON puts "[{\"type\":\"value_error\",\"loc\":[\"body\"..." in front of
         // the user; the msg fields are the part written for a person to read.
@@ -657,14 +675,29 @@ function renderServerList() {
             // nested button wins over the row and trusting does not also
             // select the server.
             const untrusted = s.host_trusted === false;
+            // The button is offered to every user now, not just admins.
+            // Accepting fingerprints is part of adding a server, which every
+            // user can do -- so refusing it here only meant a non-admin
+            // deleting the row and adding it again to reach the same state.
+            // The route it posts to is scoped to this server's own endpoint
+            // and refuses to replace keys that already exist.
             const warning = untrusted
                 ? `<div class="server-warn">
                        <span>Host not trusted &mdash; connections to it are refused.</span>
-                       ${currentUser && currentUser.is_admin
-                            ? `<button class="btn btn-xs btn-secondary"
-                                 data-action="trust-server-host"
-                                 data-id="${escHtml(s.hostname)}:${escHtml(s.port)}">Trust host</button>`
-                            : "<span>Ask an admin to trust it under Admin \u2192 Known Hosts.</span>"}
+                       <button class="btn btn-xs btn-secondary"
+                               data-action="trust-server-host"
+                               data-id="${escHtml(s.id)}">Trust host</button>
+                   </div>`
+                : "";
+            // A server nothing has ever connected to: added while its host was
+            // unreachable, so the check that it is not this machine has never
+            // had a connection to run over. Captures are refused until it does.
+            // Distinct from untrusted -- that is about identity, this is about
+            // whether the self-target check ever ran.
+            const unverified = s.verified === false && !untrusted
+                ? `<div class="server-warn">
+                       <span>Never checked &mdash; nothing has connected to this host yet,
+                       so captures from it are refused. Run <strong>Check prerequisites</strong>.</span>
                    </div>`
                 : "";
             // A server the backend has proved to be this very machine. Captures
@@ -687,6 +720,7 @@ function renderServerList() {
                 ${s.os_name ? `<div class="server-os">${escHtml(s.os_name)}</div>` : ""}
                 ${selfTarget}
                 ${warning}
+                ${unverified}
             </div>
         </div>`;
         })
@@ -698,12 +732,24 @@ function renderServerList() {
     }
 }
 
-async function trustServerHost(endpoint) {
+async function trustServerHost(serverId) {
     // Deliberately not adminTrustHost(): that reports into the Admin tab's
     // message element, which nobody standing on the Servers tab can see.
+    //
+    // Posts to the server's own trust-host route rather than the admin pair,
+    // so this works for a non-admin looking at a server they own. The endpoint
+    // comes from the row rather than the button, so what is scanned and what
+    // is pinned cannot drift apart.
+    const srv = activeServers.find((s) => s.id === serverId);
+    if (!srv) return;
+    const endpoint = `${srv.hostname}:${srv.port}`;
     try {
-        const result = await reviewAndTrustHost(endpoint);
-        if (!result) return;   // reviewed and declined -- nothing was pinned
+        const keys = await reviewHostKeys(endpoint, "/api/host-keys/scan");
+        if (!keys) return;   // reviewed and declined -- nothing was pinned
+        const result = await api(`/api/servers/${serverId}/trust-host`, {
+            method: "POST",
+            body: JSON.stringify({ hostname: srv.hostname, port: srv.port, keys }),
+        });
         alert(`Pinned ${result.stored} host key(s) for ${endpoint}. It can be used now.`);
     } catch (e) {
         alert(`Could not trust ${endpoint}: ${e.message}`);
@@ -739,6 +785,17 @@ function selectServer(id) {
         : untrusted
             ? '<span class="pill pill-warn">Not trusted</span>'
             : '<span class="pill pill-good">Trusted</span>';
+    // Two separate states, and conflating them would mislead: "not trusted" is
+    // about the host's identity not being pinned, "never checked" is about no
+    // connection ever having run the self-target check. A server added while
+    // its host was down is trusted and unchecked at the same time.
+    const unverified = srv.verified === false && !untrusted;
+    const checked = unverified ? '<span class="pill pill-warn">Never checked</span>' : "";
+    const blocked = untrusted || unverified;
+    const blockedWhy = untrusted
+        ? "This host is not trusted yet, so a capture would be refused. Trust it first."
+        : "Nothing has connected to this host yet, so a capture would be refused. "
+          + "Run Check prerequisites first.";
     const sid = escHtml(srv.id);
     $("server-form-area").innerHTML = `
         <div class="server-detail">
@@ -748,6 +805,7 @@ function selectServer(id) {
                     <div class="server-detail-endpoint">${escHtml(srv.username)}@${escHtml(srv.hostname)}:${escHtml(srv.port)}</div>
                 </div>
                 ${trust}
+                ${checked}
             </header>
             <dl class="server-facts">
                 <div><dt>Host</dt><dd>${escHtml(srv.hostname)}</dd></div>
@@ -759,7 +817,7 @@ function selectServer(id) {
             </dl>
             <div class="form-actions server-detail-actions">
                 <button class="btn btn-sm btn-primary" data-action="capture-from-server" data-id="${sid}"
-                        ${untrusted ? 'disabled title="This host is not trusted yet, so a capture would be refused. Trust it first."' : ""}>Capture from this server</button>
+                        ${blocked ? `disabled title="${escHtml(blockedWhy)}"` : ""}>Capture from this server</button>
                 <button class="btn btn-sm btn-secondary" data-action="test-server" data-id="${sid}">Test connection</button>
                 <button class="btn btn-sm btn-secondary" data-action="prereq-check" data-id="${sid}">Check prerequisites</button>
                 <button class="btn btn-sm btn-secondary" data-action="edit-server" data-id="${sid}">Edit</button>
@@ -1110,6 +1168,44 @@ async function loadSSHKeys() {
     }
 }
 
+// Scan a host for the add form and get the user's answer about it.
+//
+// Returns the accepted keys, an empty array to mean "add it without verifying
+// anything", or null when the user said no and nothing should be created.
+//
+// The two failure modes are deliberately not treated alike. A scan that
+// SUCCEEDED and was then declined means the user read the fingerprints and
+// said no; following that with "add it anyway?" would be asking them to
+// reverse the answer they just gave. A scan that could not reach the host at
+// all is a different situation entirely -- it is the pre-staging case,
+// configuring a server before the machine it points at exists, which the old
+// flow allowed and this one must not quietly remove.
+async function scanAndAcceptForAdd(endpoint) {
+    let keys;
+    try {
+        keys = await reviewHostKeys(endpoint, "/api/host-keys/scan");
+    } catch (scanFailed) {
+        if (!confirm(
+            `Could not get host keys from ${endpoint}:\n\n${scanFailed.message}\n\n`
+            + "Add it anyway, without verifying its identity?\n\n"
+            + "Nothing will be trusted and nothing will be checked, so captures from "
+            + "it are refused until you trust its keys and run Check prerequisites. "
+            + "Useful for setting a server up before its host is running."
+        )) {
+            $("add-server-error").textContent = `Not added -- ${scanFailed.message}`;
+            return null;
+        }
+        return [];
+    }
+    if (!keys) {
+        $("add-server-error").textContent =
+            "Not added -- the host keys were not accepted, and nothing can connect "
+            + "to a host whose identity is not pinned.";
+        return null;
+    }
+    return keys;
+}
+
 async function addServer() {
     $("add-server-error").textContent = "";
     const problem = serverFormProblem("new-srv");
@@ -1117,11 +1213,49 @@ async function addServer() {
         $("add-server-error").textContent = problem;
         return;
     }
+    const body = addFormServer();
+    const endpoint = `${body.hostname}:${body.port}`;
     try {
-        const added = await api("/api/servers", {
-            method: "POST",
-            body: JSON.stringify(addFormServer()),
-        });
+        let added;
+        let pinned = false;
+        try {
+            // Sent without keys first. The server is the authority on whether
+            // this endpoint is already trusted, so the fingerprints are asked
+            // for only when it says so -- rather than the form guessing and
+            // re-prompting for a host another server already verified against.
+            added = await api("/api/servers", {
+                method: "POST", body: JSON.stringify(body),
+            });
+        } catch (e) {
+            if (e.code !== "host_keys_required") throw e;
+            const keys = await scanAndAcceptForAdd(endpoint);
+            if (keys === null) {              // declined, or declined to add unverified
+                return;
+            }
+            pinned = keys.length > 0;
+            // Pinning happens inside the create now. If the probe then refuses
+            // this host -- because it turns out to be the machine pcap-server
+            // runs on -- the keys are rolled back with it, so declining to
+            // create a server never leaves trust behind for it.
+            added = await api("/api/servers", {
+                method: "POST",
+                body: JSON.stringify(
+                    pinned ? { ...body, host_keys: keys } : { ...body, add_unverified: true }
+                ),
+            });
+        }
+        if (added.unreachable && pinned) {
+            // Keys were accepted but nothing answered afterwards. Said plainly,
+            // because the row looks identical to a verified one and its
+            // captures will be refused until something connects.
+            alert(
+                `${endpoint} was added, but nothing could connect to it yet:\n\n`
+                + `${added.unreachable}\n\n`
+                + "Its host keys are pinned, but the check that this is not the machine "
+                + "pcap-server runs on has never had a connection to run over -- so "
+                + "captures from it are refused until you run Check prerequisites."
+            );
+        }
         await loadServers();
         // The stored-username list sits on this tab now, so a name introduced
         // by this server has to appear in it without a reload.
@@ -5265,8 +5399,15 @@ function adminHostsCard(hosts) {
     const card = { page: "known-hosts", title: "Known hosts" };
     if (!hosts) return { ...card, level: "neutral", state: "Status unavailable" };
     const untrusted = hosts.filter((h) => h.configured && !h.key_types.length).length;
+    // Keys nothing references any more. Deleting a server now forgets its
+    // host's keys when it was the last one pointing there, so new orphans
+    // should not appear -- but an install that predates that carries whatever
+    // its deletions left behind, and those are trust decisions still in force
+    // with nobody left who vouched for them.
+    const orphans = hosts.filter((h) => !h.configured && h.key_types.length).length;
     if (!hosts.length) return { ...card, level: "neutral", state: "No servers yet" };
     if (untrusted) return { ...card, level: "warn", state: `${untrusted} host${untrusted === 1 ? "" : "s"} not verified` };
+    if (orphans) return { ...card, level: "warn", state: `${orphans} orphaned key set${orphans === 1 ? "" : "s"}` };
     return { ...card, level: "good", state: `${hosts.length} verified` };
 }
 
@@ -5590,7 +5731,18 @@ async function loadAdminKnownHosts() {
                 + "</span>";
             return;
         }
-        el.innerHTML = `<table class="admin-table">
+        // Offered only when there is something to purge. Pre-existing orphans
+        // are the ones this is for: from here on, deleting the last server for
+        // an endpoint forgets its keys with it.
+        const orphans = hosts.filter((h) => !h.configured && h.key_types.length);
+        const purge = orphans.length
+            ? `<div class="admin-row-actions" style="margin-bottom:8px">
+                   <button class="btn btn-sm btn-danger" data-action="purge-orphaned-hosts">
+                       Forget all ${orphans.length} orphaned key set${orphans.length === 1 ? "" : "s"}
+                   </button>
+               </div>`
+            : "";
+        el.innerHTML = purge + `<table class="admin-table">
             <thead><tr><th>Host</th><th>Used by</th><th>Host keys</th><th></th></tr></thead>
             <tbody>${hosts.map((h) => {
                 const endpoint = `${escHtml(h.hostname)}:${h.port}`;
@@ -5603,9 +5755,18 @@ async function loadAdminKnownHosts() {
                       + `<br><span style="color:var(--text-muted);font-size:0.75rem">`
                       + `stored ${escHtml(formatStoredAt(h.added_at))}</span>`
                     : '<span style="color:var(--warning,#d29922)">Not verified</span>';
+                // An orphan is keys with nothing referencing them: trust still
+                // in force that no server needs and nobody is left to vouch
+                // for. Re-adding that host would inherit the pinning silently,
+                // which is the whole reason this is called out rather than
+                // greyed down as it used to be.
+                const orphaned = !h.configured && trusted;
                 const used = h.configured
                     ? escHtml(h.labels)
-                    : '<span style="color:var(--text-muted)">no server uses this host</span>';
+                    : orphaned
+                        ? '<span style="color:var(--warning,#d29922)">Orphaned &mdash; no server '
+                          + "uses this host, but its keys are still trusted</span>"
+                        : '<span style="color:var(--text-muted)">no server uses this host</span>';
                 return `
                 <tr>
                     <td>${endpoint}</td>
@@ -5655,9 +5816,21 @@ function splitEndpoint(endpoint) {
 // Returns the confirm response when keys were pinned, or null when the
 // operator declined. Throws on a failed request; the two callers report
 // errors in their own way, since they render into different places.
-async function reviewAndTrustHost(endpoint) {
+// Scan one endpoint and put its fingerprints in front of the operator.
+//
+// Returns the keys they accepted, in the shape the API takes them, or null if
+// they declined. Stores nothing by itself: both callers decide what accepting
+// means. The admin path posts them to /known-hosts/confirm; the add-server
+// path sends them with the create, so that pinning and creating succeed or
+// fail together.
+//
+// `scanPath` is the difference between the two. The admin route is admin-only
+// and always has been; /api/host-keys/scan is the same non-mutating scan
+// opened to any user, because every user can add a server and the fingerprints
+// now have to be shown before the server exists.
+async function reviewHostKeys(endpoint, scanPath) {
     const target = splitEndpoint(endpoint);
-    const scan = await api("/api/admin/known-hosts/scan", {
+    const scan = await api(scanPath, {
         method: "POST",
         body: JSON.stringify(target),
     });
@@ -5684,14 +5857,17 @@ async function reviewAndTrustHost(endpoint) {
     );
     if (!accepted) return null;
 
-    // The reviewed keys are sent back rather than re-scanned, so what gets
-    // pinned is what was on screen a moment ago.
+    // What comes back is what was on screen a moment ago -- never a re-scan,
+    // so a key cannot change between the review and the acceptance.
+    return usable.map((k) => ({ key_type: k.key_type, host_key: k.host_key }));
+}
+
+async function reviewAndTrustHost(endpoint) {
+    const keys = await reviewHostKeys(endpoint, "/api/admin/known-hosts/scan");
+    if (!keys) return null;
     return await api("/api/admin/known-hosts/confirm", {
         method: "POST",
-        body: JSON.stringify({
-            ...target,
-            keys: usable.map((k) => ({ key_type: k.key_type, host_key: k.host_key })),
-        }),
+        body: JSON.stringify({ ...splitEndpoint(endpoint), keys }),
     });
 }
 
@@ -5715,6 +5891,56 @@ async function adminTrustHost(endpoint) {
         msgEl.className = "error-msg";
         msgEl.textContent = e.message;
     }
+}
+
+async function purgeOrphanedHosts() {
+    const msgEl = $("admin-host-msg");
+    let hosts;
+    try {
+        // Re-read rather than trusting what the table was rendered from: this
+        // deletes trust, and the set it deletes has to be the set that is
+        // orphaned now, not whenever the page was last drawn.
+        hosts = (await api("/api/admin/host-trust"))
+            .filter((h) => !h.configured && h.key_types.length);
+    } catch (e) {
+        msgEl.className = "error-msg";
+        msgEl.textContent = e.message;
+        return;
+    }
+    if (!hosts.length) {
+        msgEl.className = "success-msg";
+        msgEl.textContent = "Nothing to forget — no orphaned host keys.";
+        loadAdminKnownHosts();
+        return;
+    }
+    const listed = hosts.map((h) => `  ${h.hostname}:${h.port}`).join("\n");
+    if (!confirm(
+        `Forget the stored host keys for ${hosts.length} host(s) that no server uses?\n\n`
+        + `${listed}\n\n`
+        + "If any of these hosts is added again later, its fingerprints will have to be "
+        + "reviewed and accepted from scratch — which is the point."
+    )) return;
+
+    let removed = 0;
+    const failed = [];
+    for (const h of hosts) {
+        try {
+            const result = await api("/api/admin/known-hosts/forget", {
+                method: "POST",
+                body: JSON.stringify({ hostname: h.hostname, port: h.port }),
+            });
+            removed += result.removed;
+        } catch (e) {
+            // One failure must not hide the ones that worked, and must not
+            // stop the rest being tried.
+            failed.push(`${h.hostname}:${h.port} (${e.message})`);
+        }
+    }
+    msgEl.className = failed.length ? "error-msg" : "success-msg";
+    msgEl.textContent = failed.length
+        ? `Removed ${removed} key(s); could not forget ${failed.join(", ")}`
+        : `Removed ${removed} key(s) from ${hosts.length} orphaned host(s)`;
+    loadAdminKnownHosts();
 }
 
 async function adminForgetHost(endpoint) {
@@ -5872,6 +6098,7 @@ function initEventDelegation() {
     delegate("admin-known-hosts", {
         "trust-host": (id) => adminTrustHost(id),
         "forget-host": (id) => adminForgetHost(id),
+        "purge-orphaned-hosts": () => purgeOrphanedHosts(),
     });
     $("packet-tbody")?.addEventListener("click", (e) => {
         const row = e.target.closest("tr[data-frame]");

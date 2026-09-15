@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -312,10 +313,21 @@ def enrolled(secure_client):
         main.db.delete_user(user_id)
 
 
-def _a_server(user_id: str) -> str:
+def _a_server(user_id: str, *, verified: bool = True) -> str:
+    """An ordinary, usable server.
+
+    Verified by default because that is what the add flow now produces: it
+    probes the host and records the self-target check before creating the row.
+    Pass verified=False for the other case the flow can produce -- a server
+    pre-staged while its host was unreachable, which nothing has ever connected
+    to and which the capture gate refuses.
+    """
     server_id = str(uuid.uuid4())
     main.db.add_active_server(
-        server_id, user_id, "target", "target.example", 22, "alice", "alice-key", False
+        server_id, user_id, "target", "target.example", 22, "alice", "alice-key", False,
+        kernel_verified_at=(
+            datetime.now(timezone.utc).isoformat() if verified else ""
+        ),
     )
     return server_id
 

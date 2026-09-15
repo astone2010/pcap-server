@@ -1,5 +1,183 @@
 # Dev Skills gate state
 
+## Session opened 2026-09-15 #3 — dev.36, running the dev36 handoff
+Track: RELEASE SEQUENCE 0.1.0-dev.36 (scope decided below; all four handoff
+items). RESUMED 2026-09-15 after a usage limit cut the session off mid-work --
+the tracker below was stale and said "no source file touched", which the
+working tree contradicted. Re-derived from the diff, not from memory.
+
+State re-derived from evidence (SKILL.md S2), not carried over on trust:
+ - HEAD = e9075ba, branch claude/admiring-wright-k20ptf, clean working tree.
+ - v0.1.0-dev.35 IS on the remote -> 2916f09 (HEAD~1, the release commit).
+   e9075ba on top is the .claude/ handoff + ship record only, no source.
+   APP_VERSION (backend/main.py:106) reads 0.1.0-dev.35 and agrees with all
+   the other refs (docker-compose.yml:107, README.md:231/332/348,
+   docs/reverse-proxy.md:117/372). Released == tagged == source version:
+   NO unfinished Gate 6 (GATE_REFERENCE step 7).
+ - `git ls-remote --tags origin`: contiguous through v0.1.0-dev.35.
+ - `git ls-remote --heads origin`: claude/admiring-wright-k20ptf only.
+
+Env: LOCAL CLI -> Claude PRESENTS git commands, the user runs them (S5.8).
+Shell: zsh (Linux Terminal). Remote: https://github.com/darthrater78/pcap-server
+Local dev workflow: ./scripts/check.sh. CI build check: check.yml (calls
+./scripts/check.sh -- no drift). CI release: release.yml on `v*` tag push.
+Plus lint-workflows.yml. gate-preflight.sh still NOT installed (.claude/hooks
+has session-start.sh only) -> the prose pre-flight is the only enforcement.
+gh IS installed here (/usr/bin/gh). No PRs before 1.0 (memory release-process),
+so Gate 5's PR step is N/A by the user's standing decision; the working branch
+is canonical and the tag push drives the release.
+
+Model: Opus 5, above the Sonnet ceiling. Flagged to the user at session start;
+user approved with "opus" (2026-09-15). Task-scoped to dev.36, as every prior
+release has been.
+
+🔢 VERSION    ✅ 0.1.0-dev.36 in all seven refs: backend/main.py:107,
+              docker-compose.yml:107, README.md:231/332/348,
+              docs/reverse-proxy.md:117/372. Prior version tagged:
+              `git ls-remote --tags origin v0.1.0-dev.35` -> 2916f09.
+              v0.1.0-dev.36 does NOT exist on the remote yet.
+              REPO_URL + release_notes_url present (main.py:108/626).
+🔨 BUILD      ✅ ./scripts/check.sh EXIT=0, 1522 passed / 0 failed
+              (279s). The browser failures seen before the cut were the
+              add flow changing under the suite; fixed in the tests, not
+              worked around -- test_server_form.py now drives the real
+              scan-and-accept path and the suite HALVED (545s -> 258s)
+              because of the connect_timeout fix.
+              Image: `sudo docker build -t localhost/pcap-server:0.1.0-dev.36 .`
+              EXIT=0. Smoke-tested in the REAL image, not asserted:
+               * bare `docker run` with NO DATA_DIR/CAPTURES_DIR/
+                 SSH_KEYS_DIR -> HTTP / = 200 in 2s, /app/data/
+                 pcap-server.db owned by appuser. THAT IS THE dev.34 BUG,
+                 reproduced as fixed.
+               * DATA_DIR bind-mounted 0500 root -> container exits 1 with
+                 "refusing to start", naming the dir and `chown -R 1000:1000`.
+               * ssh-keys mounted :ro -> chown failure REPORTED with its
+                 real cause ("Read-only file system"), probe warns, app
+                 still starts. Non-fatal on purpose.
+               * UPGRADE PATH against the real shipped ghcr dev.35 image:
+                 booted dev.35 on a fresh volume, inserted a dev.35-era
+                 server row, booted dev.36 on the same volume ->
+                 kernel_verified_at added, cutoff written
+                 (2026-09-15T17:48:47Z), legacy row added_at < cutoff so it
+                 is GRANDFATHERED and keeps capturing. The regression this
+                 release could most easily have shipped, checked directly.
+🔒 SECURITY   ✅ pip-audit over backend/requirements.txt: no known
+              vulnerabilities; requirements unchanged this release.
+              Dangerous-pattern grep over the diff: one innerHTML hit
+              (app.js purge button) -- interpolates only orphans.length,
+              a number; every host value in that table goes through
+              escHtml. All new SQL parameterised. node --check app.js OK.
+              Findings shown to the user (see SECURITY REVIEW below).
+              0 Critical, 0 High.
+📦 RELEASE    ✅ branch synced (`git fetch` -> 0 ahead / 0 behind origin),
+              diff reviewed and shown, release notes = the CHANGELOG
+              0.1.0-dev.36 entry, approved by the user. Commit approved
+              2026-09-15 with "commit"; block PRESENTED for the user to
+              run, per S5.8 (local session).
+              (PR step ➖ N/A -- no PRs before 1.0, standing decision)
+🚀 SHIP       ⬜
+
+### SECURITY REVIEW of the dev.36 diff -- shown to the user 2026-09-15
+Deliberate authorisation widening, NOT a finding, but the thing to look at
+hardest in this release:
+ * POST /api/host-keys/scan is now any signed-in user, not admin. It is
+   non-mutating by construction, so calling it cannot change what this install
+   trusts. It does spawn ssh-keyscan against a caller-chosen address ->
+   rate limited on the packets-per-min budget (host_scan_rate_limiter), which
+   is NEW protection this path did not have as an admin route.
+ * It is NOT a new class of exposure: /api/probe/test (main.py:1587) already
+   took an arbitrary hostname from any signed-in user and connected to it, so
+   the "is this host:port open" oracle predates this change. Checked rather
+   than assumed.
+ * POST /api/servers/{id}/trust-host is owner-scoped AND endpoint-matched AND
+   409s on an endpoint that already has keys. It establishes trust where there
+   is none and never replaces it -- without that last rule a non-admin could
+   add a server at an endpoint an admin trusts, re-pin keys of their own, and
+   MITM the admin's connections to it.
+
+KNOWN LIMITATION, accepted, written down rather than hidden:
+ * Two concurrent adds for the same untrusted endpoint can have one roll back
+   the other's freshly pinned keys (forget_known_host is endpoint-wide). The
+   result is a server showing "Host not trusted" that has to be trusted again
+   -- it FAILS CLOSED, and it cannot destroy an existing admin decision,
+   because keys are only ever pinned when the endpoint had none.
+
+Quality: add_server is ~50 lines with the try/finally carrying the invariant,
+which is the clearest place for it. addServer() in app.js was extracted into
+scanAndAcceptForAdd() rather than growing a third nested try. No N+1, no new
+unbounded caches, no blocking I/O on the loop (the probe is awaited).
+
+### CORRECTION made after the resume, to docs written before it
+The CHANGELOG and docs/security.md claimed a host that "cannot be reached"
+leaves its keys rolled back. That became FALSE when the unreachable path was
+finished: keys are kept iff a ROW is created, and an unreachable host that was
+scanned successfully DOES get a row. Both corrected to state the real
+invariant. The architecture.md check table also gained the capture-start
+"has anything ever checked this?" row and an add/edit split.
+
+### WHAT IS ALREADY BUILT (uncommitted at resume) -- all four items
+Item 1 entrypoint.sh: path defaults, non-silent chown, gosu write probe per
+directory, fatal on DATA_DIR only. tests/test_entrypoint.py is new (206 lines).
+Item 2 release.yml: a `gate` job the release job `needs`, asking the API for
+check.yml's conclusion on ${{ github.sha }}, waiting on an in-progress run with
+a 1800s deadline. check.yml gained workflow_dispatch as the escape hatch for a
+docs-only commit that paths-ignore skips.
+Item 3 add flow: POST /api/host-keys/scan (non-admin twin of the admin scan,
+rate limited on host_scan_rate_limiter), ServerCreate.host_keys +
+add_unverified, add_server pins -> probes -> creates with a `finally` that
+rolls the keys back unless the row was created, POST /api/servers/{id}/
+trust-host for existing rows (owner-scoped, refuses an endpoint that already
+has keys). tests/test_server_add_flow.py is new (529 lines).
+Item 4 delete: db.count_servers_for_endpoint (cross-user by design),
+remove_server forgets the keys at zero, purgeOrphanedHosts() + the orphan
+callout in Admin -> Known hosts.
+Also in scope, beyond the four: kernel_verified_at column + migration +
+kernel_verify_enforced_from grandfather cutoff, _require_kernel_checked on
+capture start, HOST_ADDRESSES in localnet, asyncssh connect_timeout,
+extra_hosts host-gateway in docker-compose.yml.
+
+### Handoff step 1 — the orphan query CANNOT be run from here
+.claude/dev36-handoff.md item 4 opens with a `sudo docker exec <container>`
+query against the live install. This machine is NOT that install:
+ - `sudo docker ps -a` lists one exited `hello-world` and nothing else.
+ - /opt/docker/pcapserver/data (docker-compose.yml's DATA_DIR bind source)
+   does not exist.
+So the evidence behind item 3's inherited-trust report has to come from the
+user running the query on the box that actually runs the container. Presented
+to them; NOT assumed either way. Do not record item 4 as confirmed-live until
+that output comes back.
+
+### DECIDED BY THE USER 2026-09-15 (AskUserQuestion) — dev.36 scope + the three open questions
+SCOPE: **all four handoff items** in one release.
+ 1. entrypoint.sh silent-failure fix (+ its first test).
+ 2. release.yml gated on Check. NOTE: this reverses the 2026-09-13 DECLINED
+    entry further down this file ("do not raise again"). The user was shown
+    the item and chose it, so the decline is SUPERSEDED, not ignored. The
+    awkwardness is real: the pipeline being changed is the one that ships the
+    change, so the gate is only truly proven on the dev.36 tag push itself.
+ 3. Accept-fingerprints-before-create add flow.
+ 4. Reference-counted host-key cleanup on delete.
+
+Q1 orphan keys: **always roll back unless the row is created.** Freshly scanned
+keys persist ONLY when a server row exists. No per-path nuance -- an abandoned
+form, a refused self-target and a host that is simply down all discard. A retry
+after a transient failure means re-accepting the fingerprints; the user took
+that cost for the clean invariant. This is STRICTER than the handoff's
+suggestion and it means item 3 creates no orphans at all by design.
+
+Q2 authorisation: **accepting fingerprints for your own server becomes a
+non-admin capability.** Adding a server stays available to every user. This is
+a deliberate authorisation WIDENING -- trust stops being admin-owned for the
+add path. Admin -> Known Hosts stays admin-only. Must be called out in the
+CHANGELOG and docs as a security-relevant change, not buried as a UX tweak.
+
+Q3 delete: **A + B.** Forget the keys when NO remaining server row from ANY
+user references that (hostname, port) -- a cross-user refcount, which
+list_active_servers (per-user) cannot answer today -- AND surface pre-existing
+orphans in Admin -> Known hosts with a purge action. Accepted trade: the last
+server for an endpoint may be a non-admin's, and deleting it revokes an
+admin's trust decision.
+
 ## Session opened 2026-09-15 #2 (local CLI, Debian 13, zsh, dev-skills 2.18.0)
 Skill loaded as a REGISTERED skill this time (it is in the session skill list),
 unlike the previous session which had to read SKILL.md by hand. Self-check: all

@@ -104,7 +104,7 @@
 
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.35
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.36
     ports:
       - "8080:8080"
     volumes:
@@ -135,6 +135,25 @@ services:
       # To run without encryption you must say so explicitly; the app will not
       # start with captures unprotected by accident:
       # - ALLOW_UNENCRYPTED_CAPTURES=true
+      #
+      # Capturing from the machine that runs pcap-server records pcap-server's
+      # own traffic -- your sign-in included -- so it is refused. From inside a
+      # bridge network the container can see loopback, its own addresses, the
+      # default gateway and host.docker.internal, but NOT the host's LAN
+      # address, which is exactly what a person types for their own machine.
+      # There is a stronger check that catches it (the target's kernel boot id),
+      # but it needs a connection to the target to run.
+      #
+      # Naming the host's addresses here closes that gap with no connection
+      # needed, so it applies even to a host that is unreachable or not yet
+      # trusted. Comma-separated, IP addresses only:
+      # - HOST_ADDRESSES=192.168.1.10,10.0.0.5
+    # Makes host.docker.internal resolve to this machine on plain Linux, where
+    # Docker does not provide it by default. pcap-server already treats that
+    # name as the host, so this turns "capture from host.docker.internal" into
+    # an address the refusal can actually see.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     secrets:
       - pcap_master_key
     restart: unless-stopped
