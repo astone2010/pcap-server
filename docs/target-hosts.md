@@ -17,11 +17,15 @@ present, so a server is never created with a key nobody picked.
 host records pcap-server's own traffic — your session cookie and TOTP code, and
 over plain HTTP your password — into a capture this UI then stores and serves
 back, and on a Docker host the `any` interface sweeps every other container too.
-The obvious cases are refused automatically: hostname aliases, loopback, the
-container's own addresses, and the default gateway, which on a Docker bridge is
-the host machine. The case that cannot be detected is the host's own LAN
-address, because a bridged container has no knowledge of it — which is why the
-form warns as well as checks. Capture this host from a different machine.
+This is refused automatically, and there is no override. Hostname aliases,
+loopback, the container's own addresses and the default gateway (on a Docker
+bridge, the host machine) are caught before anything connects. The host's own
+LAN address gives none of that away from inside a bridged container — so it is
+caught a second way instead, as soon as anything connects: a container shares
+its host's kernel, and a target reporting the same kernel boot id as
+pcap-server is this machine, whatever address was used to reach it. A server
+found that way keeps its place in the list, marked, with captures from it
+refused; it is not deleted for you. Capture this host from a different machine.
 
 ## Checking a server before you capture
 

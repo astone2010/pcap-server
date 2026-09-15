@@ -278,6 +278,10 @@ class ServerInfo(ServerAuth):
     # PRETTY_NAME from the host's /etc/os-release, as of the last prerequisite
     # check. Set by the server, never by a client: ServerAuth has no such field.
     os_name: str = ""
+    # Why this target was found to be the machine pcap-server runs on, as of the
+    # last time anything connected to it. Empty is "no such finding", which is
+    # not the same as "proved remote". Server-set, like os_name.
+    self_target_reason: str = ""
     added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

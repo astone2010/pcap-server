@@ -13,11 +13,14 @@ from pathlib import Path
 
 import pytest
 
+from backend import localnet
+from backend.localnet import SelfCaptureRefused
 from backend.ssh_manager import (
     MAX_INTERFACE_INDEXES,
     SSHManager,
     _IFINDEX_SCRIPT,
     _PREREQ_SCRIPT,
+    read_boot_id,
     _is_safe_tcpdump_path,
     _shell_quote,
     evaluate_prereqs,
@@ -1030,3 +1033,139 @@ def test_capabilities_the_host_refuses_are_a_failure_for_everyone(uid, use_sudo,
     assert check["status"] == "fail"
     assert check["fix"] == "  sudo setcap cap_net_raw=eip /usr/sbin/tcpdump"
     assert not any(c["name"] == "Capture without sudo" for c in checks)
+
+
+# --- boot id: the shared-kernel self-capture check ------------------------------
+#
+# The value is read off a target host, so it goes through the same "never trust
+# what the remote said" treatment as every other probe field. What makes it
+# worth having is that it does not depend on addressing at all: a container
+# shares its host's kernel, so an identical boot id means the target IS this
+# machine, however it was addressed.
+
+
+_HOST_BOOT_ID = "70612579-dfd6-4521-a99b-5959f2ba5760"
+_OTHER_BOOT_ID = "0f9c1a2b-3d4e-4f50-8a6b-7c8d9e0f1a2b"
+
+
+class _FakeResult:
+    def __init__(self, stdout: str = "", stderr: str = ""):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exit_status = 0
+
+
+class _FakeConn:
+    """Enough of an asyncssh connection for the boot-id read and the exec."""
+
+    def __init__(self, boot_id: str = "", *, run_raises: bool = False):
+        self._boot_id = boot_id
+        self._run_raises = run_raises
+        self.commands: list[str] = []
+        self.processes_created: list[str] = []
+        self.closed = False
+
+    async def run(self, command, **kwargs):
+        self.commands.append(command)
+        if self._run_raises:
+            raise OSError("channel died")
+        return _FakeResult(stdout=self._boot_id)
+
+    async def create_process(self, cmd_str):
+        self.processes_created.append(cmd_str)
+        return object()
+
+    def close(self):
+        self.closed = True
+
+    async def wait_closed(self):
+        return None
+
+
+def test_prereq_probe_asks_for_the_boot_id():
+    assert "/proc/sys/kernel/random/boot_id" in _PREREQ_SCRIPT
+
+
+def test_parse_prereq_output_keeps_a_well_formed_boot_id():
+    facts = parse_prereq_output(f"BOOTID={_HOST_BOOT_ID}\nPROBE_COMPLETE")
+    assert facts["boot_id"] == _HOST_BOOT_ID
+
+
+@pytest.mark.parametrize("hostile", [
+    "BOOTID=not-a-uuid",
+    "BOOTID=",
+    f"BOOTID={_HOST_BOOT_ID} ; rm -rf /",
+    "BOOTID=" + "f" * 500,
+])
+def test_parse_prereq_output_discards_a_malformed_boot_id(hostile):
+    facts = parse_prereq_output(f"{hostile}\nPROBE_COMPLETE")
+    assert facts["boot_id"] == ""
+
+
+def test_parse_prereq_output_defaults_boot_id_to_empty():
+    """A host that never answered must not leave the key missing: every caller
+    reads facts["boot_id"] unconditionally."""
+    assert parse_prereq_output("PROBE_COMPLETE")["boot_id"] == ""
+
+
+def test_read_boot_id_returns_the_normalised_value():
+    conn = _FakeConn(f"{_HOST_BOOT_ID.upper()}\n")
+    assert asyncio.run(read_boot_id(conn)) == _HOST_BOOT_ID
+
+
+def test_read_boot_id_never_raises_when_the_host_cannot_answer():
+    """An unanswerable host has told us nothing, which is not the same as
+    telling us it is elsewhere -- and it must not break the connection."""
+    conn = _FakeConn(run_raises=True)
+    assert asyncio.run(read_boot_id(conn)) == ""
+
+
+def _manager_with_conn(conn) -> SSHManager:
+    manager = SSHManager.__new__(SSHManager)
+
+    async def _fake_connect(server):
+        return conn
+
+    manager._connect = _fake_connect
+    return manager
+
+
+
+
+def test_run_tcpdump_refuses_a_target_on_this_kernel(monkeypatch):
+    """The last word, and the only check with no window between it and the
+    capture: this is the very connection tcpdump would have run on."""
+    monkeypatch.setattr(localnet, "own_boot_id", lambda: _HOST_BOOT_ID)
+    conn = _FakeConn(_HOST_BOOT_ID)
+    manager = _manager_with_conn(conn)
+
+    with pytest.raises(SelfCaptureRefused) as exc:
+        asyncio.run(manager.run_tcpdump(_server(), ["-i", "any"], "/tmp/x.pcap"))
+
+    assert "same kernel boot id" in str(exc.value)
+    assert conn.processes_created == [], "tcpdump must never be started"
+    assert conn.closed, "the refused connection must not be left open"
+
+
+def test_run_tcpdump_starts_normally_against_a_different_machine(monkeypatch):
+    monkeypatch.setattr(localnet, "own_boot_id", lambda: _HOST_BOOT_ID)
+    conn = _FakeConn(_OTHER_BOOT_ID)
+    manager = _manager_with_conn(conn)
+
+    asyncio.run(manager.run_tcpdump(_server(), ["-i", "any"], "/tmp/x.pcap"))
+
+    assert len(conn.processes_created) == 1
+    assert "tcpdump" in conn.processes_created[0]
+    assert not conn.closed
+
+
+def test_run_tcpdump_proceeds_when_the_target_reports_no_boot_id(monkeypatch):
+    """A BSD target or a masked /proc proves nothing. Refusing here would break
+    legitimate targets for no security gain."""
+    monkeypatch.setattr(localnet, "own_boot_id", lambda: _HOST_BOOT_ID)
+    conn = _FakeConn("")
+    manager = _manager_with_conn(conn)
+
+    asyncio.run(manager.run_tcpdump(_server(), ["-i", "any"], "/tmp/x.pcap"))
+
+    assert len(conn.processes_created) == 1

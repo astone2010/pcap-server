@@ -1,7 +1,13 @@
-"""Tests for backend.localnet.describe_if_local -- table-driven across the
-three ways a target can be recognised as "this machine" (HOST_ALIASES,
-an address the container itself holds, the default gateway), plus an
-explicit test of the case the module's own docstring says it cannot catch.
+"""Tests for backend.localnet -- the address layer (describe_if_local) and the
+kernel layer (describe_if_same_kernel).
+
+The address layer is table-driven across the three ways a target can be
+recognised as "this machine" (HOST_ALIASES, an address the container itself
+holds, the default gateway), plus an explicit test of the case addresses cannot
+catch: a Docker host reached by its own LAN address. The kernel layer is what
+catches that one, by comparing the target's boot id with ours -- so its tests
+cover the comparison, the normalising that keeps a remote value in shape, and
+both directions of "unknown", which must never refuse.
 
 resolve()/_own_addresses()/_default_gateways() touch real DNS, sockets and
 /proc -- monkeypatched here so describe_if_local's branching logic runs
@@ -98,12 +104,13 @@ def test_resolves_to_unrelated_address_is_not_flagged(monkeypatch):
     assert localnet.describe_if_local("clearly-remote-host") == ""
 
 
-def test_the_case_this_guard_cannot_catch(monkeypatch):
-    """Documented in the module's own docstring: the host's real LAN address,
-    reached from a bridged container that was never told what the host is
-    called, resolves to neither an address the container holds nor its
-    gateway -- so it looks exactly like a genuinely remote target. This
-    pins the guard's actual limit rather than assuming it is caught."""
+def test_the_case_address_checks_cannot_catch(monkeypatch):
+    """The host's real LAN address, reached from a bridged container that was
+    never told what the host is called, resolves to neither an address the
+    container holds nor its gateway -- so it looks exactly like a genuinely
+    remote target. This pins the address layer's actual limit rather than
+    assuming it is caught. describe_if_same_kernel is what covers this case,
+    and it needs a connection to the target to do it."""
     host_lan_address = "192.168.1.50"
     _stub(
         monkeypatch,
@@ -166,16 +173,15 @@ def test_local_addresses_is_the_union(monkeypatch):
     assert localnet.local_addresses() == {"127.0.0.1", "10.0.0.5", "10.0.0.1"}
 
 
-def test_a_docker_hosts_lan_address_is_not_detected():
-    """The limit of what detection can see, asserted rather than assumed.
+def test_a_docker_hosts_lan_address_is_not_detected_by_address():
+    """The limit of the ADDRESS layer, asserted rather than assumed.
 
     describe_if_local knows this container's own addresses and its default
     gateway. A bridged container knows nothing about the host's LAN address, so
     pointing pcap-server at the very machine it runs on -- by the address an
-    operator would actually type -- is invisible from in here. That is not a bug
-    to fix at this layer; it is why the Add server form carries a standing
-    warning as well as this check. If this ever starts returning a finding, the
-    warning can be reconsidered.
+    operator would actually type -- is invisible to resolving. That is why
+    describe_if_same_kernel exists: it answers the same question from the
+    target's own kernel identity, where topology does not come into it.
     """
     assert localnet.describe_if_local("192.168.1.10") == ""
     assert localnet.describe_if_local("10.0.0.5") == ""
@@ -185,3 +191,104 @@ def test_the_obvious_self_targets_are_still_caught():
     """The other half: what detection does cover is not weakened by the above."""
     assert localnet.describe_if_local("localhost") != ""
     assert localnet.describe_if_local("127.0.0.1") != ""
+
+
+# --- boot id: the check that does not depend on addressing at all ---------------
+
+
+_A_BOOT_ID = "70612579-dfd6-4521-a99b-5959f2ba5760"
+_ANOTHER_BOOT_ID = "0f9c1a2b-3d4e-4f50-8a6b-7c8d9e0f1a2b"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (_A_BOOT_ID, _A_BOOT_ID),
+    (f"{_A_BOOT_ID}\n", _A_BOOT_ID),
+    (f"  {_A_BOOT_ID}  ", _A_BOOT_ID),
+    (_A_BOOT_ID.upper(), _A_BOOT_ID),
+    ("", ""),
+    ("not-a-uuid", ""),
+    ("70612579dfd645219a995959f2ba5760", ""),          # no dashes
+    (f"{_A_BOOT_ID} rm -rf /", ""),                    # trailing junk
+    (f"{_A_BOOT_ID}{_A_BOOT_ID}", ""),                 # two concatenated
+    ("../../etc/passwd", ""),
+])
+def test_normalise_boot_id(raw, expected):
+    assert localnet.normalise_boot_id(raw) == expected
+
+
+def test_normalise_boot_id_bounds_what_it_will_even_look_at():
+    """A target answering with a flood of bytes cannot make us hold any of it."""
+    flood = "a" * 10_000_000
+    assert localnet.normalise_boot_id(flood) == ""
+
+
+def test_normalise_boot_id_ignores_a_valid_id_buried_past_the_bound():
+    padded = " " * (localnet.BOOT_ID_MAX_CHARS + 1) + _A_BOOT_ID
+    assert localnet.normalise_boot_id(padded) == ""
+
+
+def test_same_boot_id_is_this_machine(monkeypatch):
+    monkeypatch.setattr(localnet, "own_boot_id", lambda: _A_BOOT_ID)
+    result = localnet.describe_if_same_kernel(_A_BOOT_ID)
+    assert result != ""
+    assert "same kernel boot id" in result
+
+
+def test_same_boot_id_in_a_different_case_still_matches(monkeypatch):
+    monkeypatch.setattr(localnet, "own_boot_id", lambda: _A_BOOT_ID)
+    assert localnet.describe_if_same_kernel(f"{_A_BOOT_ID.upper()}\n") != ""
+
+
+def test_different_boot_id_is_not_this_machine(monkeypatch):
+    monkeypatch.setattr(localnet, "own_boot_id", lambda: _A_BOOT_ID)
+    assert localnet.describe_if_same_kernel(_ANOTHER_BOOT_ID) == ""
+
+
+def test_unreadable_remote_boot_id_proves_nothing(monkeypatch):
+    """A BSD target, or one with a masked /proc, has told us nothing. Refusing
+    it would break legitimate targets for no security gain -- absence of proof
+    is not proof of locality, and the address checks still apply underneath."""
+    monkeypatch.setattr(localnet, "own_boot_id", lambda: _A_BOOT_ID)
+    assert localnet.describe_if_same_kernel("") == ""
+    assert localnet.describe_if_same_kernel("unknown") == ""
+
+
+def test_unreadable_own_boot_id_never_matches_everything(monkeypatch):
+    """If our own /proc gives nothing, two empty strings must not compare equal
+    and refuse every target in existence. Fails open, loudly documented."""
+    monkeypatch.setattr(localnet, "own_boot_id", lambda: "")
+    assert localnet.describe_if_same_kernel("") == ""
+    assert localnet.describe_if_same_kernel(_A_BOOT_ID) == ""
+
+
+def test_own_boot_id_reads_the_kernels_value(tmp_path, monkeypatch):
+    path = tmp_path / "boot_id"
+    path.write_text(f"{_A_BOOT_ID}\n")
+    monkeypatch.setattr(localnet, "BOOT_ID_PATH", path)
+    assert localnet.own_boot_id() == _A_BOOT_ID
+
+
+def test_own_boot_id_survives_a_missing_proc(tmp_path, monkeypatch):
+    monkeypatch.setattr(localnet, "BOOT_ID_PATH", tmp_path / "definitely-absent")
+    assert localnet.own_boot_id() == ""
+
+
+def test_own_boot_id_is_not_cached_across_calls(tmp_path, monkeypatch):
+    """A cached empty string from an early call would disable the check for the
+    life of the process -- the failure mode would be silent and total."""
+    path = tmp_path / "boot_id"
+    monkeypatch.setattr(localnet, "BOOT_ID_PATH", path)
+    assert localnet.own_boot_id() == ""
+    path.write_text(_A_BOOT_ID)
+    assert localnet.own_boot_id() == _A_BOOT_ID
+
+
+def test_this_container_reports_some_boot_id():
+    """Not a unit test of our code: a check that the environment this ships into
+    actually exposes /proc/sys/kernel/random/boot_id. If a runtime ever stops
+    exposing it, the kernel check degrades to doing nothing at all, and that
+    should fail here rather than in production silence.
+    """
+    assert localnet.own_boot_id() != "", (
+        "no readable boot id -- the shared-kernel self-capture check cannot fire"
+    )

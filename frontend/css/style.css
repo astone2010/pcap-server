@@ -664,6 +664,13 @@ body {
     color: var(--warning);
 }
 
+/* A refusal, not a caution: this target can never be captured from, where an
+   untrusted host is one button away from working. Danger reads that difference
+   without needing the text. */
+.server-warn-self {
+    color: var(--danger);
+}
+
 .server-form {
     padding: 24px;
     overflow-y: auto;

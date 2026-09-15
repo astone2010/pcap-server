@@ -661,3 +661,106 @@ def test_revalidation_is_still_cheap(client, path):
     every page load pays for the whole file again."""
     assert client.get(path).headers.get("etag")
 
+
+
+# --- capture start: the guard that used to run only at add time ---------------
+#
+# _reject_self_target was wired into adding and editing a server, which left
+# every row already in the database outside it -- rows added before the guard
+# existed, and rows whose hostname has since come to resolve to this machine.
+# A capture is the thing that actually records the password, so the check
+# belongs on the path that starts one.
+
+
+_SELF_FINDING = ("the target reports the same kernel boot id as pcap-server "
+                 "itself, so it is the machine this container is running on")
+
+
+def test_capture_start_refuses_a_server_already_known_to_be_this_machine(
+        secure_client, enrolled, monkeypatch):
+    server_id = _a_server(enrolled)
+    main.db.set_active_server_self_target(server_id, enrolled, _SELF_FINDING)
+    started = False
+
+    async def should_not_run(req, server, user_id):
+        nonlocal started
+        started = True
+        return {}
+
+    monkeypatch.setattr(main.capture_manager, "start", should_not_run)
+    resp = secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "self_capture"
+    assert started is False, "nothing should connect to a target already known to be us"
+
+
+def test_capture_start_refuses_a_hostname_that_now_resolves_to_this_machine(
+        secure_client, enrolled, monkeypatch):
+    """The stored row was fine when it was added. DNS moved under it."""
+    server_id = str(uuid.uuid4())
+    main.db.add_active_server(
+        server_id, enrolled, "target", "localhost", 22, "alice", "alice-key", False
+    )
+    started = False
+
+    async def should_not_run(req, server, user_id):
+        nonlocal started
+        started = True
+        return {}
+
+    monkeypatch.setattr(main.capture_manager, "start", should_not_run)
+    resp = secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "self_capture"
+    assert started is False
+    assert main.db.get_active_server(server_id, enrolled)["self_target_reason"] != "", (
+        "an address that has moved to this machine is the case nobody would "
+        "think to look for -- the list has to say so"
+    )
+
+
+def test_capture_start_surfaces_a_refusal_raised_on_the_captures_own_connection(
+        secure_client, enrolled, monkeypatch):
+    """The host LAN address case: nothing before the connection can see it, so
+    run_tcpdump refuses on the connection tcpdump was about to run on."""
+    server_id = _a_server(enrolled)
+
+    async def refuse(req, server, user_id):
+        raise main.SelfCaptureRefused(_SELF_FINDING)
+
+    monkeypatch.setattr(main.capture_manager, "start", refuse)
+    resp = secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
+
+    assert resp.status_code == 400, "a self-capture refusal must not read as a 500"
+    detail = resp.json()["detail"]
+    assert detail["code"] == "self_capture"
+    assert "same kernel boot id" in detail["reason"]
+
+
+def test_a_refusal_on_the_captures_connection_is_recorded_against_the_server(
+        secure_client, enrolled, monkeypatch):
+    """So the second attempt is refused before connecting, and the server list
+    can say why rather than leaving a dead entry behind."""
+    server_id = _a_server(enrolled)
+
+    async def refuse(req, server, user_id):
+        raise main.SelfCaptureRefused(_SELF_FINDING)
+
+    monkeypatch.setattr(main.capture_manager, "start", refuse)
+    secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
+
+    assert main.db.get_active_server(server_id, enrolled)["self_target_reason"] == _SELF_FINDING
+
+
+def test_an_ordinary_capture_still_starts(secure_client, enrolled, monkeypatch):
+    """The guard must not become a wall: a normal target is unaffected."""
+    async def start(req, server, user_id):
+        return {"id": "cap-1", "status": "running"}
+
+    monkeypatch.setattr(main.capture_manager, "start", start)
+    server_id = _a_server(enrolled)
+    resp = secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
+
+    assert resp.status_code == 200

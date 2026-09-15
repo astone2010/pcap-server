@@ -11,6 +11,11 @@ import asyncssh
 
 from backend.crypto import CryptoError, looks_encrypted
 from backend.database import Database
+from backend.localnet import (
+    SelfCaptureRefused,
+    describe_if_same_kernel,
+    normalise_boot_id,
+)
 from backend.models import ServerAuth
 
 logger = logging.getLogger(__name__)
@@ -382,6 +387,10 @@ class SSHManager:
                     "output": result.stdout.strip(),
                     "host_key_algorithm": negotiated,
                     "stronger_available": weaker_host_key_than_available(negotiated, stored),
+                    # Reported, not acted on here: a test connection is the
+                    # caller's to interpret, and it is the route that knows
+                    # which server row to mark.
+                    "boot_id": await read_boot_id(conn),
                 }
         except (ConnectionError, FileNotFoundError):
             raise
@@ -468,8 +477,16 @@ class SSHManager:
             cmd_str = f"timeout {duration} {cmd_str}"
 
         conn = await self._connect(server)
-        logger.info("running on %s: %s", server.hostname, cmd_str)
         try:
+            # The last word on self-capture, and the only one with no window
+            # between the check and the capture: this is the very connection
+            # tcpdump is about to run on, so nothing can be repointed in
+            # between. The routes check earlier and with better messages; this
+            # is what makes the earlier checks impossible to route around.
+            finding = describe_if_same_kernel(await read_boot_id(conn))
+            if finding:
+                raise SelfCaptureRefused(finding)
+            logger.info("running on %s: %s", server.hostname, cmd_str)
             process = await conn.create_process(cmd_str)
         except Exception:
             # Never leave the connection behind if the exec itself fails.
@@ -639,8 +656,28 @@ if [ -n "$TD" ]; then
 fi
 echo "SELINUX=$(getenforce 2>/dev/null)"
 if [ -w /tmp ]; then echo "TMPWRITE=yes"; else echo "TMPWRITE=no"; fi
+echo "BOOTID=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
 echo "PROBE_COMPLETE"
 """
+
+# Asked on its own where there is no probe to piggyback on -- before a capture
+# starts, on the connection that is about to run tcpdump. World-readable, so no
+# privilege is needed and nothing is elevated to ask it.
+_BOOT_ID_CMD = "cat /proc/sys/kernel/random/boot_id 2>/dev/null"
+
+
+async def read_boot_id(conn) -> str:
+    """The target kernel's boot id over an open connection, or "" if unknown.
+
+    Never fails a connection: a host that cannot answer has told us nothing,
+    which is a distinct outcome from telling us it is somewhere else.
+    """
+    try:
+        result = await conn.run(_BOOT_ID_CMD, check=False, timeout=10)
+    except Exception:
+        logger.debug("could not read remote boot id", exc_info=True)
+        return ""
+    return normalise_boot_id(result.stdout or "")
 
 _IFINDEX_SCRIPT = r"""
 for d in /sys/class/net/*; do
@@ -701,7 +738,7 @@ def parse_prereq_output(raw: str) -> dict:
         "os_release": {}, "found_paths": [], "uid": None, "groups": [],
         "on_path": "", "tcpdump_path": "", "version": "", "caps": "",
         "caps_unavailable": False, "sudo_present": False, "sudo_nopasswd": False,
-        "selinux": "", "tmp_writable": None, "path_env": "",
+        "selinux": "", "tmp_writable": None, "path_env": "", "boot_id": "",
         "tcpdump_mode": "", "tcpdump_group": "", "noexec_path": "", "noexec_group": "",
     }
     in_osrel = False
@@ -754,6 +791,8 @@ def parse_prereq_output(raw: str) -> dict:
             facts["selinux"] = value
         elif key == "TMPWRITE":
             facts["tmp_writable"] = value == "yes"
+        elif key == "BOOTID":
+            facts["boot_id"] = normalise_boot_id(value)
 
     # Prefer whatever the shell itself resolves; fall back to the scan. Either
     # way the value has already been through _is_safe_tcpdump_path.

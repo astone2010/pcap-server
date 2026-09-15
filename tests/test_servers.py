@@ -18,6 +18,7 @@ import uuid
 
 import pytest
 
+from backend import localnet
 from backend.database import Database
 
 
@@ -985,3 +986,193 @@ def test_a_client_cannot_set_the_os_through_the_server_form(api_client, signed_i
 
 async def _noop():
     return None
+
+
+# --- the self-capture guard: a target that turns out to be this machine --------
+#
+# Address checks run before anything connects and cannot see a Docker host
+# reached by its own LAN address. The boot-id comparison can: a container shares
+# its host's kernel, so an identical boot id means the target IS this machine.
+# These cover the routes that act on that, and the two rules that matter most --
+# that a finding is recorded rather than left as an unexplained failure, and
+# that "unknown" never refuses.
+
+
+_HOST_BOOT_ID = "70612579-dfd6-4521-a99b-5959f2ba5760"
+_OTHER_BOOT_ID = "0f9c1a2b-3d4e-4f50-8a6b-7c8d9e0f1a2b"
+
+
+@pytest.fixture()
+def our_boot_id(monkeypatch):
+    monkeypatch.setattr(localnet, "own_boot_id", lambda: _HOST_BOOT_ID)
+    return _HOST_BOOT_ID
+
+
+def _probe_with_boot_id(boot_id: str) -> dict:
+    result = _probe_result("Debian GNU/Linux 13 (trixie)")
+    result["facts"]["boot_id"] = boot_id
+    return result
+
+
+def _stub_probe(monkeypatch, boot_id: str) -> None:
+    async def fake_probe(server):
+        return _probe_with_boot_id(boot_id)
+    monkeypatch.setattr(main.ssh_manager, "check_prerequisites", fake_probe)
+
+
+def _stub_test_connection(monkeypatch, boot_id: str) -> None:
+    async def fake_test(server):
+        return {"output": "ok", "host_key_algorithm": "ssh-ed25519",
+                "stronger_available": False, "boot_id": boot_id}
+    monkeypatch.setattr(main.ssh_manager, "test_connection", fake_test)
+
+
+def test_prereq_check_refuses_a_target_running_on_this_kernel(api_client, signed_in, monkeypatch, our_boot_id):
+    server_id = _add_server(signed_in, "the-docker-host.example")
+    _stub_probe(monkeypatch, our_boot_id)
+
+    res = api_client.post(f"/api/servers/{server_id}/prereq-check")
+
+    assert res.status_code == 400
+    detail = res.json()["detail"]
+    assert detail["code"] == "self_capture"
+    assert "same kernel boot id" in detail["reason"]
+
+
+def test_a_refused_target_is_recorded_so_the_list_can_say_why(api_client, signed_in, monkeypatch, our_boot_id):
+    """An entry that just fails every time, with nothing said about why, is the
+    dead end this is here to avoid. The row stays -- deleting someone's
+    configuration over a finding is not ours to do."""
+    server_id = _add_server(signed_in, "the-docker-host.example")
+    _stub_probe(monkeypatch, our_boot_id)
+
+    api_client.post(f"/api/servers/{server_id}/prereq-check")
+
+    row = next(r for r in api_client.get("/api/servers").json() if r["id"] == server_id)
+    assert "same kernel boot id" in row["self_target_reason"]
+
+
+def test_a_remote_target_is_not_flagged(api_client, signed_in, monkeypatch, our_boot_id):
+    server_id = _add_server(signed_in, "genuinely-remote.example")
+    _stub_probe(monkeypatch, _OTHER_BOOT_ID)
+
+    assert api_client.post(f"/api/servers/{server_id}/prereq-check").status_code == 200
+    row = next(r for r in api_client.get("/api/servers").json() if r["id"] == server_id)
+    assert row["self_target_reason"] == ""
+
+
+def test_a_target_that_reports_no_boot_id_is_allowed(api_client, signed_in, monkeypatch, our_boot_id):
+    """A BSD host, or one with a masked /proc, has proved nothing. Refusing it
+    would break legitimate targets for no security gain."""
+    server_id = _add_server(signed_in, "no-proc.example")
+    _stub_probe(monkeypatch, "")
+
+    assert api_client.post(f"/api/servers/{server_id}/prereq-check").status_code == 200
+
+
+def test_a_finding_is_cleared_when_the_host_stops_matching(api_client, signed_in, monkeypatch, our_boot_id):
+    """A clear is as meaningful as a set: a hostname repointed at a real remote
+    machine must stop carrying the previous host's finding."""
+    server_id = _add_server(signed_in, "moved.example")
+    main.db.set_active_server_self_target(server_id, signed_in, "stale finding")
+    _stub_probe(monkeypatch, _OTHER_BOOT_ID)
+
+    api_client.post(f"/api/servers/{server_id}/prereq-check")
+
+    assert main.db.get_active_server(server_id, signed_in)["self_target_reason"] == ""
+
+
+def test_test_connection_also_refuses_this_machine(api_client, signed_in, monkeypatch, our_boot_id):
+    """The action a user reaches for when a server misbehaves is where a
+    self-target most needs to surface."""
+    server_id = _add_server(signed_in, "the-docker-host.example")
+    _stub_test_connection(monkeypatch, our_boot_id)
+
+    res = api_client.post(f"/api/servers/{server_id}/test")
+    assert res.status_code == 400
+    assert res.json()["detail"]["code"] == "self_capture"
+
+
+def test_probe_before_adding_refuses_this_machine(api_client, signed_in, monkeypatch, our_boot_id):
+    """No row exists yet, which is the point: catching it here stops the server
+    being created at all."""
+    monkeypatch.setattr(main, "_require_key", lambda name: None)
+    _stub_test_connection(monkeypatch, our_boot_id)
+
+    res = api_client.post("/api/probe/test", json={
+        "hostname": "the-docker-host.example", "username": "alice", "ssh_key_name": "k",
+    })
+    assert res.status_code == 400
+    assert res.json()["detail"]["code"] == "self_capture"
+
+
+def test_probe_prereq_check_before_adding_refuses_this_machine(api_client, signed_in, monkeypatch, our_boot_id):
+    monkeypatch.setattr(main, "_require_key", lambda name: None)
+    _stub_probe(monkeypatch, our_boot_id)
+
+    res = api_client.post("/api/probe/prereq-check", json={
+        "hostname": "the-docker-host.example", "username": "alice", "ssh_key_name": "k",
+    })
+    assert res.status_code == 400
+    assert res.json()["detail"]["code"] == "self_capture"
+
+
+def test_editing_a_server_to_a_new_endpoint_clears_the_finding(api_client, signed_in, monkeypatch):
+    """The finding describes a machine. A new endpoint has not been examined,
+    and carrying the finding across would flag the wrong host."""
+    server_id = _add_server(signed_in, "was-the-host.example")
+    main.db.set_active_server_self_target(server_id, signed_in, "same kernel boot id")
+    monkeypatch.setattr(main, "_reject_self_target", lambda *a, **k: _noop())
+    monkeypatch.setattr(main, "_require_key", lambda name: None)
+
+    res = api_client.put(f"/api/servers/{server_id}", json={
+        "hostname": "somewhere-else.example", "username": "alice", "ssh_key_name": "k",
+    })
+    assert res.status_code == 200
+    assert res.json()["self_target_reason"] == ""
+
+
+def test_renaming_a_server_keeps_the_finding(api_client, signed_in, monkeypatch):
+    """Same machine, different label: the finding is still true."""
+    server_id = _add_server(signed_in, "still-the-host.example")
+    main.db.set_active_server_self_target(server_id, signed_in, "same kernel boot id")
+    monkeypatch.setattr(main, "_reject_self_target", lambda *a, **k: _noop())
+    monkeypatch.setattr(main, "_require_key", lambda name: None)
+
+    res = api_client.put(f"/api/servers/{server_id}", json={
+        "name": "renamed", "hostname": "still-the-host.example",
+        "username": "alice", "ssh_key_name": "k",
+    })
+    assert res.status_code == 200
+    assert res.json()["self_target_reason"] == "same kernel boot id"
+
+
+def test_a_client_cannot_clear_the_finding_through_the_server_form(api_client, signed_in, monkeypatch):
+    """Server-set, like os_name: ServerAuth has no such field, so a client
+    cannot talk its way out of a refusal."""
+    server_id = _add_server(signed_in, "still-the-host.example")
+    main.db.set_active_server_self_target(server_id, signed_in, "same kernel boot id")
+    monkeypatch.setattr(main, "_reject_self_target", lambda *a, **k: _noop())
+    monkeypatch.setattr(main, "_require_key", lambda name: None)
+
+    res = api_client.put(f"/api/servers/{server_id}", json={
+        "hostname": "still-the-host.example", "username": "alice", "ssh_key_name": "k",
+        "self_target_reason": "",
+    })
+    assert res.status_code == 200
+    assert res.json()["self_target_reason"] == "same kernel boot id"
+
+
+def test_test_connection_is_never_blocked_by_a_stored_finding(api_client, signed_in, monkeypatch, our_boot_id):
+    """The recovery path: a finding that is wrong, or has stopped being true,
+    must be undoable without editing the row. Test connection and Check
+    prerequisites re-derive it from the host in front of them and write the
+    answer either way, so a flagged server can clear itself."""
+    server_id = _add_server(signed_in, "was-flagged.example")
+    main.db.set_active_server_self_target(server_id, signed_in, "an earlier finding")
+    _stub_test_connection(monkeypatch, _OTHER_BOOT_ID)
+
+    res = api_client.post(f"/api/servers/{server_id}/test")
+
+    assert res.status_code == 200, "a stored finding must not lock the row out of re-checking"
+    assert main.db.get_active_server(server_id, signed_in)["self_target_reason"] == ""

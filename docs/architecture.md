@@ -587,12 +587,52 @@ connection the session cookie and TOTP code — written into a capture that is
 then stored and browsable in this UI. On a Docker host, capturing `any` also
 sweeps the bridge interfaces and records every other container's traffic.
 
-`localnet.py` checks a target before a server can be added, in decreasing order
-of certainty: loopback and any address the container holds (unambiguous), the
-default gateway (on a Docker bridge network, that is the host), and the names
-Docker publishes for the host. What it cannot detect is the host's LAN address
-when the container has never been told what the host is called. So it reports
-what it found rather than claiming proof of non-locality.
+`localnet.py` answers this in two layers, because they can see different things.
+
+**The address layer** (`describe_if_local`) runs before anything connects, in
+decreasing order of certainty: loopback and any address the container holds
+(unambiguous), the default gateway (on a Docker bridge network, that is the
+host), and the names Docker publishes for the host. It cannot see the host's own
+LAN address when the container has never been told what the host is called — and
+that is the address an operator would actually type for their own Docker host.
+
+**The kernel layer** (`describe_if_same_kernel`) covers exactly that case.
+Containers share the host's kernel, so `/proc/sys/kernel/random/boot_id` inside
+this container is the *host's* boot id. A target that reports the same value is
+running on this kernel: it is this machine, whatever address was used to reach
+it. Topology does not enter into it, so a LAN address, an alias, a VPN address
+and macvlan are all one comparison. The file is world-readable, so the probe
+needs no privilege, and it rides a connection that is already open.
+
+It is a positive identification test and is deliberately not treated as more
+than that. A target that reports no boot id — a BSD host, a masked `/proc` — has
+proved nothing, and refusing it would break legitimate targets for no security
+gain. Absence of proof is not proof of non-locality, so the address checks still
+apply underneath.
+
+Where each one runs:
+
+| Point | Checks | Why there |
+|---|---|---|
+| Add / edit server, probe before adding | address, then kernel once the probe connects | Stops the server existing at all |
+| Check prerequisites, Test connection | kernel (the probe already connected) | The two actions an operator reaches for when a server misbehaves |
+| Start a capture | stored finding, then address | A row added before the guard existed, or a hostname DNS has moved, is otherwise never re-examined |
+| `run_tcpdump`, on the capture's own connection | kernel | The only check with no window between it and the capture — this is the connection tcpdump is about to run on |
+
+A finding from a connection is stored on the server row (`self_target_reason`)
+and shown in the server list. The row is not deleted: refusing a capture is the
+backend's business, and discarding someone's configuration over a finding is
+not.
+
+Two things clear it, which together are the recovery path if a finding is ever
+wrong. **Editing the row's endpoint** clears it, on the same reasoning that
+clears `os_name` — a finding describes a machine, and a new endpoint has not
+been examined. **Connecting again and finding otherwise** also clears it:
+*Check prerequisites* and *Test connection* re-derive the finding from the host
+in front of them and write the answer either way, so they are never blocked by
+the stored value. Starting a capture is the one path that trusts the stored
+finding without re-proving it, because a capture is the thing worth refusing
+cheaply.
 
 ---
 

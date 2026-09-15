@@ -667,13 +667,25 @@ function renderServerList() {
                             : "<span>Ask an admin to trust it under Admin \u2192 Known Hosts.</span>"}
                    </div>`
                 : "";
+            // A server the backend has proved to be this very machine. Captures
+            // from it are refused, and an entry that simply failed every time
+            // with no stated reason is the thing this is here to avoid. The row
+            // stays: deleting someone's configuration over a finding is not
+            // ours to do.
+            const selfTarget = s.self_target_reason
+                ? `<div class="server-warn server-warn-self">
+                       <span><strong>This is the machine pcap-server runs on.</strong>
+                       Captures from it are refused &mdash; ${escHtml(s.self_target_reason)}.</span>
+                   </div>`
+                : "";
             return `
-        <div class="server-item${untrusted ? " untrusted" : ""}" data-action="select-server" data-id="${escHtml(s.id)}">
-            <span class="server-dot${untrusted ? " server-dot-warn" : ""}" aria-hidden="true"></span>
+        <div class="server-item${untrusted ? " untrusted" : ""}${s.self_target_reason ? " self-target" : ""}" data-action="select-server" data-id="${escHtml(s.id)}">
+            <span class="server-dot${untrusted || s.self_target_reason ? " server-dot-warn" : ""}" aria-hidden="true"></span>
             <div class="server-item-body">
                 <div class="name">${escHtml(s.name || s.hostname)}</div>
                 <div class="detail">${escHtml(s.username)}@${escHtml(s.hostname)}:${escHtml(s.port)}</div>
                 ${s.os_name ? `<div class="server-os">${escHtml(s.os_name)}</div>` : ""}
+                ${selfTarget}
                 ${warning}
             </div>
         </div>`;
@@ -896,13 +908,13 @@ function sshKeyPicker(idPrefix, keys, current = "") {
             : "Open the list and choose the key this server authenticates with."}</div>`;
 }
 
-// Read alongside the reject that already happens on submit. describe_if_local
-// catches loopback, this container's own addresses and its default gateway --
-// but a container on a bridge network knows nothing about the host's LAN
-// address, so pointing pcap-server at the very machine it runs on is the one
-// case detection cannot see. Hence saying so here, before the address is typed.
-// The rule stays on screen; the reasoning is one click away. As a paragraph it
-// was the first and largest thing on the form, above the field it is about.
+// Read alongside the reject that already happens on submit. Address checks
+// catch loopback, this container's own addresses and its default gateway; the
+// boot-id check catches the host's own LAN address, which no amount of
+// resolving ever could. Neither can prove a target is remote, so the rule is
+// still stated here, before the address is typed -- the reasoning is one click
+// away. As a paragraph it was the first and largest thing on the form, above
+// the field it is about.
 const SELF_CAPTURE_WARNING = `
     <details class="form-warning">
         <summary><strong>Do not point this at the machine running pcap-server.</strong> <span class="form-warning-why">Why?</span></summary>
@@ -910,9 +922,11 @@ const SELF_CAPTURE_WARNING = `
         session cookie and TOTP code, and over plain HTTP your password — into a
         capture this UI then stores and serves back. On a Docker host the
         <code>any</code> interface also sweeps every other container's traffic.
-        Obvious cases (localhost, this container's own addresses, its gateway)
-        are refused automatically, but a Docker host's LAN address looks like any
-        other target from in here. Capture this host from a different machine.
+        This is refused automatically: localhost, this container's own addresses
+        and its gateway are caught by name, and a target that turns out to be
+        running on this same kernel — a Docker host reached by its LAN address,
+        say — is refused as soon as anything connects to it. Capture this host
+        from a different machine.
     </details>`;
 
 function showAddServer() {

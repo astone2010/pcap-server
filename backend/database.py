@@ -92,6 +92,11 @@ class Database:
                 use_sudo INTEGER NOT NULL DEFAULT 0,
                 tcpdump_path TEXT NOT NULL DEFAULT '',
                 os_name TEXT NOT NULL DEFAULT '',
+                -- Why this target was found to be the machine pcap-server runs
+                -- on. Empty means no such finding, which is not the same as
+                -- "proved remote": a server nothing has connected to yet is
+                -- simply unexamined.
+                self_target_reason TEXT NOT NULL DEFAULT '',
                 added_at TEXT NOT NULL
             );
 
@@ -211,6 +216,10 @@ class Database:
             conn.execute("ALTER TABLE active_servers ADD COLUMN tcpdump_path TEXT NOT NULL DEFAULT ''")
         if "os_name" not in active_columns:
             conn.execute("ALTER TABLE active_servers ADD COLUMN os_name TEXT NOT NULL DEFAULT ''")
+        if "self_target_reason" not in active_columns:
+            conn.execute(
+                "ALTER TABLE active_servers ADD COLUMN self_target_reason TEXT NOT NULL DEFAULT ''"
+            )
         session_columns = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
         if "last_seen" not in session_columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN last_seen TEXT")
@@ -500,17 +509,30 @@ class Database:
         self._conn().commit()
         return cur.rowcount > 0
 
+    def set_active_server_self_target(self, server_id: str, user_id: str, reason: str) -> bool:
+        """Record (or clear) why this server is the machine pcap-server runs on."""
+        cur = self._conn().execute(
+            "UPDATE active_servers SET self_target_reason = ? WHERE id = ? AND user_id = ?",
+            (reason, server_id, user_id),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
     def update_active_server(self, server_id: str, user_id: str, name: str, hostname: str, port: int, username: str, ssh_key_name: str, use_sudo: bool) -> bool:
         # tcpdump_path is cleared: it was discovered on the old host and says
         # nothing about wherever this server now points. os_name describes the
         # machine, not the login, so it survives a rename or a new key and goes
         # only when the endpoint changes. (SET expressions read the old row.)
+        # self_target_reason is a finding about the same machine and follows the
+        # same rule -- a new endpoint has not been examined yet, and carrying a
+        # finding across to it would flag the wrong host.
         cur = self._conn().execute(
             """UPDATE active_servers
                SET name = ?, hostname = ?, port = ?, username = ?, ssh_key_name = ?, use_sudo = ?, tcpdump_path = '',
-                   os_name = CASE WHEN hostname = ? AND port = ? THEN os_name ELSE '' END
+                   os_name = CASE WHEN hostname = ? AND port = ? THEN os_name ELSE '' END,
+                   self_target_reason = CASE WHEN hostname = ? AND port = ? THEN self_target_reason ELSE '' END
                WHERE id = ? AND user_id = ?""",
-            (name, hostname, port, username, ssh_key_name, int(use_sudo), hostname, port, server_id, user_id),
+            (name, hostname, port, username, ssh_key_name, int(use_sudo), hostname, port, hostname, port, server_id, user_id),
         )
         self._conn().commit()
         if cur.rowcount:

@@ -228,7 +228,7 @@ cd /opt/docker/pcapserver
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.34/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.35/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -329,7 +329,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.34` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.35` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -345,7 +345,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcapserver
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.34/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.35/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -370,7 +370,10 @@ changes something, and none of them work over plain HTTP.
 1. **Upload an SSH key.** Admin → SSH keys. It is sealed under the master key
    the moment it lands, the same way captures are.
 2. **Add the server.** Servers → + Add. Give it a name, a hostname and the login
-   it should use.
+   it should use. It has to be a *different* machine: capturing from the box
+   pcap-server runs on records pcap-server's own traffic, including your
+   sign-in, so it is refused — see
+   [Adding a server](docs/target-hosts.md#adding-a-server).
 3. **Trust the host's keys.** Admin → Known hosts → Trust keys, or the **Trust
    host** button on the server itself. This has to happen before anything will
    connect: a host with no trusted keys is refused rather than connected to

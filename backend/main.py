@@ -10,6 +10,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import NoReturn
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -75,7 +76,12 @@ from backend.packet_parser import (
     unknown_packet_fields,
     validate_column_fields,
 )
-from backend.localnet import SELF_CAPTURE_EXPLANATION, describe_if_local
+from backend.localnet import (
+    SELF_CAPTURE_EXPLANATION,
+    SelfCaptureRefused,
+    describe_if_local,
+    describe_if_same_kernel,
+)
 from backend.sanitizer import (
     FilteredSource,
     SanitizeError,
@@ -97,7 +103,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.34"
+APP_VERSION = "0.1.0-dev.35"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -1012,6 +1018,7 @@ def _server_from_row(row: dict) -> ServerInfo:
         use_sudo=bool(row["use_sudo"]),
         tcpdump_path=row["tcpdump_path"] if "tcpdump_path" in row.keys() else "",
         os_name=row.get("os_name", ""),
+        self_target_reason=row.get("self_target_reason", ""),
         added_at=datetime.fromisoformat(row["added_at"]),
     )
 
@@ -1023,18 +1030,55 @@ def _require_server(server_id: str, user_id: str) -> ServerInfo:
     return _server_from_row(row)
 
 
-async def _reject_self_target(hostname: str) -> None:
+def _refuse_self_target(finding: str, action: str) -> NoReturn:
+    """The one shape a self-capture refusal takes, wherever it is found.
+
+    One builder because the UI keys off the code (app.js): a second refusal
+    phrased by hand would be the one that does not raise the blocking alert.
+    """
+    raise HTTPException(400, {
+        "code": "self_capture",
+        "reason": f"{action}: {finding}.",
+        "explanation": SELF_CAPTURE_EXPLANATION,
+    })
+
+
+async def _reject_self_target(hostname: str, action: str = "This server cannot be added") -> None:
     """A capture target must not be the machine pcap-server runs on.
 
-    Resolution can block on DNS, so it runs off the event loop.
+    Address-level checks only -- everything that can be known without
+    connecting. Resolution can block on DNS, so it runs off the event loop.
     """
     finding = await asyncio.to_thread(describe_if_local, hostname)
     if finding:
-        raise HTTPException(400, {
-            "code": "self_capture",
-            "reason": f"This server cannot be added: {finding}.",
-            "explanation": SELF_CAPTURE_EXPLANATION,
-        })
+        _refuse_self_target(finding, action)
+
+
+def _record_self_target(server_id: str, user_id: str, reason: str) -> None:
+    """Persist (or clear) a connection-time finding against a stored server.
+
+    Written whenever something actually reached the host, so the server list can
+    say why an entry is refused instead of leaving the user at a dead end. A
+    clear is as meaningful as a set: a host that has moved should stop carrying
+    someone else's finding.
+    """
+    try:
+        db.set_active_server_self_target(server_id, user_id, reason)
+    except Exception:
+        # Never turn a successful refusal into a 500 over bookkeeping.
+        logger.warning("could not record self-target finding for %s", server_id, exc_info=True)
+
+
+async def _reject_self_kernel(boot_id: str, server_id: str, user_id: str, action: str) -> None:
+    """Refuse a target that proves, over its own connection, to be this machine.
+
+    The strong check: a shared kernel boot id is not topology-dependent, so it
+    catches the host LAN address that no amount of resolving ever could.
+    """
+    finding = describe_if_same_kernel(boot_id)
+    _record_self_target(server_id, user_id, finding)
+    if finding:
+        _refuse_self_target(finding, action)
 
 
 def _key_path(key_name: str) -> Path:
@@ -1139,6 +1183,13 @@ async def prereq_check(server_id: str, user: dict = Depends(get_current_user)):
     os_name = os_release.get("PRETTY_NAME") or os_release.get("NAME", "")
     if result["facts"]["complete"] and os_name != srv.os_name:
         db.set_active_server_os(server_id, user["id"], os_name)
+    # The probe reached the host, so its boot id is the best evidence available
+    # about whether this is the machine we are running on. Checked after the
+    # persistence above so a refused server still carries what was learned.
+    await _reject_self_kernel(
+        result["facts"].get("boot_id", ""), server_id, user["id"],
+        "This server cannot be used as a capture target",
+    )
     return {
         "checks": result["checks"],
         "tcpdump_path": discovered or srv.tcpdump_path,
@@ -1151,13 +1202,19 @@ async def test_server(server_id: str, user: dict = Depends(get_current_user)):
     srv = _require_server(server_id, user["id"])
     try:
         result = await ssh_manager.test_connection(srv)
-        return {"ok": True, **result}
     except ConnectionError as exc:
         raise HTTPException(502, str(exc))
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc))
     except Exception:
         raise HTTPException(502, "connection failed")
+    # Test connection is the one action a user reaches for when a server is
+    # misbehaving, so it is also where a self-target should surface.
+    await _reject_self_kernel(
+        result.get("boot_id", ""), server_id, user["id"],
+        "This server cannot be used as a capture target",
+    )
+    return {"ok": True, **result}
 
 
 @app.put("/api/servers/{server_id}")
@@ -1228,13 +1285,18 @@ async def probe_test(auth: ServerAuth, user: dict = Depends(get_current_user)):
     _require_key(auth.ssh_key_name)
     try:
         result = await ssh_manager.test_connection(auth)
-        return {"ok": True, **result}
     except ConnectionError as exc:
         raise HTTPException(502, str(exc))
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc))
     except Exception:
         raise HTTPException(502, "connection failed")
+    # No row to record against -- this server does not exist yet, which is the
+    # point: catching it here is what stops it being created at all.
+    finding = describe_if_same_kernel(result.get("boot_id", ""))
+    if finding:
+        _refuse_self_target(finding, "This server cannot be added")
+    return {"ok": True, **result}
 
 
 @app.post("/api/probe/prereq-check")
@@ -1250,6 +1312,10 @@ async def probe_prereq_check(auth: ServerAuth, user: dict = Depends(get_current_
     except Exception:
         logger.exception("prerequisite check failed for %s", auth.hostname)
         raise HTTPException(502, "prerequisite check failed")
+
+    finding = describe_if_same_kernel(result["facts"].get("boot_id", ""))
+    if finding:
+        _refuse_self_target(finding, "This server cannot be added")
 
     # Nothing is stored: there is no server row to attach a path to yet. The
     # path is returned so the check that runs after saving can confirm it.
@@ -1531,9 +1597,30 @@ async def start_capture(req: CaptureRequest, user: dict = Depends(get_current_us
     if not capture_start_rate_limiter.allow(user["id"]):
         raise HTTPException(429, "too many capture start requests, slow down")
     srv = _require_server(req.server_id, user["id"])
+    # The guard used to run only when a server was added, which left every row
+    # already in the database outside it -- including rows added before the
+    # guard existed, and rows whose hostname has since come to resolve to this
+    # machine. A stored finding is not re-proved here: whatever connected last
+    # had the target in front of it, and nothing since has said otherwise.
+    if srv.self_target_reason:
+        _refuse_self_target(srv.self_target_reason, "This capture cannot start")
+    # Recorded, not just refused: a row that fails every time with nothing said
+    # about why is the dead end the flag exists to prevent, and an address that
+    # has moved to this machine is exactly the case nobody would think to look
+    # for. Cleared again by the next Test connection that finds otherwise.
+    finding = await asyncio.to_thread(describe_if_local, srv.hostname)
+    if finding:
+        _record_self_target(srv.id, user["id"], finding)
+        _refuse_self_target(finding, "This capture cannot start")
     try:
         info = await capture_manager.start(req, srv, user["id"])
         return info
+    except SelfCaptureRefused as exc:
+        # Raised on the capture's own connection, after everything above passed:
+        # the host LAN address case, which no resolving can see. Recorded so the
+        # server list can say why rather than leaving a dead entry behind.
+        _record_self_target(srv.id, user["id"], str(exc))
+        _refuse_self_target(str(exc), "This capture cannot start")
     except CaptureLimitExceeded as exc:
         raise HTTPException(429, str(exc))
     except InterfaceAlreadyCapturing as exc:

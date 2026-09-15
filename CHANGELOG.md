@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.1.0-dev.35 — 2026-09-15
+
+### Security
+
+- **Capturing from the machine pcap-server runs on is now refused wherever it
+  can be detected, not only when a server is added.** Capturing an interface
+  that carries pcap-server's own traffic records your sign-in — over plain HTTP
+  that is your password verbatim, and on any connection your session cookie and
+  TOTP code — into a capture this UI then stores and serves back. On a Docker
+  host, `any` also sweeps every other container's traffic. There is no override.
+- **A target is now identified by its kernel, not just by its address.** A
+  container shares its host's kernel, so a target reporting the same
+  `/proc/sys/kernel/random/boot_id` as pcap-server *is* the machine pcap-server
+  is running on, whatever address was used to reach it. This closes the case no
+  amount of resolving could see: a Docker host addressed by its own LAN IP,
+  which is the address an operator would naturally type. Aliases, VPN addresses
+  and macvlan are covered by the same comparison. The file is world-readable, so
+  nothing is elevated to read it, and it rides a connection that is already
+  open. A target that cannot answer — a BSD host, a masked `/proc` — is not
+  refused on that basis: it has proved nothing either way, and the address
+  checks still apply underneath.
+- **Starting a capture re-checks the target.** The guard previously ran only
+  when a server was added or edited, which left every row already in the
+  database outside it — rows added before the guard existed, and rows whose
+  hostname has since come to resolve to this machine. The check now also runs
+  when a capture starts, and once more on the connection the capture itself is
+  about to run on, which is the only point with no window between the check and
+  the capture.
+- A server found to be this machine is marked in the server list, with the
+  reason, and captures from it are refused. The entry is not deleted: refusing
+  the capture is pcap-server's business, and discarding your configuration over
+  a finding is not. The mark is cleared if the server is later pointed at a
+  different host.
+
+### Fixed
+
+- The workflow linter no longer runs a second time on a release tag push. Its
+  trigger had a path filter but no branch filter, so a tag whose commit touched
+  a workflow file matched it — the same defect fixed for the main check workflow
+  in dev.34, in the file that release added.
+
+### Documentation
+
+- `docs/security.md`, `docs/target-hosts.md` and `docs/architecture.md` describe
+  both layers of the check, where each one runs, and why an unanswerable target
+  is allowed rather than refused. The Add server form's standing warning no
+  longer says the host's LAN address cannot be detected, because it now can be.
+
 ## 0.1.0-dev.34 — 2026-09-15
 
 ### Added

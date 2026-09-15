@@ -12,18 +12,33 @@ What can actually be detected from inside a container, in decreasing certainty:
   * the default gateway, which on a Docker bridge network IS the host
   * the names Docker publishes for the host (host.docker.internal and friends)
 
-What cannot be detected: the host's LAN address, when the container sits behind
-a bridge and has never been told what the host is called. `docker run
---add-host` or an extra_hosts entry makes that resolvable, and the check picks
-it up when it is. The check is therefore a guard against the common mistakes,
-not a proof of non-locality -- so it says what it found rather than claiming
-more than it knows.
+What no address check can detect: the host's LAN address, when the container
+sits behind a bridge and has never been told what the host is called. `docker
+run --add-host` or an extra_hosts entry makes that resolvable, and the check
+picks it up when it is -- but the address a person actually types for their own
+Docker host looks like any other target from in here.
+
+That is what `describe_if_same_kernel` is for, and it is the strong check.
+Containers share the host's kernel, so `/proc/sys/kernel/random/boot_id` inside
+this container is the *host's* boot id. A target that reports the same value is
+running on this kernel: it is this machine, whatever address was used to reach
+it. Network topology does not enter into it, so LAN addresses, aliases, VPN
+addresses and macvlan are all covered by one comparison. It costs a single
+world-readable file read over a connection that is already open.
+
+It is a POSITIVE identification test and is deliberately not treated as
+anything more. A target that reports no boot id -- a BSD host, a masked /proc --
+has proved nothing either way, and refusing it would break legitimate targets
+for no security gain. Absence of proof is not proof of non-locality, so the
+address checks still apply underneath and the module says what it found rather
+than claiming more than it knows.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import logging
+import re
 import socket
 import struct
 from pathlib import Path
@@ -40,6 +55,67 @@ HOST_ALIASES = frozenset({
 })
 
 _RESOLVE_TIMEOUT = 3.0
+
+# The kernel's own boot id, shared by every container running on it.
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+
+# A boot id is a UUID and nothing else. The remote half of the comparison comes
+# off a target host, so it is validated into shape before it is compared or
+# logged rather than being trusted as whatever arrived.
+_BOOT_ID_RE = re.compile(
+    r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z"
+)
+
+# Long enough for a UUID and a newline, short enough that a target answering
+# with a stream of bytes cannot make us hold any of it.
+BOOT_ID_MAX_CHARS = 64
+
+
+class SelfCaptureRefused(Exception):
+    """A capture target was proven to be the machine pcap-server runs on."""
+
+
+def normalise_boot_id(raw: str) -> str:
+    """A well-formed boot id from whatever the host said, or "" if it is not one."""
+    if not raw:
+        return ""
+    candidate = raw[:BOOT_ID_MAX_CHARS].strip().lower()
+    return candidate if _BOOT_ID_RE.match(candidate) else ""
+
+
+def own_boot_id() -> str:
+    """This kernel's boot id, or "" where /proc does not carry one.
+
+    Read on each call rather than cached: it is one small file, and a cached
+    empty string from an early call would disable the check for the life of the
+    process.
+    """
+    try:
+        return normalise_boot_id(BOOT_ID_PATH.read_text())
+    except OSError:
+        logger.debug("could not read %s", BOOT_ID_PATH, exc_info=True)
+        return ""
+
+
+def describe_if_same_kernel(remote_boot_id: str) -> str:
+    """Return why a target is this machine, or "" when it is not (or unknown).
+
+    Unknown covers both halves: a target that reported nothing usable, and a
+    container whose own /proc is virtualised. Neither is evidence of anything,
+    so neither refuses.
+    """
+    remote = normalise_boot_id(remote_boot_id)
+    if not remote:
+        return ""
+    mine = own_boot_id()
+    if not mine:
+        return ""
+    if remote != mine:
+        return ""
+    return (
+        "the target reports the same kernel boot id as pcap-server itself, so it "
+        "is the machine this container is running on"
+    )
 
 
 def _default_gateways() -> set[str]:

@@ -8,7 +8,14 @@ name: Lint workflows
 # scope with a real check standing behind it, rather than either running the
 # whole app suite for a trigger-only edit or running nothing at all.
 on:
+  # Branches only, for the reason check.yml gives at length: a bare `push:`
+  # also matches a tag push, which is what fires release.yml -- so tagging a
+  # commit this lint already passed on ran it a second time against nothing
+  # new, alongside the release. The `paths:` filter alone does not exclude
+  # that: a tag push whose commit touched a workflow file still matches it.
+  # Tags carry no ref under refs/heads, so this filter covers it.
   push:
+    branches: ['**']
     paths:
       - '.github/workflows/**'
   pull_request:

@@ -184,6 +184,20 @@ TOTP code — into a capture then stored and browsable in this UI. On a Docker
 host, capturing `any` also sweeps the bridge interfaces and records every other
 container.
 
+The refusal is checked twice over, because addresses alone cannot answer it.
+Loopback, the container's own addresses, its default gateway and Docker's host
+aliases are refused before anything connects. A target reached by an address
+that gives none of that away — a Docker host addressed by its own LAN IP — is
+caught once something connects to it, by comparing the target's kernel boot id
+(`/proc/sys/kernel/random/boot_id`) with ours: a container shares its host's
+kernel, so an identical value means the target is this machine. The check runs
+when a server is added, when it is probed or tested, when a capture starts, and
+once more on the connection the capture itself is about to run on, which is the
+one point with no window between the check and the capture. There is no
+override. A target that cannot answer — a BSD host, a masked `/proc` — is not
+refused on that basis: it has proved nothing, and the address checks still
+apply.
+
 ## In the browser
 
 Content-Security-Policy blocks script running on this origin from reaching any

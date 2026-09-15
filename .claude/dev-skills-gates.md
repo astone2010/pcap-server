@@ -1,5 +1,208 @@
 # Dev Skills gate state
 
+## Session opened 2026-09-15 #2 (local CLI, Debian 13, zsh, dev-skills 2.18.0)
+Skill loaded as a REGISTERED skill this time (it is in the session skill list),
+unlike the previous session which had to read SKILL.md by hand. Self-check: all
+five reference files present in ~/.claude/skills/dev-skills/.
+
+State re-derived from evidence (SKILL.md S2), not trusted from the entry below:
+ - HEAD = 62cf182, branch claude/admiring-wright-k20ptf, 0 ahead / 0 behind
+   origin after `git fetch`.
+ - v0.1.0-dev.34 IS on the remote -> 62cf182, the exact HEAD commit. APP_VERSION
+   (backend/main.py:100) reads 0.1.0-dev.34 and agrees with all seven refs.
+   Released version == tagged version == HEAD: NO unfinished Gate 6, nothing
+   stranded (GATE_REFERENCE step 7).
+ - `git ls-remote --tags origin`: v0.1.0-dev.15 .. v0.1.0-dev.34, contiguous.
+ - Working tree carries ONE modified file: this one (the dev.34 ship record,
+   +48/-3, uncommitted). No source file touched this session yet.
+
+Env: LOCAL CLI -> Claude PRESENTS git commands, the user runs them (S5.8).
+Shell: zsh (Linux Terminal). Remote: https://github.com/darthrater78/pcap-server
+Local dev workflow: ./scripts/check.sh. CI build check: check.yml (branches-only
+push + pull_request, and it CALLS ./scripts/check.sh -- no CI/local drift).
+CI release: release.yml on `v*` tag push. Plus lint-workflows.yml (actionlint).
+gate-preflight.sh still NOT installed (.claude/hooks has only session-start.sh),
+so the prose pre-flight is the only enforcement. This file remains tracked in
+git rather than gitignored -- as the repo has always had it, not changed
+unilaterally.
+
+Model: Opus 5, above the Sonnet ceiling. Flagged to the user at session start;
+no task approval yet this session (the dev.34 approval was task-scoped).
+
+CARRIED FORWARD, still open: the lint-workflows.yml trigger defect logged for
+dev.35 (see "Known defect" below) is CONFIRMED still present at HEAD -- `on:
+push:` with a `paths:` filter and no `branches:` filter, so it still fires on
+tag pushes.
+
+Model approval: user said "opus is fine" (2026-09-15) for THIS task, after the
+ceiling was flagged. Task-scoped, as every prior release has been.
+
+## TASK — actively prevent capturing the box pcap-server runs on
+User: "we really need to actively prevent captures to the same box the container
+is installed on. major security issue."
+
+WHAT ALREADY EXISTS (found before proposing anything, not rebuilt):
+backend/localnet.py + _reject_self_target (main.py:1026), wired into add server
+(1076), edit server (1166), probe test (1227), probe prereq-check (1242). It
+refuses loopback, container-owned addresses, the default gateway and Docker's
+host aliases with a 400 {"code":"self_capture"}, and app.js:56 turns that into
+showBlockingAlert. So this is closing holes in a real guard, not adding a
+missing one.
+
+THE TWO HOLES:
+ 1. POST /api/captures (main.py:1529) never re-checks -- it does
+    _require_server() then capture_manager.start(). A row added before the
+    guard existed, or a hostname whose DNS answer has since moved to the host,
+    captures with no check at all. The guard is add-time only.
+ 2. A bridged container cannot see its host's LAN address, which is exactly
+    what a person types. localnet.py's docstring admits it and
+    tests/test_localnet.py:114 ASSERTS the current behaviour
+    (describe_if_local(host_lan_address) == ""). app.js's SELF_CAPTURE_WARNING
+    tells the user this in prose because detection could not do it.
+
+DECIDED WITH THE USER (AskUserQuestion, all three recommended options taken):
+ - strictness: HARD BLOCK, no env override.
+ - detection: shared-kernel boot_id probe over SSH *plus* a capture-start
+   re-check. Containers share the host kernel, so an identical
+   /proc/sys/kernel/random/boot_id proves the target IS this box regardless of
+   network topology -- LAN IP, alias, VPN, macvlan all covered, which no
+   address heuristic can do. World-readable (mode 444), no privilege needed.
+ - existing rows: refuse on next use AND flag in the server list with the
+   reason; do not delete anyone's configuration.
+
+MUST VERIFY EMPIRICALLY, NOT ASSUME (this repo's standing practice): that a
+container on this host actually reports the host's boot_id rather than a
+virtualised one. Docker's default masked-paths list does not cover boot_id, but
+gVisor/lxcfs-style runtimes virtualise /proc. If it were virtualised the probe
+would silently never fire -- fail-open, so no false refusals, but no protection
+either. Host boot_id read for the comparison:
+70612579-dfd6-4521-a99b-5959f2ba5760. docker needs sudo in this session again,
+so this goes to the user as a paste-able one-liner, as dev.34's smoke run did.
+
+DESIGN NOTE, deliberate: the probe is a POSITIVE identification test. An
+unreadable or absent boot_id (a BSD target, a masked /proc) proves nothing and
+must not refuse -- absence of proof is not proof of locality, and failing closed
+there would break every legitimate non-Linux target. The address checks still
+apply underneath. This matches localnet.py's existing stance: "says what it
+found rather than claiming more than it knows."
+
+Track: RELEASE SEQUENCE 0.1.0-dev.35, chosen by the user via AskUserQuestion
+(work commit was offered as the alternative). Same question swept in the
+lint-workflows.yml trigger defect logged below, on the user's "yes, fix it
+here".
+
+IMPLEMENTATION DONE (uncommitted):
+- localnet.py: BOOT_ID_PATH, _BOOT_ID_RE, BOOT_ID_MAX_CHARS, normalise_boot_id,
+  own_boot_id (read each call, NOT cached -- a cached "" from an early call
+  would disable the check for the process's life, silently and totally),
+  describe_if_same_kernel, SelfCaptureRefused. Module docstring rewritten
+  around the two layers.
+- ssh_manager.py: BOOTID added to _PREREQ_SCRIPT + parsed through
+  normalise_boot_id; read_boot_id(conn) helper; test_connection reports
+  boot_id; run_tcpdump refuses BEFORE create_process on the very connection
+  tcpdump would have used, and closes it.
+- database.py: active_servers.self_target_reason + migration + setter; cleared
+  on endpoint change via the same CASE pattern os_name uses.
+- models.py: ServerInfo.self_target_reason (server-set; ServerAuth has no such
+  field, so a client cannot clear it through the form -- tested).
+- main.py: _refuse_self_target (one builder, because app.js keys off the code),
+  _record_self_target, _reject_self_kernel; wired into prereq-check, test,
+  both /api/probe routes, and START_CAPTURE, which had no check at all before.
+  SelfCaptureRefused from the manager -> 400, recorded, not a 500.
+- frontend: server-list flag (.server-warn-self, .self-target) + CSS; the Add
+  form's standing warning no longer claims the LAN address cannot be detected.
+
+🔢 VERSION    ✅ 0.1.0-dev.35 in all seven refs: backend/main.py:106,
+                docker-compose.yml:107, README.md:231/332/348,
+                docs/reverse-proxy.md:117/372. REPO_URL + release_notes_url
+                (derived from APP_VERSION) present. v0.1.0-dev.34 confirmed on
+                the remote -> 62cf182, so the previous release did ship.
+🔨 BUILD      ✅ ./scripts/check.sh: 1477 passed, 0 failed, 0 skipped, 216s,
+                exit 0. dev.34's baseline was 1424, so +53 are this change's
+                (one more added after, during Gate 3: the recovery-path test).
+                CONTAINER (user ran scratchpad/smoke35.sh under sudo; docker
+                needs sudo in this session again, as in dev.34):
+                 * THE CLAIM THE WHOLE DESIGN RESTS ON IS VERIFIED, NOT
+                   ASSUMED: the app image run on this host reports boot id
+                   70612579-dfd6-4521-a99b-5959f2ba5760 -- byte-identical to
+                   the host's. Docker does not virtualise
+                   /proc/sys/kernel/random/boot_id here, so the shared-kernel
+                   check CAN fire. Had this come back NO MATCH the mechanism
+                   would have needed replacing, not shipping.
+                 * own_boot_id() in the image's own interpreter returns that
+                   value; describe_if_same_kernel returns the finding for it
+                   and '' for a made-up id.
+                 * image builds; / and /js/app.js 200; /api/servers 401
+                   unauthenticated; served app.js carries the new code
+                   (self_target_reason x4, "same kernel" x1); 0 tracebacks.
+                 * MIGRATION verified BOTH ways, after my first attempt proved
+                   nothing: the script queried pcap.db, but main.py:200 names
+                   it pcap-server.db, so sqlite created an empty file and the
+                   PRAGMA returned [] with no error. Re-checked against the
+                   container's REAL database: fresh DB carries
+                   self_target_reason. Then wound a copy back to the dev.34
+                   schema (DROP COLUMN) with a populated server row and opened
+                   it with Database(): column added, existing row intact,
+                   os_name preserved, new column defaults to '', setter works.
+                 * /api/version 404 in the log is my script guessing a route
+                   that does not exist -- not a defect.
+🔒 SECURITY   ✅ 0 Critical, 0 High, 0 Medium. pip-audit: no known
+                vulnerabilities. NO new third-party import (re, typing are
+                stdlib; localnet is internal), so requirements and the
+                Dockerfile are untouched -- no dependency drift.
+                Diff grep for eval/exec/shell=True/os.system/subprocess/pickle/
+                md5/sha1/verify=False/innerHTML/bare-except/assert-as-
+                validation: 0 hits.
+                Design points, deliberate:
+                 - the remote boot id is UNTRUSTED INPUT: normalise_boot_id
+                   (anchored UUID regex, bounded at 64 chars) before it is
+                   compared, stored or logged. Flood, valid-id-plus-junk, and
+                   valid-id-past-the-bound all normalise to ''. Tested.
+                 - the stored reason for a KERNEL finding interpolates nothing
+                   from the remote host -- describe_if_same_kernel returns a
+                   constant. The ADDRESS reason does carry the hostname (the
+                   user's own input), escHtml'd like every other value, with a
+                   browser test asserting <img src=x id=pwn> renders as text.
+                 - unknown never refuses, in BOTH directions: empty remote
+                   value, and empty own value. Two empty strings must not
+                   compare equal and refuse every target in existence; there
+                   is a test named for that.
+                 - _record_self_target cannot turn a refusal into a 500.
+                 - ONE refusal builder, because app.js keys the blocking alert
+                   off detail.code; a hand-phrased second refusal would be the
+                   one that renders as a bare error.
+                KNOWN LIMIT, stated not hidden: a target that LIES about its
+                boot id defeats the kernel check. Not meaningful here -- the
+                threat model is an operator pointing this at their own box by
+                mistake, not an adversarial target -- and the address checks
+                still sit underneath.
+                FOUND AND FIXED DURING THIS GATE, not deferred: address-level
+                findings at capture start were refused but NOT recorded, so
+                the server list would not have explained them -- half of what
+                the user asked for. start_capture now records before refusing.
+                Also found: a flagged row could have been a dead end, so the
+                recovery path was checked and is real (Test connection /
+                Check prerequisites re-derive and clear) -- documented in
+                architecture.md and pinned by a test.
+                Quality: run_tcpdump's check sits inside the existing
+                try/except so a refused connection is closed, not leaked
+                (asserted). No nesting over 3 levels, no duplicated logic; the
+                list flag reuses .server-warn rather than inventing a layout.
+📄 DOCS       ✅ CHANGELOG dev.35 (Security/Fixed/Documentation). security.md,
+                target-hosts.md, architecture.md rewritten around the two
+                layers, with a table of where each check runs and the
+                recovery path. README "Add the server" step says it must be a
+                different machine. Stale-claim sweep for "cannot be
+                detected"/"looks like any other target": the only hit is
+                localnet.py's own docstring, correctly scoped to "no ADDRESS
+                check" with the boot-id paragraph directly under it. app.js's
+                standing warning no longer claims the LAN address is
+                invisible, because it is not.
+📦 RELEASE    ⏳ branch synced (0 ahead, 0 behind at session start).
+                PR ➖ N/A -- no PRs until 1.0, branch canonical (memory
+                release-process; user 2026-09-15). Commit not yet approved.
+🚀 SHIP       ⬜
+
 ## Session opened 2026-09-15 (local CLI, Debian 13, zsh, dev-skills 2.18.0)
 Re-derived from evidence (SKILL.md S2), not trusted from the prior entry below.
 
@@ -176,9 +379,54 @@ resolves against the install directory. Raised, awaiting the user's decision.
                 PR ➖ N/A -- user, 2026-09-15: "we're not doing any PRs until
                 1.0", the branch is canonical, as dev.27-33. Saved to memory
                 as release-process so it is not raised again.
-                Commit block presented (local session, SKILL.md 5.8); NOT run
-                and NOT approved yet.
-🚀 SHIP       ⬜
+                Commit 62cf182, approved by the user ("commit and push") and
+                executed by Claude at their explicit instruction rather than
+                presented; pushed. ls-remote -> 62cf182. 18 files, +1643/-65,
+                staged list reviewed before commit (no keys, no .env, no
+                capture data).
+                Git identity was UNSET on this box -- the commit failed with
+                "Author identity unknown". Not fixed unilaterally (SKILL.md:
+                never update git config): the user ran a repo-scoped
+                config command matching the six prior commits' author,
+                darthrater78 <94141126+darthrater78@users.noreply.github.com>.
+                Release notes drafted, shown, approved by the user ("goood").
+🚀 SHIP       ✅ SHIPPED 2026-09-15. Tag block handed to the user and run by
+                them; never executed here (SKILL.md 5.8). Four post-ship
+                checks, all verified:
+                 * tag v0.1.0-dev.34 on the remote -> 62cf182, the same
+                   commit branch Check passed on.
+                 * Release run #34 success. GitHub release v0.1.0-dev.34
+                   (Dev), prerelease, published 2026-09-15T13:52:22Z.
+                   Approved notes applied with gh release edit (1877 chars,
+                   replacing release.yml's auto compare link).
+                 * PR ➖ N/A -- no PRs before 1.0, see above.
+                 * Artifact is the image, not a release asset (0 assets is
+                   correct here): ghcr :0.1.0-dev.34 and :dev share one real
+                   digest sha256:00738f77dc8e088dd1328dc6069e70fd7d5969b0eb
+                   3d15da86a36b134b023ea2 -- a real header digest, not
+                   e3b0c442.
+                Check did NOT run on the tag push: only Lint workflows and
+                Release did, so 6121629 works as designed.
+                RELEASE SEQUENCE 0.1.0-dev.34 CLOSED AND SHIPPED.
+
+## Known defect, found at ship time, NOT fixed in dev.34 -- for dev.35
+lint-workflows.yml (added by 61e63fd, this release) has a bare `on: push:`
+with only a `paths:` filter and NO `branches:` filter, so it fires on TAG
+pushes too -- the exact bug 6121629 fixed for check.yml in this same release.
+The user spotted it on the dev.34 tag push ("still dual workflows. are they
+doing the same thing"): Release and Lint workflows both ran.
+
+Harmless in effect -- actionlint, ~11s, reads the repo and publishes nothing
+-- but it is the same class of bug, and the dev.34 changelog line about CI no
+longer running twice on a release is narrower than it reads.
+
+Deliberately NOT fixed mid-release: the tag was already pushed and Release #34
+in flight, so a fix could not have been in the tag anyway. Fix in dev.35:
+    on:
+      push:
+        branches: ['**']
+        paths: ['.github/workflows/**']
+Same reasoning as check.yml's comment. Check pull_request: needs no change.
 
 ## Session opened 2026-09-14 (local CLI, Debian 13, zsh, dev-skills 2.18.0)
 Skill was NOT installed at session start -- no SKILL.md anywhere on this box,
