@@ -18,7 +18,7 @@ fastapi==0.141.1
 # starlette 1.x drops on_event, so the shutdown handler is a lifespan
 # context manager -- see _lifespan in main.py.
 starlette==1.3.1
-uvicorn[standard]==0.34.0
+uvicorn[standard]==0.52.4
 asyncssh==2.24.0
 aiofiles==24.1.0
 pydantic==2.10.3
