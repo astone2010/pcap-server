@@ -114,7 +114,7 @@ in front of the real address.
 ```yaml
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.33
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.34
     # No `ports:` at all. Caddy reaches it by name over the shared network,
     # and nothing else can reach it directly.
     environment:
@@ -369,7 +369,7 @@ run.
 ```yaml
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.33
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.34
     # No `ports:`. NPM reaches it by name; nothing else can reach it at all,
     # which is what makes trusting X-Forwarded-Proto safe here.
     environment:

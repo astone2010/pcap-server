@@ -1275,6 +1275,18 @@ body {
 .col-proto { width: 70px; }
 .col-len { width: 60px; }
 .col-info { width: auto; }
+/* A column the operator added. One width for all of them: the table is
+   table-layout:fixed, and a field this side has never seen has no width anyone
+   can guess -- the value's own tooltip carries what does not fit. */
+.col-custom { width: 120px; }
+
+/* Headings are draggable, so they say so on hover and show where a dropped one
+   would land. The indicator is a border rather than a moved element: shifting
+   the headings themselves mid-drag makes the drop target move under the
+   pointer. */
+.packet-table thead th[draggable="true"] { cursor: grab; }
+.packet-table thead th.col-dragging { opacity: 0.5; cursor: grabbing; }
+.packet-table thead th.col-drop { box-shadow: inset 2px 0 0 var(--accent); }
 
 .packet-table-scroll {
     flex: 1;
@@ -3237,3 +3249,53 @@ body {
    way here as it would there. */
 .stream-a { color: var(--text-primary); }
 .stream-b { color: var(--accent); }
+
+/* Columns dialog. The same shell as the other stats dialogs, with a table
+   whose rows are the columns themselves -- draggable, renameable in place. */
+.column-dialog .column-table input[type="text"] {
+    width: 100%;
+    padding: 4px 6px;
+    font: inherit;
+    color: var(--text-primary);
+    background: var(--bg-input, var(--bg-primary));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.column-table tbody tr { cursor: grab; }
+.column-table .column-handle {
+    width: 24px;
+    color: var(--text-muted);
+    text-align: center;
+    user-select: none;
+}
+.column-table .column-shows {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+.column-table .column-actions {
+    width: 96px;
+    white-space: nowrap;
+    text-align: right;
+}
+.column-table .column-actions .btn {
+    padding: 2px 6px;
+    margin-left: 2px;
+}
+
+.column-add {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin: 8px 0 4px;
+}
+.column-add select { flex: 0 1 220px; }
+.column-add input[type="text"] { flex: 1 1 240px; min-width: 0; }
+
+.column-error {
+    margin: 4px 0 0;
+    color: var(--danger);
+    font-size: 0.8125rem;
+}

@@ -218,16 +218,17 @@ step 6.
 ```bash
 Go to the docker-compose.yaml for full instructions, this is a broad overview. 
 
-# 1. Pick the install directory. This directory IS the install: it will hold
-#    your captures and the key that decrypts them, and every relative path in
-#    the compose file resolves against it. Anywhere you control is fine.
-sudo mkdir -p /opt/docker/pcap && sudo chown "$USER" /opt/docker/pcap
-cd /opt/docker/pcap
+# 1. The install directory. This directory IS the install: it holds your
+#    captures and the key that decrypts them. The compose file names it in
+#    full, so either use this path or change the four `source:` lines and the
+#    secret's `file:` line to wherever you would rather put it.
+sudo mkdir -p /opt/docker/pcapserver && sudo chown "$USER" /opt/docker/pcapserver
+cd /opt/docker/pcapserver
 
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.33/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.34/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -328,7 +329,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.33` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.34` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -343,8 +344,8 @@ recreate. The tag below is the current release; substitute a later one when
 there is one:
 
 ```bash
-cd /opt/docker/pcap
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.33/docker-compose.yml
+cd /opt/docker/pcapserver
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.34/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -524,6 +525,33 @@ packets are coming from — which is the question a packet table cannot answer,
 and matters most when a filter narrower than you remember looks exactly like a
 quiet network.
 
+### Choosing the columns
+
+The packet list starts on the columns Wireshark opens with — number, time,
+source, destination, protocol, length and the Info summary — and none of them
+are fixed. **Drag a heading** to move it, or **right-click one** to hide it,
+nudge it left or right, or open the **Columns** dialog (also on the toolbar).
+
+Adding a column is the useful half. Any field tshark knows can be one, which is
+most of what Wireshark dissects: `tcp.window_size` beside every packet while
+chasing a stall, `dns.qry.name` while reading a resolver's traffic,
+`http.host`, `ip.ttl`, `vlan.id`. Two ways in:
+
+- **Right-click a field in the packet detail** below the list and choose
+  **Apply as Column** — the same gesture as in Wireshark, and the quickest,
+  because the field is already in front of you.
+- **The Columns dialog**, which lists common fields by name and takes any other
+  as typed. A name this server's tshark does not recognise is refused there and
+  then, rather than becoming a column that is silently empty on every packet.
+
+Columns can be renamed, and the arrangement is **saved to your account** — not
+to the browser — so it is the same list on every capture and on whatever you
+sign in from next. **Reset to default columns** in the dialog puts it back.
+
+An added column is fetched on the same pass that draws the list, so it costs no
+extra round trip, and right-clicking one filters on the field it came from
+rather than on a guess made from the value.
+
 ### Which interface a packet crossed
 
 A capture on `any` has an **Interface** column: the interface each packet went
@@ -564,7 +592,9 @@ viewer — a field in the detail tree at any depth, a column in the packet list,
 a single TCP flag bit — and the Wireshark menu appears: Apply / Not / And /
 Or / Prepare as filter, a **Conversation filter** for both endpoints of an
 exchange and nothing else, **Copy value** for the raw reading, and **Copy as
-filter** for the expression built from it.
+filter** for the expression built from it. In the detail tree the same menu
+also offers **Apply as Column**, which puts that field beside every packet in
+the list — see [Choosing the columns](#choosing-the-columns).
 
 A filter tshark cannot parse comes back with tshark's own message and the
 position it objected to, so an empty packet list always means the filter was

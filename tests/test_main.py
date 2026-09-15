@@ -394,6 +394,29 @@ def test_packet_list_rate_limit_returns_429_before_spawning_tshark(secure_client
     assert called is False
 
 
+def test_a_column_field_shaped_like_a_flag_never_reaches_the_capture(
+    secure_client, enrolled, monkeypatch
+):
+    """The packet list re-checks the field names on every call rather than
+    trusting that they were checked when the layout was saved: this query
+    string is the caller's, not the layout's, and `-r` as a `-e` argument is
+    the flag that chooses which file tshark opens."""
+    called = False
+
+    def should_not_run(capture_id):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(main.capture_manager, "get", should_not_run)
+
+    resp = secure_client.get("/api/captures/some-capture-id/packets?columns=-r")
+
+    assert resp.status_code == 400
+    assert "-r" in resp.json()["detail"]
+    assert called is False, "the capture was looked up before the field names were checked"
+
+
 def test_protocol_hierarchy_rate_limit_returns_429_before_spawning_tshark(
     secure_client, enrolled, monkeypatch
 ):

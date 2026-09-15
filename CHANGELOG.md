@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.1.0-dev.34 — 2026-09-15
+
+### Added
+
+- **The packet list's columns can be arranged.** Drag a heading to move it, or
+  right-click one to hide it, nudge it left or right, or open the new
+  **Columns** dialog from the Viewer's toolbar. Columns can be renamed, and the
+  arrangement is stored against the account rather than the browser, so it is
+  the same list on every capture and on whatever you next sign in from.
+  **Reset to default columns** puts back the layout this Viewer has always had.
+- **Any tshark field can be a column.** Right-click a field in the packet
+  detail and choose **Apply as Column** — Wireshark's own gesture — or name a
+  field in the Columns dialog, which also lists the common ones (`tcp.srcport`,
+  `ip.ttl`, `dns.qry.name`, `http.host`, `tls.handshake.extensions_server_name`
+  and others) by name. An added column is fetched on the same tshark pass that
+  draws the list, so it costs no extra request, and a field name the server's
+  tshark does not recognise is refused when the layout is saved rather than
+  becoming a column that is empty on every packet.
+- Right-clicking an added column filters on the field it was drawn from, rather
+  than on a field guessed from the shape of the value. The **Src MAC** and
+  **Dst MAC** columns gained the same precision: they now offer `eth.src` and
+  `eth.dst` instead of `eth.addr` from either side.
+
+### Changed
+
+- The `-e` view flag is now a shortcut rather than the only way to see MAC
+  addresses: it still inserts the two columns where they always sat, and adding
+  **Src MAC** or **Dst MAC** from the Columns dialog keeps them whether or not
+  the flag is lit.
+- CI no longer runs the full suite twice on a release. Pushing a tag fired
+  **Check** a second time on a commit its branch push had already tested; the
+  workflow now matches branches only. Pushes that touch nothing but documents
+  or scratch files skip the suite as well.
+- Workflow files are linted by **actionlint** (pinned, checksum-verified
+  against the value published with its own release) instead of dragging the
+  whole test suite along behind a YAML edit.
+
+### Documentation
+
+- The README gained **Choosing the columns**, and the note that an interface
+  **name** does not survive a download — the `.pcap` format has nowhere to
+  carry it, so a downloaded capture shows `sll.ifindex` and not `eth0`.
+- architecture.md gained **The column layout**: where a layout is stored, why
+  an account that never customised has no row at all, why added fields go last
+  in the tshark argv and are read back from the end of the row, and why a field
+  name is an argv boundary rather than a matter of tidiness.
+- The compose file and the Quick start were corrected for a dev build.
+
 ## 0.1.0-dev.33 — 2026-09-14
 
 ### Removed

@@ -16,6 +16,7 @@ from backend.models import (
     FILTER_MAX_LEN,
     FollowStreamResult,
     FollowStreamSegment,
+    PACKET_FIELD_RE,
     PacketDetail,
     PacketSummary,
     ProtocolHierarchyNode,
@@ -200,6 +201,28 @@ VIEW_FLAG_TIME_FIELD = {
 }
 ALLOWED_VIEW_FLAGS = {"-e", "-t", *VIEW_FLAG_TIME_FIELD}
 
+# Columns the operator has added to the packet list beyond the built-in ones:
+# any tshark field, fetched as one more `-e` on the pass the list already runs.
+# PACKET_FIELD_RE (models.py, where the layout models share it) is what keeps a
+# name out of argv's flag space.
+#
+# Per request. Each one is another column tshark prints for every packet; the
+# ceiling is a stop on a caller scripting the query, not a limit anyone reaches
+# by adding columns to a table they have to read.
+MAX_EXTRA_COLUMNS = 12
+
+# Fields the built-in columns need, up to and including _ws.col.Info. The MAC
+# fields follow when -e is set, and the operator's own columns after those.
+_BASE_FIELD_COUNT = 11
+
+# How tshark complains about a `-e` it does not recognise: "Some fields aren't
+# valid: nope.nope" on current builds, "isn't a valid field" on older ones.
+_NOT_A_FIELD = re.compile(r"field[s]?\b.{0,20}\b(?:aren't|isn't|not) valid|isn't a valid", re.I)
+
+
+class ColumnFieldError(ValueError):
+    """A requested column names a field this tshark does not dissect."""
+
 # Name resolution is a single explicit opt-in, not a pair of tcpdump-style
 # flags, because tcpdump's -n/-nn distinction cannot be expressed in this view:
 #
@@ -226,6 +249,96 @@ def _name_resolution_args(resolve_names: bool) -> list[str]:
     return list(_RESOLVE_ON if resolve_names else _RESOLVE_OFF)
 
 
+# Names this tshark has confirmed it knows. Only confirmations are kept: a name
+# that was wrong once is cheap to ask about again, while caching the negative
+# would outlive a dissector the image gains on its next build. Bounded, because
+# an authenticated caller can ask about as many distinct names as it likes.
+_KNOWN_FIELDS: set[str] = set()
+_KNOWN_FIELDS_LIMIT = 2000
+_FIELD_REGISTRY_LOCK: asyncio.Lock | None = None
+
+
+async def unknown_packet_fields(fields: list[str]) -> list[str]:
+    """Which of these names tshark does not recognise, asked of tshark itself.
+
+    `tshark -G fields` is its dissector registry -- the same list Wireshark's
+    own "Custom" column type offers -- so a name checked against it is one that
+    will still be a column when the pass actually runs, rather than one that
+    fails at list time with a message about an invalid field.
+
+    Called when a layout is SAVED, not when packets are listed: the registry is
+    a multi-megabyte stream and the packet list must stay cheap. The list route
+    re-checks the pattern above, which is the part that matters for argv.
+    """
+    global _FIELD_REGISTRY_LOCK
+    wanted = {f for f in fields if f not in _KNOWN_FIELDS}
+    if not wanted:
+        return []
+    if _FIELD_REGISTRY_LOCK is None:
+        _FIELD_REGISTRY_LOCK = asyncio.Lock()
+    async with _FIELD_REGISTRY_LOCK:
+        wanted -= _KNOWN_FIELDS
+        if not wanted:
+            return []
+        found = await _lookup_in_registry(wanted)
+        if len(_KNOWN_FIELDS) + len(found) <= _KNOWN_FIELDS_LIMIT:
+            _KNOWN_FIELDS.update(found)
+    return sorted(wanted - found)
+
+
+async def _lookup_in_registry(wanted: set[str]) -> set[str]:
+    """One streamed pass over `tshark -G fields`, looking for these names."""
+    found: set[str] = set()
+    proc = await asyncio.create_subprocess_exec(
+        "tshark", "-G", "fields",
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        limit=1024 * 1024,
+    )
+    try:
+        async for raw_line in proc.stdout:
+            parts = raw_line.decode("utf-8", "replace").rstrip("\n").split("\t")
+            if len(parts) < 3:
+                continue
+            # F lines are fields (abbrev in column 2); P lines are protocols,
+            # whose filter name is a usable column of its own -- `-e tcp` is
+            # what Wireshark's own protocol columns are built from.
+            if parts[0] in ("F", "P") and parts[2] in wanted:
+                found.add(parts[2])
+                if found == wanted:
+                    break
+    except BaseException:
+        if proc.returncode is None:
+            proc.kill()
+        raise
+    finally:
+        # Broken out of early on a match, so the pipe may still be full: killing
+        # rather than waiting on a process nobody is reading from any more.
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+    return found
+
+
+def validate_column_fields(fields: list[str]) -> list[str]:
+    """The pattern check and the per-request cap, deduplicated, order kept.
+
+    Raises ValueError rather than returning a verdict: every caller wants the
+    request refused, and a silently dropped column is a column the operator
+    added and never saw.
+    """
+    unique = list(dict.fromkeys(fields))
+    if len(unique) > MAX_EXTRA_COLUMNS:
+        raise ValueError(
+            f"at most {MAX_EXTRA_COLUMNS} added columns, asked for {len(unique)}"
+        )
+    for field in unique:
+        if not PACKET_FIELD_RE.match(field):
+            raise ValueError(f"not a tshark field name: {field!r}")
+    return unique
+
+
 async def get_packet_list(
     source: PcapSource,
     offset: int = 0,
@@ -234,8 +347,10 @@ async def get_packet_list(
     view_flags: list[str] | None = None,
     resolve_names: bool = False,
     interface_names: dict[int, str] | None = None,
+    extra_fields: list[str] | None = None,
 ) -> list[PacketSummary]:
     flags = set(view_flags or [])
+    extra = validate_column_fields(list(extra_fields or []))
     time_field = "frame.time_relative"
     for flag, field in VIEW_FLAG_TIME_FIELD.items():
         if flag in flags:
@@ -272,6 +387,10 @@ async def get_packet_list(
         # sender's address but no destination, so that column stays empty and
         # the flag's help says why.
         cmd += ["-e", "eth.src", "-e", "eth.dst", "-e", "sll.src.eth"]
+    # Last, so a column the operator added never shifts the positions the
+    # built-in ones are read from.
+    for field in extra:
+        cmd += ["-e", field]
     cmd += [
         "-E", "separator=\t",
         "-E", "quote=n",
@@ -284,16 +403,36 @@ async def get_packet_list(
     stdout, stderr, rc = await _run_tool(cmd, source)
     if rc != 0:
         logger.warning("tshark stderr: %s", stderr.decode(errors="replace")[:500])
+        # Checked before the filter, because a run carrying both a filter and a
+        # bad field would otherwise be reported as a filter this tool cannot
+        # parse -- which is a message about the wrong thing entirely.
+        if extra and _NOT_A_FIELD.search(stderr.decode(errors="replace")):
+            # tshark refuses the whole run over one `-e` it does not recognise.
+            # A layout saved against an image whose tshark dissected a field
+            # this one does not must say so: the alternative is the empty list
+            # that means "nothing matched", about a column nobody can see.
+            raise ColumnFieldError(_filter_rejection(stderr))
         if display_filter:
             # A valid filter that matches nothing still exits 0, so a non-zero
             # exit with a filter present means the filter is the problem.
             raise DisplayFilterError(_filter_rejection(stderr))
 
+    expected = _BASE_FIELD_COUNT + (3 if show_mac else 0) + len(extra)
     packets = []
     for line in stdout.decode(errors="replace").splitlines():
         parts = line.split("\t")
-        if len(parts) < 11:
+        if len(parts) < _BASE_FIELD_COUNT:
             continue
+        # Taken from the END rather than by counting forward: the Info column is
+        # free text in the middle of the row, and a tab inside it would shift
+        # every position after it. The built-in columns have always read forward
+        # and are left alone, but a column the operator added is new ground and
+        # can be read from the side of the row nothing shifts.
+        values = (
+            dict(zip(extra, parts[len(parts) - len(extra):]))
+            if extra and len(parts) >= expected
+            else {}
+        )
         num = int(parts[0])
         if num <= offset:
             continue
@@ -318,6 +457,7 @@ async def get_packet_list(
             direction=_SLL_DIRECTION.get(parts[7], ""),
             tcp_stream=int(parts[8]) if parts[8].isdigit() else None,
             udp_stream=int(parts[9]) if parts[9].isdigit() else None,
+            values=values,
         ))
 
     return packets

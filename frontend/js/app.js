@@ -13,6 +13,9 @@ let knownUsernames = [];
 let captures = [];
 let viewingCaptureId = null;
 let selectedPacketRow = null;
+// The packets the list is currently showing, so that rearranging its columns
+// can redraw the table without fetching them again.
+let currentPackets = [];
 
 // --- helpers ---
 
@@ -467,6 +470,10 @@ function enterApp() {
     renderFilterLibrary();
     loadCustomFilters();
     loadDisplayFilters();
+    // Before the first capture is opened: the Viewer draws its headings from
+    // this, and the default columns flashing into the operator's own layout
+    // is exactly the kind of jump a stored preference should not cause.
+    loadColumnLayout();
     syncSaveButton("btn-save-filter", "cap-bpf");
     renderFilterSuggestions("display-filter-suggestions", DISPLAY_SUGGESTIONS);
     renderFilterPreview();
@@ -3581,27 +3588,569 @@ function formatLocalTime(epochSeconds) {
     return `${LOCAL_TIME_FORMAT.format(when)}.${millis}`;
 }
 
-// Shared by the stored viewer and the live one. Two renderers for one table
-// is how the live list ends up quietly disagreeing with the saved list about
-// the same capture -- a MAC column that only appears in one of them, a
-// timestamp formatted two ways -- so there is one, and both call it.
+// --- the packet list's columns ---
+//
+// Which columns the list shows, in what order, under what titles, is a
+// preference of the account rather than markup: kept server-side so it follows
+// the operator to any browser, and used on every capture the way a Wireshark
+// column preference is. A column is either one of the built-ins below or any
+// tshark field, fetched as one more `-e` on the pass the list already runs.
+//
+// cls is kept per built-in because the stylesheet sizes these columns by class
+// (and .col-iface is what the interface tests select on). An added column has
+// no width of its own to claim, so they all share one class.
+
+const BUILTIN_COLUMNS = {
+    number: { title: "No.", cls: "col-no", shows: "Frame number" },
+    time: { title: "Time", cls: "col-time", shows: "Timestamp, in the format the view flags choose" },
+    source: { title: "Source", cls: "col-src", shows: "Source address" },
+    destination: { title: "Destination", cls: "col-dst", shows: "Destination address" },
+    interface: { title: "Interface", cls: "col-iface", shows: "Which interface the packet crossed (\"any\" captures only)" },
+    src_mac: { title: "Src MAC", cls: "col-mac", shows: "Sender's link-layer address" },
+    dst_mac: { title: "Dst MAC", cls: "col-mac", shows: "Destination link-layer address" },
+    protocol: { title: "Protocol", cls: "col-proto", shows: "Highest-layer protocol" },
+    length: { title: "Length", cls: "col-len", shows: "Frame length in bytes" },
+    info: { title: "Info", cls: "col-info", shows: "Wireshark's own summary of the packet" },
+};
+
+// The layout an account starts on: what this Viewer showed before columns
+// could be arranged. The MAC columns are absent for the same reason they used
+// to be hidden -- the -e view flag brings them in.
+const DEFAULT_COLUMN_IDS = [
+    "number", "time", "source", "destination", "interface",
+    "protocol", "length", "info",
+];
+const MAC_COLUMN_IDS = ["src_mac", "dst_mac"];
+
+// Mirrors CUSTOM_COLUMN_PREFIX and the two caps in models.py. A layout the
+// server would refuse is one this side should never have sent.
+const CUSTOM_COLUMN_PREFIX = "field:";
+const MAX_COLUMNS = 24;
+const MAX_CUSTOM_COLUMNS = 12;
+const MAX_COLUMN_TITLE = 40;
+
+// The fields worth offering by name. Deliberately short: the point of the list
+// is to save typing on the columns people actually add, not to reproduce
+// tshark's registry, which the field box reaches in full anyway.
+const COLUMN_PRESETS = [
+    { field: "tcp.srcport", title: "Src port" },
+    { field: "tcp.dstport", title: "Dst port" },
+    { field: "udp.srcport", title: "UDP src port" },
+    { field: "udp.dstport", title: "UDP dst port" },
+    { field: "tcp.stream", title: "TCP stream" },
+    { field: "tcp.flags", title: "TCP flags" },
+    { field: "tcp.window_size", title: "Window" },
+    { field: "tcp.analysis.ack_rtt", title: "ACK RTT" },
+    { field: "ip.ttl", title: "TTL" },
+    { field: "ip.id", title: "IP id" },
+    { field: "ip.dsfield.dscp", title: "DSCP" },
+    { field: "vlan.id", title: "VLAN" },
+    { field: "frame.time_delta", title: "Delta time" },
+    { field: "frame.time_epoch", title: "Epoch time" },
+    { field: "dns.qry.name", title: "DNS query" },
+    { field: "http.host", title: "HTTP host" },
+    { field: "http.request.uri", title: "URI" },
+    { field: "tls.handshake.extensions_server_name", title: "TLS SNI" },
+    { field: "icmp.type", title: "ICMP type" },
+];
+
+// null until the first load, and again after a reset: "no layout" is a real
+// state, distinct from "a layout that happens to match the default", and it is
+// what lets a later change to the default reach anyone who never customised.
+let columnLayout = null;
+let columnLayoutIsDefault = true;
+
+function isCustomColumn(id) {
+    return id.startsWith(CUSTOM_COLUMN_PREFIX);
+}
+
+function defaultColumnLayout() {
+    return DEFAULT_COLUMN_IDS.map((id) => ({ id, title: BUILTIN_COLUMNS[id].title, field: "" }));
+}
+
+// The layout as stored, with anything unrecognisable dropped. A column this
+// build does not know is not an error worth blocking the Viewer for -- an
+// older tab, or a layout saved by a newer one -- so it is skipped.
+function storedColumnLayout() {
+    const stored = (columnLayout || []).filter(
+        (c) => c && typeof c.id === "string" && (BUILTIN_COLUMNS[c.id] || isCustomColumn(c.id)),
+    );
+    return stored.length ? stored : defaultColumnLayout();
+}
+
+async function loadColumnLayout() {
+    try {
+        const data = await api("/api/column-layout");
+        columnLayoutIsDefault = !!data.default;
+        columnLayout = Array.isArray(data.columns) && data.columns.length
+            ? data.columns
+            : defaultColumnLayout();
+    } catch {
+        // The Viewer is still usable on the built-in columns, and failing to
+        // load a preference is not a reason to refuse to show packets.
+        columnLayout = defaultColumnLayout();
+        columnLayoutIsDefault = true;
+    }
+    // This runs during bootstrap, so a capture is not normally open yet. One
+    // can be on a reload that lands straight in the Viewer, and the layout
+    // arriving after the table was drawn is the case that would otherwise
+    // leave the default columns on screen until something else redrew them.
+    if (viewingCaptureId) redrawPacketRows();
+}
+
+// What the table actually draws: the stored layout, plus the two columns the
+// -e flag adds without editing it, minus nothing -- a column that cannot be
+// populated is drawn hidden rather than dropped, so the header and the cells
+// stay the same length.
+function effectiveColumns(flags) {
+    const layout = storedColumnLayout().slice();
+    if (flags.includes("-e") && !layout.some((c) => MAC_COLUMN_IDS.includes(c.id))) {
+        // Where they sat before layouts existed: after Interface, or after
+        // Destination on a layout with no Interface column, or at the end.
+        const anchor = layout.findIndex((c) => c.id === "interface");
+        const fallback = layout.findIndex((c) => c.id === "destination");
+        const at = anchor >= 0 ? anchor + 1 : (fallback >= 0 ? fallback + 1 : layout.length);
+        layout.splice(at, 0, ...MAC_COLUMN_IDS.map(
+            (id) => ({ id, title: BUILTIN_COLUMNS[id].title, field: "" }),
+        ));
+    }
+    // Only a capture on "any" says which interface each packet crossed: it is
+    // read from the Linux cooked header, which a capture of one named
+    // interface does not have. The column is hidden there rather than left to
+    // print nothing on every row.
+    const capture = captures.find((c) => c.id === viewingCaptureId);
+    const isAny = Boolean(capture && capture.interface === ANY_INTERFACE);
+    return layout.map((c) => ({
+        id: c.id,
+        title: c.title || BUILTIN_COLUMNS[c.id]?.title || c.field || c.id,
+        field: c.field || "",
+        cls: BUILTIN_COLUMNS[c.id]?.cls || "col-custom",
+        hidden: c.id === "interface" && !isAny,
+    }));
+}
+
+function renderColumnHeaders(columns) {
+    const row = $("packet-head-row");
+    if (!row) return;
+    row.textContent = "";
+    for (const col of columns) {
+        const th = document.createElement("th");
+        th.className = col.cls;
+        th.dataset.col = col.id;
+        th.textContent = col.title;
+        th.hidden = col.hidden;
+        th.draggable = true;
+        th.title = col.hidden
+            ? "Only a capture on \"any\" records which interface a packet crossed"
+            : (col.field || BUILTIN_COLUMNS[col.id]?.shows || "");
+        row.appendChild(th);
+    }
+}
+
+// --- rearranging ---
+
+// Every edit goes through here: it writes the layout the operator can see,
+// which is the one including anything -e added, so moving a column never
+// silently drops another.
+async function applyColumnLayout(columns, { refetch = false } = {}) {
+    if (!columns.length) return;
+    const previous = columnLayout;
+    const previousDefault = columnLayoutIsDefault;
+    columnLayout = columns;
+    columnLayoutIsDefault = false;
+    showColumnError("");
+    renderColumnDialogRows();
+    // Drawn before the save lands: reordering a column should feel like moving
+    // it, not like filing a request. The rollback below puts it back if the
+    // server refuses.
+    if (refetch && viewingCaptureId) loadPackets(viewingCaptureId, $("display-filter").value);
+    else redrawPacketRows();
+    try {
+        await api("/api/column-layout", {
+            method: "PUT",
+            body: JSON.stringify({ columns }),
+        });
+    } catch (e) {
+        columnLayout = previous;
+        columnLayoutIsDefault = previousDefault;
+        showColumnError(e.message);
+        renderColumnDialogRows();
+        if (refetch && viewingCaptureId) loadPackets(viewingCaptureId, $("display-filter").value);
+        else redrawPacketRows();
+    }
+}
+
+function currentColumnsForEdit() {
+    // What is on screen, not what is stored: with -e on, the MAC columns are
+    // part of the table the operator is rearranging, so an edit materialises
+    // them into the layout rather than dropping them on the next redraw.
+    return effectiveColumns(getSelectedFlags()).map(
+        (c) => ({ id: c.id, title: c.title, field: c.field }),
+    );
+}
+
+function moveColumn(id, delta) {
+    const columns = currentColumnsForEdit();
+    const from = columns.findIndex((c) => c.id === id);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= columns.length) return;
+    const [moved] = columns.splice(from, 1);
+    columns.splice(to, 0, moved);
+    applyColumnLayout(columns);
+}
+
+function dropColumn(id, beforeId) {
+    const columns = currentColumnsForEdit();
+    const from = columns.findIndex((c) => c.id === id);
+    if (from < 0 || id === beforeId) return;
+    const [moved] = columns.splice(from, 1);
+    const to = beforeId ? columns.findIndex((c) => c.id === beforeId) : columns.length;
+    columns.splice(to < 0 ? columns.length : to, 0, moved);
+    applyColumnLayout(columns);
+}
+
+function removeColumn(id) {
+    const columns = currentColumnsForEdit().filter((c) => c.id !== id);
+    if (!columns.length) {
+        showColumnError("A layout needs at least one column.");
+        return;
+    }
+    applyColumnLayout(columns);
+}
+
+function renameColumn(id, title) {
+    const cleaned = title.replace(/\s+/g, " ").trim().slice(0, MAX_COLUMN_TITLE);
+    if (!cleaned) return;
+    const columns = currentColumnsForEdit().map(
+        (c) => (c.id === id ? { ...c, title: cleaned } : c),
+    );
+    applyColumnLayout(columns);
+}
+
+// Wireshark's "Apply as Column", reached from a field's right-click menu in the
+// detail pane and from the dialog's own field box.
+function addFieldColumn(field, title) {
+    const id = CUSTOM_COLUMN_PREFIX + field;
+    const columns = currentColumnsForEdit();
+    if (columns.some((c) => c.id === id)) {
+        showColumnError(`${field} is already a column.`);
+        return;
+    }
+    if (columns.length >= MAX_COLUMNS) {
+        showColumnError(`That would be more than ${MAX_COLUMNS} columns.`);
+        return;
+    }
+    if (columns.filter((c) => isCustomColumn(c.id)).length >= MAX_CUSTOM_COLUMNS) {
+        showColumnError(`At most ${MAX_CUSTOM_COLUMNS} added columns.`);
+        return;
+    }
+    const clean = (title || field).replace(/\s+/g, " ").trim().slice(0, MAX_COLUMN_TITLE);
+    // Before Info rather than after it: Info is the widest column in the table
+    // and a new one appended past it starts life off the right-hand edge.
+    const at = columns.findIndex((c) => c.id === "info");
+    columns.splice(at < 0 ? columns.length : at, 0, { id, title: clean, field });
+    // A column with no data behind it yet: this one needs the list fetching
+    // again, unlike a move or a rename.
+    applyColumnLayout(columns, { refetch: true });
+}
+
+function addBuiltinColumn(id) {
+    const columns = currentColumnsForEdit();
+    if (columns.some((c) => c.id === id) || !BUILTIN_COLUMNS[id]) return;
+    if (columns.length >= MAX_COLUMNS) {
+        showColumnError(`That would be more than ${MAX_COLUMNS} columns.`);
+        return;
+    }
+    const at = columns.findIndex((c) => c.id === "info");
+    columns.splice(at < 0 ? columns.length : at, 0,
+        { id, title: BUILTIN_COLUMNS[id].title, field: "" });
+    // src_mac and dst_mac are read from the pass only when it is asked for
+    // them, so a layout that gains one needs the list fetching again.
+    applyColumnLayout(columns, { refetch: MAC_COLUMN_IDS.includes(id) });
+}
+
+async function resetColumns() {
+    const previous = columnLayout;
+    columnLayout = defaultColumnLayout();
+    columnLayoutIsDefault = true;
+    showColumnError("");
+    renderColumnDialogRows();
+    if (viewingCaptureId) loadPackets(viewingCaptureId, $("display-filter").value);
+    try {
+        await api("/api/column-layout", { method: "DELETE" });
+    } catch (e) {
+        columnLayout = previous;
+        showColumnError(e.message);
+        renderColumnDialogRows();
+        if (viewingCaptureId) loadPackets(viewingCaptureId, $("display-filter").value);
+    }
+}
+
+// --- dragging a heading ---
+
+let draggedColumnId = null;
+
+function onColumnDragStart(ev) {
+    const th = ev.target.closest("th[data-col]");
+    if (!th) return;
+    draggedColumnId = th.dataset.col;
+    th.classList.add("col-dragging");
+    ev.dataTransfer.effectAllowed = "move";
+    // Firefox starts no drag at all without payload on the transfer.
+    ev.dataTransfer.setData("text/plain", th.dataset.col);
+}
+
+function onColumnDragOver(ev) {
+    const th = ev.target.closest("th[data-col]");
+    if (!th || !draggedColumnId) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "move";
+    for (const el of document.querySelectorAll("#packet-head-row .col-drop")) {
+        el.classList.remove("col-drop");
+    }
+    if (th.dataset.col !== draggedColumnId) th.classList.add("col-drop");
+}
+
+function onColumnDrop(ev) {
+    const th = ev.target.closest("th[data-col]");
+    if (!th || !draggedColumnId) return;
+    ev.preventDefault();
+    const moved = draggedColumnId;
+    clearColumnDragState();
+    dropColumn(moved, th.dataset.col);
+}
+
+function clearColumnDragState() {
+    draggedColumnId = null;
+    for (const el of document.querySelectorAll("#packet-head-row th")) {
+        el.classList.remove("col-dragging", "col-drop");
+    }
+}
+
+function onColumnHeaderContextMenu(ev) {
+    const th = ev.target.closest("th[data-col]");
+    if (!th) return;
+    ev.preventDefault();
+    const id = th.dataset.col;
+    const title = th.textContent;
+    openFilterMenu(ev.clientX, ev.clientY, [
+        { label: `Hide ${title}`, run: () => removeColumn(id) },
+        { label: "Move left", run: () => moveColumn(id, -1) },
+        { label: "Move right", run: () => moveColumn(id, 1) },
+        { separator: true },
+        { label: "Columns…", hint: "add, rename, reorder", run: () => openColumnDialog() },
+        { label: "Reset to default columns", run: () => resetColumns() },
+    ]);
+}
+
+// --- the Columns dialog ---
+
+function showColumnError(message) {
+    const el = $("column-error");
+    if (!el) return;
+    el.textContent = message;
+    el.hidden = !message;
+}
+
+function openColumnDialog() {
+    const dialog = $("column-dialog");
+    if (!dialog) return;
+    showColumnError("");
+    renderColumnDialogRows();
+    dialog.showModal();
+}
+
+function renderColumnAddOptions() {
+    const select = $("column-add-preset");
+    if (!select) return;
+    const used = new Set(currentColumnsForEdit().map((c) => c.id));
+    select.textContent = "";
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "Choose a column…";
+    select.append(blank);
+    const builtins = document.createElement("optgroup");
+    builtins.label = "Built-in";
+    for (const [id, meta] of Object.entries(BUILTIN_COLUMNS)) {
+        if (used.has(id)) continue;
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = meta.title;
+        builtins.append(opt);
+    }
+    if (builtins.children.length) select.append(builtins);
+    const fields = document.createElement("optgroup");
+    fields.label = "Fields";
+    for (const preset of COLUMN_PRESETS) {
+        if (used.has(CUSTOM_COLUMN_PREFIX + preset.field)) continue;
+        const opt = document.createElement("option");
+        opt.value = CUSTOM_COLUMN_PREFIX + preset.field;
+        opt.textContent = `${preset.title} — ${preset.field}`;
+        fields.append(opt);
+    }
+    if (fields.children.length) select.append(fields);
+}
+
+function renderColumnDialogRows() {
+    const body = $("column-rows");
+    if (!body) return;
+    const columns = currentColumnsForEdit();
+    body.textContent = "";
+    columns.forEach((col, index) => {
+        body.append(columnDialogRow(col, index, columns.length));
+    });
+    renderColumnAddOptions();
+    // Nothing to reset on an account that has never arranged its columns, and
+    // a live button that provably does nothing is worse than a greyed one.
+    const reset = $("btn-column-reset");
+    if (reset) reset.disabled = columnLayoutIsDefault;
+}
+
+function columnDialogRow(col, index, count) {
+    const tr = document.createElement("tr");
+    tr.dataset.col = col.id;
+
+    const handle = document.createElement("td");
+    handle.className = "column-handle";
+    handle.textContent = "⠿";
+    handle.title = "Drag to reorder";
+
+    const titleCell = document.createElement("td");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = col.title;
+    input.maxLength = MAX_COLUMN_TITLE;
+    input.setAttribute("aria-label", `Title for the ${col.title} column`);
+    input.addEventListener("change", () => renameColumn(col.id, input.value));
+    titleCell.append(input);
+
+    const shows = document.createElement("td");
+    shows.className = "column-shows";
+    // A field name is the thing to show for an added column: it is what was
+    // typed to create it, and what identifies it in Wireshark too.
+    shows.textContent = col.field || BUILTIN_COLUMNS[col.id]?.shows || "";
+
+    const actions = document.createElement("td");
+    actions.className = "column-actions";
+    actions.append(
+        columnButton("↑", "Move up", () => moveColumn(col.id, -1), index === 0),
+        columnButton("↓", "Move down", () => moveColumn(col.id, 1), index === count - 1),
+        columnButton("✕", "Remove", () => removeColumn(col.id), count === 1, "btn-danger btn-quiet"),
+    );
+
+    tr.append(handle, titleCell, shows, actions);
+    tr.draggable = true;
+    tr.addEventListener("dragstart", (ev) => {
+        draggedColumnId = col.id;
+        ev.dataTransfer.effectAllowed = "move";
+        ev.dataTransfer.setData("text/plain", col.id);
+    });
+    tr.addEventListener("dragover", (ev) => {
+        if (draggedColumnId) ev.preventDefault();
+    });
+    tr.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        const moved = draggedColumnId;
+        draggedColumnId = null;
+        if (moved) dropColumn(moved, col.id);
+    });
+    return tr;
+}
+
+function columnButton(glyph, label, run, disabled, variant = "btn-secondary") {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `btn btn-sm ${variant}`;
+    btn.textContent = glyph;
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.disabled = !!disabled;
+    btn.addEventListener("click", run);
+    return btn;
+}
+
+function initColumnControls() {
+    $("btn-columns")?.addEventListener("click", openColumnDialog);
+    const dialog = $("column-dialog");
+    dialog?.addEventListener("click", (e) => {
+        if (e.target.closest("[data-close-dialog]")) dialog.close();
+    });
+    $("btn-column-add")?.addEventListener("click", onColumnAddClicked);
+    $("column-add-field")?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") onColumnAddClicked();
+    });
+    $("btn-column-reset")?.addEventListener("click", resetColumns);
+
+    // The headings are rebuilt on every draw, so these are delegated to the row
+    // that survives instead of re-attached to each <th>.
+    const head = $("packet-head-row");
+    head?.addEventListener("contextmenu", onColumnHeaderContextMenu);
+    head?.addEventListener("dragstart", onColumnDragStart);
+    head?.addEventListener("dragover", onColumnDragOver);
+    head?.addEventListener("drop", onColumnDrop);
+    head?.addEventListener("dragend", clearColumnDragState);
+}
+
+function onColumnAddClicked() {
+    const typed = $("column-add-field").value.trim();
+    const chosen = $("column-add-preset").value;
+    if (typed) {
+        const preset = COLUMN_PRESETS.find((p) => p.field === typed);
+        addFieldColumn(typed, preset ? preset.title : typed);
+        $("column-add-field").value = "";
+        return;
+    }
+    if (!chosen) {
+        showColumnError("Choose a column, or type a tshark field name.");
+        return;
+    }
+    if (isCustomColumn(chosen)) {
+        const field = chosen.slice(CUSTOM_COLUMN_PREFIX.length);
+        const preset = COLUMN_PRESETS.find((p) => p.field === field);
+        addFieldColumn(field, preset ? preset.title : field);
+    } else {
+        addBuiltinColumn(chosen);
+    }
+}
+
+// The rows already on screen, redrawn against a layout that changed without
+// the data changing -- a move, a rename, a removal. Saves a round trip and a
+// spinner for an edit the browser can already satisfy.
+function redrawPacketRows() {
+    const tbody = $("packet-tbody");
+    if (!tbody) return;
+    // Before the early return: a column removed while the list is empty still
+    // has to leave the headings, and packetColumns() is what draws those.
+    const cols = packetColumns();
+    if (!currentPackets.length) return;
+    tbody.innerHTML = currentPackets.map((p) => packetRowHtml(p, cols)).join("");
+}
+
+// One renderer for the table's headings and its cells. Two of them is how a
+// column quietly ends up under the wrong heading -- a MAC column drawn in one
+// and not the other, a timestamp formatted two ways -- so there is one.
 function packetColumns() {
     const flags = getSelectedFlags();
-    const showMac = flags.includes("-e");
-    // Only a capture on "any" says which interface each packet crossed; on a
-    // named interface the column would repeat the one name on every row.
-    const capture = captures.find((c) => c.id === viewingCaptureId);
-    const showIface = Boolean(capture && capture.interface === ANY_INTERFACE);
-    document.querySelectorAll(".col-mac").forEach((el) => { el.hidden = !showMac; });
-    document.querySelectorAll(".col-iface").forEach((el) => { el.hidden = !showIface; });
+    const columns = effectiveColumns(flags);
+    // Rendered here rather than by the caller: the headings and the cells are
+    // two halves of one layout, and a renderer that draws only the cells is how
+    // a column ends up under the wrong heading.
+    renderColumnHeaders(columns);
     applyTimeColumnWidth(flags);
+    // A MAC column can now be in the layout without the -e chip being lit, but
+    // the server still reads the MAC fields only when asked for them. So the
+    // request carries -e when the layout needs it, without lighting the chip:
+    // the flag is a view control, and the layout is not.
+    const needsMac = columns.some((c) => MAC_COLUMN_IDS.includes(c.id));
+    const requestFlags = needsMac && !flags.includes("-e") ? [...flags, "-e"] : flags;
     return {
         flags,
-        showMac,
+        requestFlags,
+        columns,
         localTime: flags.includes("-tz"),
-        span: 7 + (showMac ? 2 : 0) + (showIface ? 1 : 0),
-        mac: showMac ? "" : " hidden",
-        iface: showIface ? "" : " hidden",
+        span: columns.filter((c) => !c.hidden).length,
+        // The added columns this layout needs fetching, for the query string.
+        fields: columns.filter((c) => c.field && isCustomColumn(c.id)).map((c) => c.field),
     };
 }
 
@@ -3630,27 +4179,64 @@ function interfaceCellHtml(p) {
 }
 
 function packetRowHtml(p, cols) {
-    const { localTime, mac, iface } = cols;
     // Read by the row's own right-click menu, to offer Follow Stream without
     // a round trip: null on a packet outside any TCP/UDP conversation, so
     // "null" (the string a missing dataset value would otherwise read as)
     // deliberately never appears here.
     const tcpStream = p.tcp_stream ?? "";
     const udpStream = p.udp_stream ?? "";
+    const cells = cols.columns.map((col) => packetCellHtml(p, col, cols)).join("");
     return `
             <tr class="${packetClass(p)}" data-frame="${p.number}"
-                data-tcp-stream="${tcpStream}" data-udp-stream="${udpStream}">
-                <td class="col-no">${p.number}</td>
-                <td class="col-time" title="${escHtml(localTime ? LOCAL_ZONE : p.timestamp)}">${escHtml(localTime ? formatLocalTime(p.timestamp) : p.timestamp)}</td>
-                <td class="col-src" title="${escHtml(p.source)}">${escHtml(p.source)}</td>
-                <td class="col-dst" title="${escHtml(p.destination)}">${escHtml(p.destination)}</td>
-                <td class="col-iface"${iface} data-ifindex="${p.ifindex || ""}" data-iface-name="${escHtml(p.interface || "")}">${interfaceCellHtml(p)}</td>
-                <td class="col-mac"${mac}>${escHtml(p.src_mac || "")}</td>
-                <td class="col-mac"${mac}>${escHtml(p.dst_mac || "")}</td>
-                <td class="col-proto">${escHtml(p.protocol)}</td>
-                <td class="col-len">${p.length}</td>
-                <td class="col-info">${escHtml(p.info)}</td>
-            </tr>`;
+                data-tcp-stream="${tcpStream}" data-udp-stream="${udpStream}">${cells}</tr>`;
+}
+
+// One cell. The built-in columns each render their own way -- a timestamp that
+// follows the view flags, an interface that carries its index for the filter
+// menu -- and everything else is the text tshark printed for that field.
+function packetCellHtml(p, col, cols) {
+    const attrs = `class="${col.cls}" data-col="${escHtml(col.id)}"${col.hidden ? " hidden" : ""}`;
+    switch (col.id) {
+        case "number":
+            return `<td ${attrs} data-field="frame.number">${p.number}</td>`;
+        case "time": {
+            const local = cols.localTime;
+            const shown = local ? formatLocalTime(p.timestamp) : p.timestamp;
+            return `<td ${attrs} title="${escHtml(local ? LOCAL_ZONE : p.timestamp)}">${escHtml(shown)}</td>`;
+        }
+        case "source":
+            return `<td ${attrs} title="${escHtml(p.source)}">${escHtml(p.source)}</td>`;
+        case "destination":
+            return `<td ${attrs} title="${escHtml(p.destination)}">${escHtml(p.destination)}</td>`;
+        case "interface":
+            return `<td ${attrs} data-ifindex="${p.ifindex || ""}" data-iface-name="${escHtml(p.interface || "")}">${interfaceCellHtml(p)}</td>`;
+        case "src_mac":
+            return `<td ${attrs} data-field="eth.src">${escHtml(p.src_mac || "")}</td>`;
+        case "dst_mac":
+            return `<td ${attrs} data-field="eth.dst">${escHtml(p.dst_mac || "")}</td>`;
+        case "protocol":
+            return `<td ${attrs}>${escHtml(p.protocol)}</td>`;
+        case "length":
+            return `<td ${attrs}>${p.length}</td>`;
+        case "info":
+            return `<td ${attrs}>${escHtml(p.info)}</td>`;
+        default: {
+            // An added column: whatever tshark printed for its field, escaped
+            // like every other value here -- this is capture content, and a
+            // packet can carry anything at all in a field.
+            //
+            // hasOwnProperty, not a plain lookup: a field named __proto__ or
+            // constructor passes the field-name pattern, and a bare index into
+            // the response object would return Object.prototype rather than a
+            // value. The server refuses such a name when the layout is saved,
+            // but the table is drawn optimistically before that answer lands.
+            const values = p.values || {};
+            const value = Object.prototype.hasOwnProperty.call(values, col.field)
+                ? values[col.field]
+                : "";
+            return `<td ${attrs} data-field="${escHtml(col.field)}" title="${escHtml(value)}">${escHtml(value)}</td>`;
+        }
+    }
 }
 
 async function loadPackets(captureId, filter = "") {
@@ -3659,7 +4245,8 @@ async function loadPackets(captureId, filter = "") {
     syncSaveButton("btn-save-display-filter", "display-filter");
     const tbody = $("packet-tbody");
     const cols = packetColumns();
-    const { flags, span } = cols;
+    const { requestFlags, span } = cols;
+    currentPackets = [];
 
     // Kept so a rejected filter can put the packets back. The spinner replaces
     // them before the request goes out, and a filter the server refuses would
@@ -3673,8 +4260,11 @@ async function loadPackets(captureId, filter = "") {
         const query = new URLSearchParams({
             limit: "1000",
             display_filter: filter,
-            flags: flags.join(","),
+            flags: requestFlags.join(","),
             resolve_names: resolveNamesEnabled() ? "true" : "false",
+            // The added columns' fields, so one pass fetches them alongside
+            // the built-in ones instead of a second request per column.
+            columns: cols.fields.join(","),
         });
         const data = await api(`/api/captures/${captureId}/packets?${query}`);
         showDisplayFilterError("");
@@ -3682,6 +4272,9 @@ async function loadPackets(captureId, filter = "") {
             tbody.innerHTML = `<tr><td colspan="${span}" style="text-align:center;padding:20px;color:var(--text-muted)">No packets match</td></tr>`;
             return;
         }
+        // Kept so that moving, renaming or removing a column can redraw the
+        // table without asking the server for packets it already has.
+        currentPackets = data.packets;
         tbody.innerHTML = data.packets.map((p) => packetRowHtml(p, cols)).join("");
     } catch (e) {
         if (e.badDisplayFilter) {
@@ -4188,6 +4781,15 @@ function onDetailContextMenu(ev) {
     selectField(row, null);
     const expr = buildFieldFilter(row.dataset.field, row.dataset.value);
     const items = filterMenuItems(expr, row.dataset.value || row.dataset.field);
+    // Wireshark's Apply as Column, from the same menu and in the same place:
+    // the quickest way to put a field beside every packet is from a packet
+    // that already has it.
+    items.push({ separator: true });
+    items.push({
+        label: "Apply as Column",
+        hint: row.dataset.field,
+        run: () => addFieldColumn(row.dataset.field, columnTitleForField(row)),
+    });
     // Offered from anywhere in this packet's own tree, not only a tcp.stream
     // or udp.stream row -- the same as right-clicking its line in the packet
     // list, and the detail pane already has both indexes loaded.
@@ -4197,6 +4799,14 @@ function onDetailContextMenu(ev) {
         currentDetail?.udp_stream != null ? String(currentDetail.udp_stream) : "",
     );
     openFilterMenu(ev.clientX, ev.clientY, items);
+}
+
+// A tree row reads "Source Port: 51234", which makes a poor column heading and
+// a worse one still on a field whose value is long. The part before the colon
+// is the field's own name, which is what Wireshark titles the column with.
+function columnTitleForField(row) {
+    const label = (row.textContent || "").split(":")[0].trim();
+    return label || row.dataset.field;
 }
 
 // A row in the list has no PDML behind it, so its filters are built from the
@@ -4234,6 +4844,11 @@ function onPacketRowContextMenu(ev) {
             const label = cell.dataset.ifaceName || `interface index ${ifindex}`;
             items.push(...filterMenuItems(buildFieldFilter("sll.ifindex", ifindex), label));
         }
+    } else if (cell.dataset.field && text) {
+        // A column the operator added, or one of the MAC columns: the cell
+        // carries the field it was drawn from, so the filter is exact instead
+        // of being guessed back out of the value's shape.
+        items.push(...filterMenuItems(buildFieldFilter(cell.dataset.field, text), text));
     } else {
         const field = addressField(text);
         if (field) items.push(...filterMenuItems(buildFieldFilter(field, text), text));
@@ -5142,6 +5757,7 @@ function initStaticHandlers() {
     $("btn-protocol-hierarchy")?.addEventListener("click", openProtocolHierarchyDialog);
     $("btn-conversations")?.addEventListener("click", openConversationsDialog);
     initStatsDialogs();
+    initColumnControls();
     $("resolve-names")?.addEventListener("change", onResolveNamesToggled);
     $("btn-save-settings")?.addEventListener("click", saveSettings);
     $("btn-admin-create-user")?.addEventListener("click", adminCreateUser);

@@ -271,6 +271,122 @@ async def test_a_valid_filter_matching_nothing_is_an_empty_list_not_an_error():
     assert packets == []
 
 
+# --- the operator's own columns ---------------------------------------------
+#
+# An added column is one more `-e` on the same pass. The pure checks below are
+# the argv boundary and run anywhere; the tshark ones prove the values come
+# back against the right fields.
+
+
+@pytest.mark.parametrize("field", ["-r", "-e", "--version", "tcp.port;id", "$(id)", "a b", "", ".x"])
+def test_a_field_that_could_be_read_as_a_flag_is_refused(field):
+    """`-e -r` would hand tshark the flag that chooses which file to read. The
+    pattern is what stops an added column from becoming an argument."""
+    with pytest.raises(ValueError):
+        packet_parser.validate_column_fields([field])
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["ip.src", "tcp.srcport", "_ws.col.Info", "ieee80211.fc.type-subtype", "tcp"],
+)
+def test_the_shapes_tshark_actually_uses_are_accepted(field):
+    assert packet_parser.validate_column_fields([field]) == [field]
+
+
+def test_the_same_field_twice_is_one_column():
+    """Two identical -e arguments would print the value twice and shift every
+    position after them, which is how a column ends up reading another's data."""
+    assert packet_parser.validate_column_fields(
+        ["ip.src", "ip.ttl", "ip.src"]
+    ) == ["ip.src", "ip.ttl"]
+
+
+def test_more_added_columns_than_the_cap_are_refused():
+    with pytest.raises(ValueError):
+        packet_parser.validate_column_fields(
+            [f"ip.x{n}" for n in range(packet_parser.MAX_EXTRA_COLUMNS + 1)]
+        )
+
+
+@needs_tshark
+async def test_an_added_column_comes_back_against_its_own_field():
+    packets = await packet_parser.get_packet_list(
+        BytesSource(_build_minimal_pcap()),
+        extra_fields=["udp.dstport", "ip.ttl"],
+    )
+    assert len(packets) == 1
+    # The capture _build_minimal_pcap writes: 10.0.0.1:12345 -> 10.0.0.2:53.
+    assert packets[0].values["udp.dstport"] == "53"
+    assert packets[0].values["ip.ttl"].isdigit()
+    # The built-in columns are unmoved by the added ones, which is the whole
+    # point of appending them rather than mixing them in.
+    assert packets[0].source == "10.0.0.1"
+    assert packets[0].destination == "10.0.0.2"
+    assert packets[0].info
+
+
+@needs_tshark
+async def test_added_columns_do_not_disturb_the_mac_columns():
+    """The MAC fields are read from fixed positions and the added ones follow
+    them, so a layout with both must not cross the two over."""
+    packets = await packet_parser.get_packet_list(
+        BytesSource(_build_minimal_pcap()),
+        view_flags=["-e"],
+        extra_fields=["udp.dstport"],
+    )
+    assert packets[0].values["udp.dstport"] == "53"
+    assert packets[0].src_mac and ":" in packets[0].src_mac
+    assert packets[0].dst_mac and ":" in packets[0].dst_mac
+
+
+@needs_tshark
+async def test_no_added_columns_means_no_values_at_all():
+    packets = await packet_parser.get_packet_list(BytesSource(_build_minimal_pcap()))
+    assert packets[0].values == {}
+
+
+@needs_tshark
+async def test_a_column_tshark_cannot_dissect_is_reported_not_silently_empty():
+    """The same rule the display filter has had since dev.8. tshark refuses the
+    whole run over one unrecognised `-e`, and without this the packet list came
+    back empty -- indistinguishable from a capture where nothing matched, about
+    a column the reader cannot see."""
+    with pytest.raises(packet_parser.ColumnFieldError) as exc:
+        await packet_parser.get_packet_list(
+            BytesSource(_build_minimal_pcap()),
+            extra_fields=["definitely.not.a.real.field"],
+        )
+    assert "definitely.not.a.real.field" in str(exc.value)
+
+
+@needs_tshark
+async def test_a_bad_column_is_not_reported_as_a_bad_filter():
+    """With both present, the field is the one at fault and has to be the one
+    named: tshark fails the run before the filter is ever applied."""
+    with pytest.raises(packet_parser.ColumnFieldError):
+        await packet_parser.get_packet_list(
+            BytesSource(_build_minimal_pcap()),
+            display_filter="udp.port == 53",
+            extra_fields=["definitely.not.a.real.field"],
+        )
+
+
+@needs_tshark
+async def test_tshark_is_asked_which_field_names_are_real():
+    unknown = await packet_parser.unknown_packet_fields(
+        ["tcp.srcport", "ip.ttl", "definitely.not.a.real.field"]
+    )
+    assert unknown == ["definitely.not.a.real.field"]
+
+
+@needs_tshark
+async def test_a_protocol_name_counts_as_a_field():
+    """`-e tcp` is what Wireshark's own protocol columns are built from, so a
+    layout naming one is not a typo to refuse."""
+    assert await packet_parser.unknown_packet_fields(["tcp"]) == []
+
+
 @needs_tshark
 async def test_wireshark_operators_run_rather_than_being_refused():
     """`&&` and `||` are what people type. They were rejected outright before."""

@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def validate_ssh_username(v: str) -> str:
@@ -483,6 +483,100 @@ class CustomFilter(BaseModel):
     created_at: str = ""
 
 
+# --- the packet list's columns ---
+#
+# A column is either one of the built-ins below -- rendered from a field of
+# PacketSummary, sometimes with behaviour of its own (a time format that
+# follows the view flags, an interface cell that also carries its index) -- or
+# any tshark field the operator added, fetched as one more `-e` on the same
+# pass and rendered as plain text.
+
+BUILTIN_PACKET_COLUMNS = {
+    "number": "No.",
+    "time": "Time",
+    "source": "Source",
+    "destination": "Destination",
+    "interface": "Interface",
+    "src_mac": "Src MAC",
+    "dst_mac": "Dst MAC",
+    "protocol": "Protocol",
+    "length": "Length",
+    "info": "Info",
+}
+
+# The layout a new account starts on: exactly the columns this Viewer had
+# before layouts existed, in the order it had them. The MAC columns are absent
+# for the same reason they were hidden then -- the -e view flag brings them in.
+DEFAULT_PACKET_COLUMNS = [
+    "number", "time", "source", "destination", "interface",
+    "protocol", "length", "info",
+]
+
+# A custom column's id is its field with this in front, so that the same field
+# added twice is the same column rather than a duplicate with a second title.
+CUSTOM_COLUMN_PREFIX = "field:"
+
+# Total columns in one layout. Well past a readable table, and the point is to
+# bound the row a caller can ask the server to build, not to ration columns.
+MAX_PACKET_COLUMNS = 24
+
+# A custom column's field name reaches tshark's argv as `-e <name>`, so the
+# pattern is a security boundary rather than tidiness: a name beginning with
+# "-" would arrive as a FLAG instead -- `-r`, say, with a path of the caller's
+# choosing behind it. Anchored, never leading with a dash, and otherwise the
+# shape tshark's own registry uses: dotted segments of letters, digits and
+# underscores, "-" allowed inside a segment (ieee80211.fc.type-subtype) and
+# uppercase allowed because _ws.col.Info is spelled that way.
+PACKET_FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:[.-][A-Za-z0-9_]+)*$")
+
+
+class PacketColumn(BaseModel):
+    """One column of the packet list, as the operator arranged it."""
+
+    id: str = Field(min_length=1, max_length=120)
+    title: str = Field(min_length=1, max_length=40)
+    # Empty on a built-in column: what it shows is decided by its id, not by a
+    # field name the client gets to choose.
+    field: str = ""
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        # Collapsed rather than merely stripped: a title is rendered into a
+        # table header, and a newline or a run of tabs in one is either a
+        # mistake or an attempt to break the layout.
+        cleaned = " ".join(v.split())
+        if not cleaned:
+            raise ValueError("a column needs a title")
+        return cleaned
+
+    @model_validator(mode="after")
+    def check_id_matches_field(self) -> "PacketColumn":
+        if self.id in BUILTIN_PACKET_COLUMNS:
+            if self.field:
+                raise ValueError(f"{self.id} is a built-in column and carries no field")
+            return self
+        if not self.id.startswith(CUSTOM_COLUMN_PREFIX):
+            raise ValueError(f"unknown column {self.id!r}")
+        if self.id != CUSTOM_COLUMN_PREFIX + self.field:
+            raise ValueError(f"column {self.id!r} does not match field {self.field!r}")
+        if not PACKET_FIELD_RE.match(self.field):
+            raise ValueError(f"not a tshark field name: {self.field!r}")
+        return self
+
+
+class ColumnLayout(BaseModel):
+    columns: list[PacketColumn] = Field(min_length=1, max_length=MAX_PACKET_COLUMNS)
+
+    @field_validator("columns")
+    @classmethod
+    def validate_columns(cls, v: list[PacketColumn]) -> list[PacketColumn]:
+        ids = [c.id for c in v]
+        if len(set(ids)) != len(ids):
+            raise ValueError("the same column twice")
+        return v
+
+
 class CaptureInfo(BaseModel):
     id: str
     # Operator-chosen label. Empty until someone renames the capture, at which
@@ -553,6 +647,9 @@ class PacketSummary(BaseModel):
     # it.
     tcp_stream: int | None = None
     udp_stream: int | None = None
+    # Whatever the operator added to their column layout beyond the built-in
+    # columns above, keyed by tshark field name. Empty on a default layout.
+    values: dict[str, str] = Field(default_factory=dict)
 
 
 class PacketField(BaseModel):

@@ -185,6 +185,18 @@ class Database:
                 UNIQUE(user_id, label)
             );
 
+            -- How this account arranges the Viewer's packet list: which
+            -- columns, in what order, under what titles. One row per user, so
+            -- the layout follows the account to any browser it signs in from;
+            -- no row at all means the built-in default, which is why this is
+            -- absent until someone changes something rather than written out
+            -- for every new account.
+            CREATE TABLE IF NOT EXISTS column_layouts (
+                user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                columns TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_captures_user_id ON captures(user_id);
             CREATE INDEX IF NOT EXISTS idx_active_servers_user_id ON active_servers(user_id);
             CREATE INDEX IF NOT EXISTS idx_capture_views_owner
@@ -667,6 +679,41 @@ class Database:
         )
         self._conn().commit()
         return cur.rowcount > 0
+
+    # --- the packet list's column layout ---
+
+    def get_column_layout(self, user_id: str) -> list[dict] | None:
+        """This account's saved layout, or None if it is still on the default.
+
+        A row that will not parse is treated as no row: the layout is a
+        preference, and refusing to open the Viewer over one is a worse
+        outcome than silently showing the default columns.
+        """
+        row = self._conn().execute(
+            "SELECT columns FROM column_layouts WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            columns = json.loads(row["columns"])
+        except json.JSONDecodeError:
+            return None
+        return columns if isinstance(columns, list) else None
+
+    def set_column_layout(self, user_id: str, columns: list[dict]) -> None:
+        self._conn().execute(
+            "INSERT INTO column_layouts (user_id, columns, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET columns = excluded.columns, "
+            "updated_at = excluded.updated_at",
+            (user_id, json.dumps(columns), _utcnow().isoformat()),
+        )
+        self._conn().commit()
+
+    def clear_column_layout(self, user_id: str) -> None:
+        """Back to the built-in columns -- by deleting the row, so a later
+        change to the default reaches everyone who never customised it."""
+        self._conn().execute("DELETE FROM column_layouts WHERE user_id = ?", (user_id,))
+        self._conn().commit()
 
     # --- known hosts ---
 

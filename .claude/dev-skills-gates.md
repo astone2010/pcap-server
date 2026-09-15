@@ -1,5 +1,234 @@
 # Dev Skills gate state
 
+## Session opened 2026-09-15 (local CLI, Debian 13, zsh, dev-skills 2.18.0)
+Re-derived from evidence (SKILL.md S2), not trusted from the prior entry below.
+
+HEAD = 440f5f9, up to date with origin/claude/admiring-wright-k20ptf. 7 commits
+sit on the branch past the v0.1.0-dev.33 tag (6121629..440f5f9, CI-trigger fix +
+actionlint + dev-build docs/compose fixes) -- all CI plumbing/docs, no
+APP_VERSION bump, no source-code behavior change. Check runs green on the two
+most recent (34894226882, 34894777083).
+
+v0.1.0-dev.33: tag on remote -> c3e43f6, GitHub release published (prerelease,
+2026-09-14T17:01:10Z). APP_VERSION still reads 0.1.0-dev.33, matching its own
+tag exactly -- no unshipped bump, no unfinished Gate 6. CLOSED AND SHIPPED,
+confirmed again this session.
+
+## 0.1.0-dev.34 — arrangeable packet-list columns (opened 2026-09-15)
+Track: RELEASE SEQUENCE 0.1.0-dev.34, chosen by the user via AskUserQuestion
+after being offered work-commit and review-first instead. Sweeps up the 7
+CI/docs commits already sitting past the v0.1.0-dev.33 tag.
+
+User's ask: "the view pane's column needs to be able to add and remove other
+vakues as well as be moveable". Three scoping questions put to the user, all
+answered with the recommended option: (1) curated presets PLUS any tshark
+field validated against tshark's own registry; (2) stored per user and applied
+to every capture, server-side, Wireshark-preference style -- not per saved
+view, not localStorage; (3) inline (drag headings, right-click, Apply as
+Column) PLUS a preferences dialog.
+
+Model: Opus 5, above the Sonnet ceiling. The user set it deliberately with
+/model immediately before the request; flagged in the first reply and treated
+as approval for this task, consistent with the dev.31/32/33 approvals below.
+
+Implementation DONE (uncommitted):
+- models.py: BUILTIN_PACKET_COLUMNS, DEFAULT_PACKET_COLUMNS,
+  CUSTOM_COLUMN_PREFIX, MAX_PACKET_COLUMNS, PACKET_FIELD_RE, PacketColumn
+  (model_validator ties a custom column's id to its own field so the same
+  field cannot become two columns), ColumnLayout. PacketSummary.values.
+- packet_parser.py: get_packet_list(extra_fields=...) appends one -e per added
+  column AFTER the MAC fields and reads their values from the END of the row
+  (the Info column is free text mid-row; a tab in one shifts every forward
+  position -- the built-ins still read forward, unchanged).
+  validate_column_fields (pattern + cap + dedupe), unknown_packet_fields +
+  _lookup_in_registry (streamed `tshark -G fields`, early break, kill rather
+  than drain, positives-only memo bounded at 2000).
+- database.py: column_layouts table (user_id PRIMARY KEY, columns JSON),
+  get/set/clear. No row = default, deliberately, so a later change to the
+  default reaches everyone who never customised.
+- main.py: GET/PUT/DELETE /api/column-layout + /api/column-layout/default;
+  packets route gains `columns`, re-validated per request.
+- frontend: thead built by renderColumnHeaders from the layout; packetCellHtml
+  per column id; drag/right-click headings; Columns dialog; Apply as Column on
+  the detail menu; optimistic apply with rollback when the server refuses.
+
+SECURITY notes made during the build, before any gate ran: a field name lands
+in tshark's argv as `-e <name>`, so PACKET_FIELD_RE refuses anything that
+could read as a flag (`-r` being the one that matters), applied at the model,
+at the save route AND on every packet list -- the list's query string is the
+caller's, not necessarily the saved layout's. Added-column values are escHtml'd
+like every other capture-derived value.
+
+BUG FOUND AND FIXED during self-review, pre-gate: an explicitly added MAC
+column rendered empty, because the server keys the MAC fields off the -e view
+flag and the chip was not lit. packetColumns now sends -e when the layout
+needs it, without lighting the chip.
+
+🚫 BLOCKED ON THE HOST, NOT ON THE CODE: this Debian 13 box has no
+python3.13-venv (so scripts/check.sh cannot even build .venv), no tshark, no
+tcpdump, no capinfos. Every prior entry below was written on a Fedora box that
+had them. Install asked of the user:
+  sudo DEBIAN_FRONTEND=noninteractive apt install -y python3.13-venv tshark tcpdump
+Until then Gate 2 cannot run and the tshark-dependent tests report SKIPPED.
+
+FINDING FOR THE USER, not changed unilaterally: docker-compose.yml at HEAD has
+a DUPLICATE top-level `secrets:` key (commit 789dae9) -- the first names
+/opt/docker/pcapserver/secrets/master.key, the second ./secrets/master.key.
+Last key wins in a permissive parser, so the absolute path is silently
+discarded; a strict one errors outright. The same commit hardcodes one
+machine's /opt/docker/pcapserver paths into the file the README tells everyone
+to curl at the tag, while the Quick start still says every relative path
+resolves against the install directory. Raised, awaiting the user's decision.
+
+🔢 VERSION    ✅ 0.1.0-dev.34 in all seven refs: backend/main.py:99,
+                docker-compose.yml:100, README.md:230/331/347,
+                docs/reverse-proxy.md:117/372. Historical mentions in
+                architecture.md:108 and database.py:248 left as history, as
+                dev.33 did. REPO_URL + release_notes_url (derived from
+                APP_VERSION) present. v0.1.0-dev.33 confirmed on the remote
+                (ls-remote -> c3e43f6), so the previous release did ship.
+🔨 BUILD      ✅ ./scripts/check.sh: 1424 passed, 0 failed, 0 skipped, exit 0,
+                211s. First run on this box with nothing skipped -- tshark
+                4.4.18, tcpdump, capinfos and playwright's chromium all
+                present (dev.33's baseline was 1371; +53 are this feature's).
+                New suites all green: test_columns_ui 9, test_column_layout
+                21, test_packet_parser 44. Browser suites drive the real app
+                via backend.serve, so the golden path is exercised.
+                CONTAINER: docker needs sudo in this session (the user added
+                the group but it cannot reach an already-running shell), so
+                the build+smoke ran as a one-line script the user pasted,
+                writing to scratchpad/smoke.log for me to read. Results:
+                image localhost/pcap-server:0.1.0-dev.34 builds; / and
+                /js/app.js serve 200 with the new column code in the served
+                bundle (8 matches); GET /api/column-layout and
+                /api/column-layout/default 401 unauthenticated, PUT 403 --
+                the plain-HTTP write refusal, so the write route is behind
+                that policy too, not just auth; tshark in the image is
+                4.4.18, the same build as the host; `tshark -G fields` knows
+                tcp.srcport and does not know a made-up name; and
+                unknown_packet_fields, run in the image's own interpreter,
+                returns exactly ['definitely.not.a.real.field'] -- the save
+                path proven in the container, which is the one thing the host
+                could not answer for it. 0 tracebacks.
+                FIRST SMOKE RUN FAILED, and the fault was the harness, not
+                the app: the script let Docker create the bind-mount sources
+                (root-owned, so appuser could not open the database) and did
+                not set DATA_DIR/CAPTURES_DIR/SSH_KEYS_DIR, which is exactly
+                what entrypoint.sh keys its chown off -- compose always sets
+                them. Fixed in the script. Noted, NOT changed, as
+                pre-existing and out of scope: entrypoint.sh silently does
+                nothing when those three are unset and its `chown ... || true`
+                swallows failures, so a hand-rolled docker run fails with
+                "unable to open database file" and nothing pointing at
+                ownership.
+                NOTE FOR NEXT TIME: two runs were wasted by changing the tree
+                under a running suite -- installing chromium mid-run (browser
+                fixtures raced it, E not s) and editing app.js mid-run. A
+                third died because `pkill -f pytest` matched its own shell.
+                Start the suite, then leave the tree alone.
+🔒 SECURITY   ✅ 0 Critical, 0 High, 0 Medium. pip-audit: no known
+                vulnerabilities. No new third-party import (model_validator is
+                pydantic, already a dependency), so requirements and the
+                Dockerfile are untouched -- no dependency drift.
+                Diff grep for eval/exec/shell=True/os.system/pickle/md5/sha1/
+                bare-except/assert-as-validation/verify=False: the only hits
+                are asserts inside tests (correct usage) and one
+                create_subprocess_exec, which takes an argv list and no shell.
+                Design point, not an afterthought: a column's field name lands
+                in tshark's argv as `-e <name>`, so PACKET_FIELD_RE refuses
+                anything that could read as a flag (`-r` being the one that
+                matters) at the model, at the save route, AND on every packet
+                list -- the list's query string is the caller's, not
+                necessarily the saved layout's. test_main.py proves the
+                capture is never even looked up first.
+                FIXED DURING THIS GATE'S REVIEW, not deferred:
+                 - prototype lookup: `values[field]` for a field named
+                   __proto__ returned Object.prototype. Now
+                   hasOwnProperty-guarded. The server refuses such a name, but
+                   the table draws optimistically before that answer lands.
+                 - the registry memo was unbounded -> capped at 2000, and only
+                   positives are cached, so a name that was wrong once is
+                   re-asked rather than pinned wrong past an image rebuild.
+                 - `tshark -G fields` subprocess is killed rather than left
+                   with a full pipe when the scan breaks early on a match
+                   (the same finding this repo already had at dev.31).
+                Quality: renderColumnDialogRows was ~55 lines building a row
+                inline -> split into columnDialogRow(col, index, count). One
+                renderer draws headings and cells together, so the two cannot
+                drift. Added columns share one CSS width class rather than
+                inventing a width per field.
+📄 DOCS       ✅ CHANGELOG dev.34 (Added/Changed/Documentation), covering this
+                feature AND the 7 CI/compose commits it sweeps up. README:
+                "Choosing the columns", Apply as Column in the two-filters
+                section. architecture.md: "The column layout" (storage, the
+                no-row-means-default decision, why added fields go last in
+                argv and are read from the end of the row, the argv boundary,
+                the registry check) + the MAC-column paragraph updated for
+                layouts.
+                COMPOSE FIX, on the user's "keep mine": the duplicate
+                top-level `secrets:` key introduced by 789dae9 is gone and the
+                absolute /opt/docker/pcapserver paths are the shipped default.
+                Three docs still named the old /opt/docker/pcap install dir
+                (README Quick start + Upgrading, operating.md x2) and now
+                match; the compose file says outright that its paths are
+                absolute rather than relative to wherever it sits.
+📦 RELEASE    ⏳ branch synced with origin (0 ahead, 0 behind at fetch).
+                PR ➖ N/A -- user, 2026-09-15: "we're not doing any PRs until
+                1.0", the branch is canonical, as dev.27-33. Saved to memory
+                as release-process so it is not raised again.
+                Commit block presented (local session, SKILL.md 5.8); NOT run
+                and NOT approved yet.
+🚀 SHIP       ⬜
+
+## Session opened 2026-09-14 (local CLI, Debian 13, zsh, dev-skills 2.18.0)
+Skill was NOT installed at session start -- no SKILL.md anywhere on this box,
+only this state file survived. User supplied the v2.18.0 bundle as a GitHub
+release asset; installed to ~/.claude/skills/dev-skills/ (6 md files,
+documentation only, no scripts/executables in the archive). It is not in this
+session's registered skill list -- skills register at session start -- so it was
+loaded by reading SKILL.md + GATE_REFERENCE.md directly. A restart picks it up
+as a real skill.
+
+ENVIRONMENT CHANGED from every prior entry below: those all say Fedora 44 +
+bash; this machine is Debian 13 + zsh. Treat older shell/path notes as stale.
+
+STATE RE-DERIVED from evidence (SKILL.md S2), not trusted from this file.
+What this file claimed vs what is actually true:
+ - claimed actionlint "NOT committed yet -- presented, awaiting approval";
+   it is in fact commit 61e63fd.
+ - claimed dev.33 was "two commits, neither pushed/tagged"; v0.1.0-dev.33 IS
+   on the remote at c3e43f6 and is an ancestor of origin's head.
+   dev.33 CLOSED AND SHIPPED.
+ - git ls-remote --tags: all versions tagged through v0.1.0-dev.33.
+   No unfinished Gate 6.
+
+Branch at open: local ec2acb7, origin 440f5f9 -- 0 ahead, 3 behind. Incoming
+commits are the user's own from another machine (789dae9 volume paths/secrets,
+2db7df8 README compose instructions, 440f5f9 compose filename); they touch only
+README.md and docker-compose.yml. Clean fast-forward; sync block presented, not
+executed (local session, SKILL.md S5.8).
+
+7 commits now sit past the v0.1.0-dev.33 tag while APP_VERSION is still
+0.1.0-dev.33. Not a gate violation -- unreleased work -- but Gate 1 hard-blocks
+until it is bumped, so the next release is dev.34.
+
+Model: Opus 5, above the Sonnet ceiling. User approved staying on it for THIS
+task (2026-09-14), consistent with the dev.31/dev.32 approvals below.
+
+Notes: hooks/gate-preflight.sh is NOT installed here (.claude/hooks carries only
+session-start.sh), so the prose pre-flight is the only enforcement. This file is
+tracked in git rather than gitignored, contrary to SKILL.md's local-session
+default -- left as the repo has always had it, not changed unilaterally.
+
+No files modified yet this session. All six gates pending.
+
+🔢 VERSION    ⬜
+🔨 BUILD      ⬜
+🔒 SECURITY   ⬜
+📄 DOCS       ⬜
+📦 RELEASE    ⬜
+🚀 SHIP       ⬜
+
 ## CI: actionlint added, workflow-file pushes skip the full suite (2026-09-14)
 Chain: user kept pressing on "why the full suite for a workflow YAML edit"
 across several turns, ending in "what is the standard" (answer: actionlint,

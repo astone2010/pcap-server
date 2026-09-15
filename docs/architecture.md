@@ -461,6 +461,57 @@ under investigation. The progress-count pattern is bounded to twelve digits, so
 a flood of digits cannot hand `int()` a quadratic parse, and the retained buffer
 is capped, so a chatty or malicious host cannot grow it without limit.
 
+### The column layout
+
+Which columns the packet list shows, in what order, under what titles, is a
+preference of the account rather than markup. It is stored server-side, in
+`column_layouts` (one row per user, the columns as JSON), so it follows the
+operator between browsers and applies to every capture — the way a Wireshark
+column preference does, and unlike a saved view, which belongs to one capture.
+
+**No row means the default.** An account that has never arranged its columns
+has nothing stored, rather than a stored copy of the built-in list, so a later
+change to the default reaches everyone who never customised. The Reset control
+deletes the row for the same reason.
+
+A column is one of two things. The **built-ins** (`number`, `time`, `source`,
+`destination`, `interface`, `src_mac`, `dst_mac`, `protocol`, `length`, `info`)
+are rendered from `PacketSummary`'s own fields, some with behaviour of their
+own — a timestamp that follows the view flags, an interface cell that also
+carries its index for the filter menu. An **added column** is any tshark field,
+identified as `field:<name>`, fetched as one more `-e` on the pass
+`get_packet_list` already runs and returned in `PacketSummary.values` keyed by
+field name. One pass, so a column costs no extra round trip; the built-in
+fields are fetched whether or not they are displayed, which keeps Follow Stream
+and the conversation filter working from a row whose address columns were
+removed.
+
+Two details about that pass are load-bearing:
+
+- **Added fields go last in the argv**, after the MAC fields, so a column the
+  operator added never shifts the positions the built-in ones are read from.
+- **Their values are read from the end of the row**, not by counting forward.
+  The Info column is free text in the middle of the row and a tab inside one
+  would shift every position after it; the built-in columns have always read
+  forward and are left as they were, but the added ones can be read from the
+  side of the row that nothing shifts.
+
+**A field name is an argv boundary.** It reaches tshark as `-e <name>`, so a
+name beginning with `-` would arrive as a flag instead — `-r`, with a path of
+the caller's choosing behind it. `PACKET_FIELD_RE` refuses anything that is not
+a dotted field name, and it is applied at the model, at the save route, and
+again on every packet list, because the query string on a list request is the
+caller's and not necessarily the saved layout's.
+
+**A field tshark does not know is refused when the layout is saved**, by a
+streamed pass over `tshark -G fields` — its dissector registry, the same list
+Wireshark's own Custom column type offers. The check runs on save, never on a
+packet list, because the registry is a multi-megabyte stream and the list is
+the hot path; confirmed names are memoised, bounded, and only positives are
+kept, so a name that was wrong once is re-checked rather than pinned as wrong
+past the next image build. Protocol names count as fields: `-e tcp` is what
+Wireshark's own protocol columns are built from.
+
 ### MAC address columns
 
 The `-e` view flag asks for `eth.src`, `eth.dst` and `sll.src.eth` together.
@@ -469,7 +520,10 @@ at all, so the Ethernet fields are empty on every frame of the captures taken
 with the default interface. Whichever field the frame actually carries wins. A
 cooked header records the sender's address but no destination, so that column is
 genuinely empty there; on a capture from a named interface both are real, which
-is where the flag earns its place.
+is where the flag earns its place. The flag remains a quick toggle: it inserts
+the two columns where they sat before layouts existed, without editing the
+stored layout. Adding **Src MAC** or **Dst MAC** from the Columns dialog puts
+them in the layout instead, and they are then shown whether or not `-e` is on.
 
 ### Interface column
 

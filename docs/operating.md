@@ -92,7 +92,7 @@ That one is answered from the host, at the same bar as reading the database
 directly:
 
 ```bash
-cd /opt/docker/pcap
+cd /opt/docker/pcapserver
 
 # Which accounts exist, and which have MFA set up.
 docker compose run --rm --entrypoint python pcap-server \
@@ -303,7 +303,7 @@ file included. Add `--apply` to commit it. Then put the new key where the old
 one was and start up again:
 
 ```bash
-cp /opt/docker/pcap/data/master.key.new /opt/docker/pcap/secrets/master.key
+cp /opt/docker/pcapserver/data/master.key.new /opt/docker/pcapserver/secrets/master.key
 docker compose start pcap-server
 docker compose logs pcap-server | grep -i encryption
 ```

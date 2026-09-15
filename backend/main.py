@@ -50,8 +50,10 @@ from backend.models import (
     CaptureStatus,
     CaptureView,
     CaptureViewRequest,
+    ColumnLayout,
     CustomFilter,
     CustomFilterRequest,
+    DEFAULT_PACKET_COLUMNS,
     DisplayFilterRequest,
     KnownHostConfirm,
     KnownHostEndpoint,
@@ -61,13 +63,17 @@ from backend.models import (
 )
 from backend.packet_parser import (
     ALLOWED_VIEW_FLAGS,
+    ColumnFieldError,
     DisplayFilterError,
+    MAX_EXTRA_COLUMNS,
     get_conversations,
     get_follow_stream,
     get_packet_detail,
     get_packet_list,
     get_protocol_hierarchy,
     stream_filtered_pcap,
+    unknown_packet_fields,
+    validate_column_fields,
 )
 from backend.localnet import SELF_CAPTURE_EXPLANATION, describe_if_local
 from backend.sanitizer import (
@@ -91,7 +97,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.33"
+APP_VERSION = "0.1.0-dev.34"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -1430,6 +1436,66 @@ async def delete_display_filter(
     return {"ok": True}
 
 
+# --- the packet list's column layout ---
+#
+# Per account and used on every capture, the way a Wireshark preference is --
+# not per capture and not per view, so that a column added while reading one
+# capture is still there in the next.
+
+
+@app.get("/api/column-layout")
+async def get_column_layout(user: dict = Depends(get_current_user)):
+    columns = db.get_column_layout(user["id"])
+    # default tells the UI whether this account has ever arranged its columns,
+    # which is what its Reset control keys off -- not derivable from a list
+    # that happens to match the built-in one.
+    return {"columns": columns, "default": columns is None}
+
+
+@app.put("/api/column-layout")
+async def put_column_layout(
+    layout: ColumnLayout,
+    user: dict = Depends(get_current_user),
+):
+    fields = [c.field for c in layout.columns if c.field]
+    try:
+        validate_column_fields(fields)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if not filter_check_rate_limiter.allow(user["id"]):
+        # Saving a layout with a field this tshark has not seen before spawns
+        # `tshark -G fields`, so the check that reaches a subprocess sits behind
+        # the same budget as the other one that does.
+        raise HTTPException(429, "too many layout saves, slow down")
+    try:
+        unknown = await unknown_packet_fields(fields)
+    except Exception:
+        logger.exception("tshark field registry lookup failed")
+        raise HTTPException(500, "could not check those field names against tshark")
+    if unknown:
+        raise HTTPException(
+            400,
+            "tshark does not know " + ", ".join(unknown)
+            + " -- check the spelling against the field name Wireshark shows",
+        )
+    db.set_column_layout(user["id"], [c.model_dump() for c in layout.columns])
+    return {"columns": [c.model_dump() for c in layout.columns], "default": False}
+
+
+@app.delete("/api/column-layout")
+async def delete_column_layout(user: dict = Depends(get_current_user)):
+    """Back to the built-in columns."""
+    db.clear_column_layout(user["id"])
+    return {"columns": None, "default": True}
+
+
+@app.get("/api/column-layout/default")
+async def default_column_layout(_user: dict = Depends(get_current_user)):
+    """The built-in ids, in order, so the UI's Reset does not carry its own
+    copy of a list the server already decides."""
+    return {"columns": DEFAULT_PACKET_COLUMNS}
+
+
 # --- captures ---
 
 def _require_own_capture(capture_id: str, user: dict):
@@ -1847,6 +1913,7 @@ async def list_packets(
     display_filter: str = Query(""),
     flags: str = Query(""),
     resolve_names: bool = Query(False),
+    columns: str = Query("", max_length=64 * MAX_EXTRA_COLUMNS),
     user: dict = Depends(get_current_user),
 ):
     if not packet_rate_limiter.allow(user["id"]):
@@ -1855,14 +1922,28 @@ async def list_packets(
     unknown = set(view_flags) - ALLOWED_VIEW_FLAGS
     if unknown:
         raise HTTPException(400, f"unknown view flags: {sorted(unknown)}")
+    # The added columns, checked for shape and count here rather than against
+    # tshark's registry: that check ran when the layout was saved, and this is
+    # the hot path. What matters on every call is that nothing reaches argv
+    # that could be read as a flag.
+    try:
+        extra_fields = validate_column_fields([c for c in columns.split(",") if c])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     info, path = _require_readable_capture(capture_id, user)
     try:
         packets = await get_packet_list(
             vault.source_for(path), offset=offset, limit=limit,
             display_filter=display_filter, view_flags=view_flags,
             resolve_names=resolve_names, interface_names=info.interface_names,
+            extra_fields=extra_fields,
         )
         return {"packets": packets, "total": info.packet_count}
+    except ColumnFieldError as exc:
+        # A column naming a field this tshark does not dissect. 400 rather than
+        # the 500 below, and with tshark's own words: the layout is the thing to
+        # fix, and an empty packet list would say nothing at all.
+        raise HTTPException(400, f"a column asks for a field tshark does not have: {exc}")
     except DisplayFilterError as exc:
         # The filter is wrong, not the capture. Structured so the UI can put the
         # message under the filter box instead of blanking the packet list.

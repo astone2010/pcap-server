@@ -93,11 +93,18 @@
 
 
 
-# NOTE: The sectiion below is the only text needed to be in the compose file after the folders, permissions, and master key are created. Anything preceded with a # can be deleted. The final filename should be compose.yaml.
+# NOTE: The section below is the only text needed to be in the compose file
+# after the folders, permissions, and master key are created. Anything preceded
+# with a # can be deleted. The final filename should be compose.yaml.
+#
+# The paths below are absolute: /opt/docker/pcapserver is the install
+# directory, and the four bind sources and the secret's file all name it in
+# full. Installing somewhere else means changing them here -- they do not
+# follow the directory the file happens to sit in.
 
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.33
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.34
     ports:
       - "8080:8080"
     volumes:
@@ -135,6 +142,3 @@ services:
 secrets:
   pcap_master_key:
     file: /opt/docker/pcapserver/secrets/master.key
-secrets:
-  pcap_master_key:
-    file: ./secrets/master.key
