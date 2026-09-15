@@ -1,5 +1,128 @@
 # Dev Skills gate state
 
+## Session opened 2026-09-15 #5 — WORK COMMIT: CI bundle M2/M3/M4
+Track: WORK COMMIT (no APP_VERSION bump, no artifact, no tag). Required by
+SKILL.md S2: 🔒 SECURITY on the changed code + commit approval. VERSION / BUILD
+/ DOCS / RELEASE / SHIP stay ⬜ -- not owed on this track, not skipped.
+Scope chosen by the user (AskUserQuestion): the CI bundle held out of dev.37
+because it edits the pipeline that ships releases.
+ - M2: the 5 actions in release.yml pinned to commit SHAs, version comments kept.
+ - M3: `permissions: contents: read` on check.yml's test job.
+ - M4: github-actions + pip ecosystems added to .github/dependabot.yml.
+
+NOT app CHANGELOG material (CI plumbing), same call as the dev-33/34 CI commits.
+
+State re-derived from evidence (SKILL.md S2), not trusted from the entry below:
+ - HEAD = d513564, branch claude/admiring-wright-k20ptf, 0 ahead / 0 behind
+   origin after `git fetch`. `git ls-remote --heads origin` -> that branch only.
+ - APP_VERSION (backend/main.py:113) = 0.1.0-dev.37; `git ls-remote --tags
+   origin` -> contiguous through v0.1.0-dev.37, which points at d513564, the
+   HEAD commit. Released == tagged == source version: NO unfinished Gate 6
+   (GATE_REFERENCE step 7). dev.37 really did ship.
+ - Working tree carries the dev.37 ship record (this file, modified) and the
+   untracked .claude/dev37-handoff.md. No source file modified.
+
+ENVIRONMENT DIFFERS from every prior entry. This session's system prompt
+describes a MANAGED REMOTE EXECUTION ENVIRONMENT (cloud container, repo cloned
+at session start, reclaimed on end) -- every entry below says LOCAL CLI. The
+signals are mixed: the paths and the two uncommitted files are the local
+session's, so this was put to the user rather than assumed (GATE_REFERENCE
+step 0: "If the signals are ambiguous, ask -- do not assume local").
+ - If REMOTE: Claude executes git after approval; this file is committed to the
+   branch; GitHub ops go through the GitHub MCP tools (deferred in this
+   session); the two uncommitted files above are DESTROYED unless pushed.
+ - If LOCAL: Claude presents git blocks, the user runs them (S5.8), as dev.34-37.
+`/usr/bin/gh` exists on this box, but this session's system prompt states gh has
+no access here -- so GitHub MCP is the assumed path until gh is proven working.
+
+Local dev workflow: ./scripts/check.sh. CI build check: check.yml (calls
+./scripts/check.sh -- no drift). CI release: release.yml on `v*` tag push, with
+the dev.36 `gate` job in front of it. Plus lint-workflows.yml.
+hooks/gate-preflight.sh still NOT installed (.claude/hooks has session-start.sh
+only) -> the prose pre-flight is the only enforcement.
+No PRs before 1.0 (memory release-process): Gate 5's PR step is ➖ N/A by the
+user's standing decision; the working branch is canonical and the tag push
+drives the release.
+
+Model: Opus 5, above the Sonnet ceiling. Flagged to the user at session start;
+no task approval yet this session (the dev.37 approval was task-scoped).
+
+CARRIED FORWARD from the dev37 handoff, still open:
+ 1. CI bundle M2/M3/M4 -- SHA-pin the 5 actions in release.yml, add
+    `permissions: contents: read` to check.yml, add github-actions + pip to
+    .github/dependabot.yml. Work commit, no version bump. M4 open since
+    2026-09-14.
+ 2. Redeploy :0.1.0-dev.37 on the live box (user's action) -- H1 is only fixed
+    in the image, the running container is still dev.36.
+ 3. Deferred by design: M5 (TOTP secrets plaintext at rest), L1 (chunked-body
+    cap), M1-code (limiter re-key).
+
+🔢 VERSION    ⬜ not owed -- work commit, APP_VERSION stays 0.1.0-dev.37
+🔨 BUILD      ⬜ not owed. The equivalent ran anyway: actionlint 1.7.12
+              (downloaded + sha256 verified against lint-workflows.yml's own
+              pinned checksum, which therefore re-verified too) EXIT=0 over all
+              three workflows, and yaml.safe_load parses all four files. That is
+              exactly what CI runs for a workflow-only change -- check.yml's
+              paths-ignore excludes .github/workflows/**, so this push fires
+              Lint workflows ONLY and no Check run. Deliberate, and the reason
+              release.yml's gate has a workflow_dispatch escape hatch.
+              ./scripts/check.sh not run: no Python/JS touched, and no test in
+              tests/ reads workflow or dependabot files (grepped).
+🔒 SECURITY   ⏳ scan done, AWAITING USER SIGN-OFF (see below)
+📄 DOCS       ⬜ not owed -- work commit
+📦 RELEASE    ⬜ not owed -- work commit
+🚀 SHIP       ⬜ not owed -- work commit
+
+### SECURITY scan of the M2/M3/M4 diff -- 0 Critical, 0 High, 0 Medium
+ * The 5 SHAs were resolved and then CONFIRMED FROM TWO INDEPENDENT SOURCES
+   before being written: `git ls-remote --tags` against each action repo, and
+   GET /repos/<a>/commits/<tag> on the API. Both agree on all five, and on
+   actions/setup-python@v5.6.0 which was resolved for the audit below but NOT
+   pinned (out of the chosen scope). Annotated tags were dereferenced with
+   ^{} so each pin is a COMMIT sha, not a tag-object sha.
+   checkout 11d5960a v4.4.0 | setup-buildx 8d2750c6 v3.12.0 |
+   login-action c94ce9fb v3.7.0 | build-push 10e90e36 v6.19.2 |
+   action-gh-release 3bb12739 v2.6.2
+ * M3 cannot break check.yml: the job checks out, apt-installs, pip-installs
+   and runs ./scripts/check.sh. Nothing in it writes to the repo, pushes, or
+   touches packages. Narrowing to contents:read is a no-op if the repo default
+   was already restrictive and the fix if it was not.
+ * M4 adds no execution surface -- dependabot opens PRs, it does not run this
+   repo's code. pip directory is /backend, where requirements.txt and
+   requirements-dev.txt actually live; the root pyproject.toml is pytest config
+   with no dependencies, so a `/` entry would watch nothing.
+ * No secrets added, moved or echoed. No `run:` block changed at all.
+ * pip-audit over backend/requirements.txt: no known vulnerabilities (the
+   baseline dependabot's new pip entry starts from). Deps unchanged this commit.
+
+### WORKFLOW AUDIT (WORKFLOW_REFERENCE.md checklist) -- findings BEYOND the
+### chosen scope. Reported, deliberately NOT fixed unilaterally.
+release.yml  ✅ SHAs pinned (M2) ✅ least-privilege per job ✅ set -euo pipefail
+             ✅ secrets only in env: ✅ dependabot (M4)
+             ⚠️ no `persist-credentials: false` on checkout
+             ⚠️ no concurrency group (a release must use cancel-in-progress:
+                false -- never cancel one in flight)
+             ⚠️ no timeout-minutes on either job (the gate's own 1800s deadline
+                is not a job timeout)
+             🚨 no tag-on-default-branch verification: any tag on any commit
+                publishes. Applicable here -- the canonical branch is the only
+                head on the remote and tags are pushed at its head, so the
+                check would pass today and would stop a tag on an unreviewed
+                commit tomorrow.
+             💡 generate_release_notes: true, then the CHANGELOG notes get
+                applied by hand with `gh release edit` EVERY release (dev.34,
+                .35, .37 all record doing it). Extracting the CHANGELOG section
+                in the workflow would end that chore.
+check.yml    ✅ calls ./scripts/check.sh (no CI/local drift) ✅ permissions (M3)
+             ⚠️ no persist-credentials: false ⚠️ no concurrency ⚠️ no timeout
+             💡 actions/checkout@v4 + actions/setup-python@v5 still float.
+                First-party, so Low by the checklist -- but release.yml's gate
+                TRUSTS this workflow's conclusion, which makes a compromised
+                step here a way to make a red commit look green.
+lint-workflows.yml ✅ permissions ✅ checksum-verified pinned download
+             ⚠️ no persist-credentials: false ⚠️ no concurrency ⚠️ no timeout
+             💡 checkout@v4 floats
+
 ## Session opened 2026-09-15 #4 — RELEASE SEQUENCE 0.1.0-dev.37
 Track: release sequence. Scope decided by the user ("roll it all in", pre-1.0):
 the audit's code findings + the host-key add-flow bug reported live.
@@ -41,9 +164,21 @@ ceiling; user approved staying above it for this audit+fix task.
               AWAITING USER SIGN-OFF on the review.
 📄 DOCS       ✅ CHANGELOG dev.37 (Security/Fixed), README add-flow step 3,
               architecture.md "Probing before the row exists".
-📦 RELEASE    ⏳ diff reviewed and shown (17 files, +587/-52). Commit PRESENTED
-              for the user to run (S5.8). AWAITING COMMIT APPROVAL.
-🚀 SHIP       ⬜ (tag push handed to the user after commit; no PRs before 1.0)
+📦 RELEASE    ✅ commit d513564 (user), pushed. 17 files, +587/-52. PR ➖ N/A
+              (no PRs before 1.0). CI Check 35020... success on d513564.
+🚀 SHIP       ✅ SHIPPED 2026-09-15. Tag v0.1.0-dev.37 -> d513564 on the remote
+              (user pushed). Release run 35020941449: gate job success FIRST,
+              then release success (release needs: gate) -- pipeline gated
+              correctly. Tag push fired Release ONLY (no dup Check/Lint; dev.37
+              touched no workflow files). GitHub release "v0.1.0-dev.37 (Dev)"
+              prerelease, 2026-09-15T20:40:07Z. ghcr :0.1.0-dev.37 == :dev
+              sha256:65c85477cbb61ba525a82749fb8c8e91dbc668fcc924cc94ceb9cc774
+              dbff6a3; :0.1.0-dev.36 differs (9db99982...), floating tag moved.
+              RELEASE SEQUENCE 0.1.0-dev.37 CLOSED AND SHIPPED.
+              Ship record above is uncommitted -- swept into dev.38, as always.
+              Release notes applied via gh release edit 2026-09-15 (1343 chars).
+              OPEN: CI bundle M2/M3/M4 still queued as a separate work commit;
+              user must redeploy :0.1.0-dev.37 on the box for H1 to take effect.
 
 
 ## Session opened 2026-09-15 #3 — dev.36, running the dev36 handoff

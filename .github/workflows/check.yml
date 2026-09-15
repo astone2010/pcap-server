@@ -35,6 +35,14 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Declared explicitly rather than left to the repository default, which
+    # can be read/write and would hand this job a token able to push code,
+    # move tags and publish packages. Nothing here writes anything: it checks
+    # out, installs, and runs the suite. release.yml's gate job trusts this
+    # workflow's conclusion, so the less this token can do, the less a
+    # compromised step here can reach.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 

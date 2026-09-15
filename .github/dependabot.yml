@@ -12,3 +12,23 @@ updates:
       # interpreter (scripts/check.sh explains), so a minor bump is its own change.
       - dependency-name: python
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+
+  # The workflows pin every action to a commit SHA (release.yml explains why).
+  # A SHA never moves, which is the point and also the risk: without this, a
+  # pinned action stays on whatever commit it was pinned to forever, including
+  # past the fix for its own vulnerability. Dependabot rewrites the SHA and the
+  # trailing version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # backend/requirements.txt and requirements-dev.txt. The pins there are
+  # deliberate and annotated with the advisories they answer, so these arrive as
+  # PRs to read rather than as automatic bumps -- same as the docker entry above.
+  # The root pyproject.toml is pytest configuration and declares no dependencies,
+  # so there is nothing at / for this to watch.
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
