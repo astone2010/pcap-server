@@ -168,6 +168,13 @@ def test_hsts_present_over_https():
     assert resp.headers.get("Strict-Transport-Security") == "max-age=31536000; includeSubDomains"
 
 
+def test_api_responses_are_not_cached(client):
+    """API responses carry per-user state and must not sit in a shared or disk
+    cache. The middleware sets no-store for every /api/ path."""
+    resp = client.get("/api/auth/status")
+    assert resp.headers.get("Cache-Control") == "no-store"
+
+
 # --- middleware: read-only over plain HTTP ----------------------------------
 
 
@@ -263,6 +270,25 @@ def test_auth_status_still_answers_for_a_half_enrolled_session(client, half_enro
     body = client.get("/api/auth/status").json()
     assert body["authenticated"] is True
     assert body["user"]["totp_confirmed"] is False
+
+
+def test_version_is_withheld_from_a_password_only_session(client, half_enrolled):
+    """The running version tells whoever holds it which build to match advisories
+    against, so it is gated behind both factors -- not just the password. A
+    half-enrolled session is authenticated but has not proved TOTP, exactly the
+    threshold the gate sits above."""
+    body = client.get("/api/auth/status").json()
+    assert body["authenticated"] is True
+    assert body["version"] == ""
+    assert body["release_notes_url"] == ""
+
+
+def test_version_is_shown_once_totp_is_confirmed(client, half_enrolled):
+    secret = client.get("/api/auth/totp/setup").json()["secret"]
+    client.post("/api/auth/totp/confirm", json={"code": pyotp.TOTP(secret).now()})
+    body = client.get("/api/auth/status").json()
+    assert body["version"] == main.APP_VERSION
+    assert body["version"] != ""
 
 
 def test_confirming_totp_opens_the_rest_of_the_api(client, half_enrolled):
@@ -776,3 +802,25 @@ def test_an_ordinary_capture_still_starts(secure_client, enrolled, monkeypatch):
     resp = secure_client.post("/api/captures", json={"server_id": server_id, "interface": "eth0"})
 
     assert resp.status_code == 200
+
+
+# --- H2: bootstrap registration cannot create two admins in a race -----------
+
+
+def test_create_first_user_is_atomic(tmp_path):
+    """Two bootstrap registrations racing must not both become admin. The
+    check-and-insert is one statement, so exactly one call inserts a row; the
+    rest report False and write nothing. (The route hashes the password before
+    this, a ~100 ms window that made the old count()-then-insert race real.)"""
+    from backend.database import Database
+
+    db = Database(tmp_path / "bootstrap.db")
+    first = db.create_first_user("id-1", "alice", "scrypt$1$1$1$00$00")
+    second = db.create_first_user("id-2", "mallory", "scrypt$1$1$1$00$00")
+
+    assert first is True
+    assert second is False
+    assert db.user_count() == 1
+    only = db.get_user_by_username("alice")
+    assert only is not None and bool(only["is_admin"]) is True
+    assert db.get_user_by_username("mallory") is None

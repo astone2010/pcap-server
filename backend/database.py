@@ -348,6 +348,28 @@ class Database:
         )
         self._conn().commit()
 
+    def create_first_user(self, user_id: str, username: str, password_hash: str) -> bool:
+        """Create the very first account, as admin, only if no user exists yet.
+
+        Returns True if this call created it, False if a user already existed.
+
+        The emptiness check and the insert are ONE statement, so two bootstrap
+        registrations racing cannot both pass a prior count()==0 check and both
+        become admin. The password hash is deliberately slow (scrypt, ~100 ms),
+        which widened that window enough to drive several through; the second
+        INSERT here matches zero rows instead. Run on the single event-loop
+        thread with no await inside, so the first caller commits before the
+        second's statement runs.
+        """
+        conn = self._conn()
+        cur = conn.execute(
+            "INSERT INTO users (id, username, password_hash, created_at, is_admin) "
+            "SELECT ?, ?, ?, ?, 1 WHERE NOT EXISTS (SELECT 1 FROM users)",
+            (user_id, username, password_hash, _utcnow().isoformat()),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
     def get_user_by_username(self, username: str) -> dict | None:
         row = self._conn().execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         return dict(row) if row else None

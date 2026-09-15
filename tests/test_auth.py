@@ -4,7 +4,9 @@ RateLimiter lockout behavior, and SlidingWindowLimiter's per-minute cap."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -416,3 +418,89 @@ def test_sliding_window_limiter_prune_keeps_keys_inside_the_window():
     limiter.allow("user-a")
     limiter.prune()
     assert "user-a" in limiter._hits
+
+
+# --- scrypt concurrency gate (H1: unauthenticated login memory exhaustion) ----
+
+
+def _make_concurrency_tracker():
+    """A drop-in for a scrypt call that records peak concurrent entries.
+
+    Runs in a worker thread (asyncio.to_thread), so the counter is guarded by a
+    lock; the sleep forces overlap so the peak is meaningful.
+    """
+    lock = threading.Lock()
+    state = {"current": 0, "peak": 0}
+
+    def enter():
+        with lock:
+            state["current"] += 1
+            state["peak"] = max(state["peak"], state["current"])
+        time.sleep(0.05)
+        with lock:
+            state["current"] -= 1
+
+    return state, enter
+
+
+async def test_scrypt_gate_bounds_concurrent_verifications(monkeypatch):
+    """The semaphore caps how many scrypt verifications run at once, however many
+    are requested. This is the bound the login rate limiter is not: it counts
+    failures, and a failure is only recorded after the hash -- so a flood of
+    simultaneous logins would otherwise allocate ~256 MB each in parallel."""
+    limit = 3
+    monkeypatch.setattr(auth, "_scrypt_gate", asyncio.Semaphore(limit))
+    state, enter = _make_concurrency_tracker()
+
+    def fake_verify(password, stored):
+        enter()
+        return False
+
+    monkeypatch.setattr(auth, "verify_password", fake_verify)
+
+    await asyncio.gather(
+        *(auth.verify_password_async("pw", "stored") for _ in range(15))
+    )
+
+    # Never exceeded the cap, and with 15 requests against a cap of 3 it actually
+    # reached it -- so the bound is real, not an artifact of too little load.
+    assert state["peak"] == limit
+
+
+async def test_scrypt_gate_is_shared_across_present_and_absent_paths(monkeypatch):
+    """Both login branches -- real user (verify_password) and unknown user
+    (verify_absent_user) -- go through the one gate, so neither can starve the
+    other and the constant-time login property holds under load."""
+    limit = 2
+    monkeypatch.setattr(auth, "_scrypt_gate", asyncio.Semaphore(limit))
+    state, enter = _make_concurrency_tracker()
+
+    def fake_verify(password, stored):
+        enter()
+        return False
+
+    def fake_absent(password):
+        enter()
+        return False
+
+    monkeypatch.setattr(auth, "verify_password", fake_verify)
+    monkeypatch.setattr(auth, "verify_absent_user", fake_absent)
+
+    mixed = []
+    for i in range(12):
+        if i % 2:
+            mixed.append(auth.verify_password_async("pw", "stored"))
+        else:
+            mixed.append(auth.verify_absent_user_async("pw"))
+    await asyncio.gather(*mixed)
+
+    assert state["peak"] == limit
+
+
+def test_scrypt_concurrency_env_override(monkeypatch):
+    monkeypatch.setenv("PCAP_SCRYPT_CONCURRENCY", "7")
+    assert auth._scrypt_concurrency() == 7
+    monkeypatch.setenv("PCAP_SCRYPT_CONCURRENCY", "0")
+    assert auth._scrypt_concurrency() == 4  # non-positive falls back to the default
+    monkeypatch.setenv("PCAP_SCRYPT_CONCURRENCY", "nonsense")
+    assert auth._scrypt_concurrency() == 4  # unparseable falls back too

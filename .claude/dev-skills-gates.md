@@ -1,5 +1,51 @@
 # Dev Skills gate state
 
+## Session opened 2026-09-15 #4 — RELEASE SEQUENCE 0.1.0-dev.37
+Track: release sequence. Scope decided by the user ("roll it all in", pre-1.0):
+the audit's code findings + the host-key add-flow bug reported live.
+ - H1: unauthenticated login memory-exhaustion -> scrypt concurrency gate
+   (auth.py _scrypt_gate + async wrappers; all 5 call sites in main.py;
+   PCAP_SCRYPT_CONCURRENCY; mem_limit note in compose). Verified: 40 concurrent
+   logins held flat vs 1.14 GB unbounded; peak scales with the gate not cores.
+ - H2: bootstrap-registration race -> db.create_first_user atomic INSERT..SELECT
+   ..WHERE NOT EXISTS. Verified: 8 concurrent bootstraps -> 1 admin.
+ - L7: version disclosed to password-only session -> gated on totp_confirmed.
+ - L2: Cache-Control: no-store on /api/ responses. L6: crypto assert -> raise.
+ - Host-key bug: 'Scan & accept host key' button holds keys client-side; probe
+   endpoints take ServerProbe + pin-then-rollback (_transient_host_keys); stale
+   admin-only _connect message -> HostNotTrusted + host_not_trusted code.
+   Verified in-container + on loopback + real github.com:22 scan; no orphan.
+ - CI bundle M2/M3/M4 deliberately NOT in this commit (they edit release.yml,
+   which ships this release) -- separate work commit after.
+
+Env: LOCAL CLI -> Claude PRESENTS git commands, the user runs them (S5.8).
+sudo -n docker works this session (smoke ran directly, not via paste).
+Model: Opus 4.8 (session flipped from Opus 5 mid-work), above the Sonnet
+ceiling; user approved staying above it for this audit+fix task.
+
+🔢 VERSION    ✅ 0.1.0-dev.37 in all seven refs (main.py:113, compose:107,
+              README 231/332/348, reverse-proxy 117/372). Prev v0.1.0-dev.36
+              tagged on the remote. REPO_URL + release_notes_url present.
+🔨 BUILD      ✅ ./scripts/check.sh EXIT=0, 1532 passed (279s) -- clean full run
+              after fixing one stale test (ssh_manager message assertion).
+              Container: image localhost/pcap-server:0.1.0-dev.37 builds (641MB);
+              boots, / = 200, 0 tracebacks; authenticated version reads
+              0.1.0-dev.37; Cache-Control: no-store (L2) and version-hidden-
+              unauth (L7) confirmed in the real image; served app.js carries the
+              scan-accept feature (8 hits); plain-HTTP mutating POSTs correctly
+              403 (read-only middleware intact).
+🔒 SECURITY   ✅ 0 Critical, 0 High, 0 Medium. Shown to the user. pip-audit: no
+              new deps. Diff grep clean (new innerHTML all escHtml/constant; the
+              one backend assert REMOVED by L6; all remaining asserts in tests).
+              No-orphan invariant preserved in the transient-pin path (tested).
+              AWAITING USER SIGN-OFF on the review.
+📄 DOCS       ✅ CHANGELOG dev.37 (Security/Fixed), README add-flow step 3,
+              architecture.md "Probing before the row exists".
+📦 RELEASE    ⏳ diff reviewed and shown (17 files, +587/-52). Commit PRESENTED
+              for the user to run (S5.8). AWAITING COMMIT APPROVAL.
+🚀 SHIP       ⬜ (tag push handed to the user after commit; no PRs before 1.0)
+
+
 ## Session opened 2026-09-15 #3 — dev.36, running the dev36 handoff
 Track: RELEASE SEQUENCE 0.1.0-dev.36 (scope decided below; all four handoff
 items). RESUMED 2026-09-15 after a usage limit cut the session off mid-work --
@@ -75,7 +121,31 @@ release has been.
               2026-09-15 with "commit"; block PRESENTED for the user to
               run, per S5.8 (local session).
               (PR step ➖ N/A -- no PRs before 1.0, standing decision)
-🚀 SHIP       ⬜
+🚀 SHIP       ✅ user pushed the tag 2026-09-15. All four post-ship checks:
+                 * tag v0.1.0-dev.36 on the remote -> e8591ba, the exact
+                   commit Check passed on.
+                 * GitHub release published: "v0.1.0-dev.36 (Dev)",
+                   prerelease, 2026-09-15T18:17:49Z.
+                 * PR merged ➖ N/A -- no PRs before 1.0 (standing
+                   decision), working branch is canonical.
+                 * ghcr :0.1.0-dev.36 and :dev share one digest,
+                   sha256:9db99982c4e94b04f78e3516825a7deec1d40b544d5daa7e
+                   d50ab34c31b5f554; :0.1.0-dev.35 is a DIFFERENT digest,
+                   so the floating tag really moved forward.
+
+              ITEM 2 PROVED IN PRODUCTION, which is the only place it could
+              be. Release run 35006378207: the `gate` job ran FIRST, took
+              2s, and logged "Check passed for e8591bac..." (job 104507039845
+              line 88) before `release` was allowed to build. The awkwardness
+              flagged at the start -- that the pipeline being changed is the
+              one shipping the change -- resolved green on the first try.
+              Dry-run beforehand against the real SHA predicted PASS, and it
+              did.
+              Trigger fix still holds: the tag push fired Release ONLY. No
+              duplicate Check, no Lint. Same as dev.35, now with a second
+              job in front of it.
+
+              RELEASE SEQUENCE 0.1.0-dev.36 CLOSED AND SHIPPED.
 
 ### SECURITY REVIEW of the dev.36 diff -- shown to the user 2026-09-15
 Deliberate authorisation widening, NOT a finding, but the thing to look at

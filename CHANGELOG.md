@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.1.0-dev.37 — 2026-09-15
+
+### Security
+
+- **Login can no longer be used to exhaust the server's memory.** Every password
+  check runs scrypt, which is deliberately memory-hard (~128 MB per call). The
+  login rate limiter counts *failed* attempts, and a failure is only recorded
+  after the hash runs — so a burst of simultaneous login requests all passed the
+  limiter at once and each allocated in parallel, and enough of them at once
+  could take the host down (measured: 40 concurrent unauthenticated requests
+  drove one instance from 85 MB to 1.14 GB). A single gate now caps how many
+  password hashes run at once across the whole app (default 4, override with
+  `PCAP_SCRYPT_CONCURRENCY`); excess requests wait their turn rather than each
+  grabbing memory. The scrypt cost itself is unchanged — only its concurrency is
+  bounded. `docker-compose.yml` also documents a `mem_limit` as a second line of
+  defence.
+- **Two people registering the first account at the same instant can no longer
+  both become admin.** Bootstrap registration checked "are there any users yet"
+  and then, after the slow password hash, inserted — a window several concurrent
+  requests could pass together, each creating an admin. The check and the insert
+  are now a single atomic statement: exactly one wins, the rest are told
+  registration is closed.
+- **The running version is no longer disclosed to a password-only session.** It
+  was returned to any session that had passed the password but not yet confirmed
+  TOTP — the same threshold the version is otherwise withheld from, since it
+  tells whoever holds it which build to match advisories against. It is now gated
+  on both factors, like every other sensitive field.
+- **API responses are marked `Cache-Control: no-store`.** They carry per-user
+  state that must not sit in a shared or on-disk cache.
+- An internal envelope-header length check in the crypto layer is now a real
+  check rather than an `assert` (which `python -O` strips).
+
+### Fixed
+
+- **You can now scan and accept a host's keys as an explicit step while adding a
+  server.** Accepting fingerprints before adding was reachable only as a reactive
+  prompt after pressing **Add** — so **Test connection** and **Check
+  prerequisites**, the natural "verify before I commit" buttons, dead-ended on an
+  untrusted host with a message that (wrongly, since dev.36) said an admin had to
+  trust it under Admin → Known hosts. The add form now has a **Scan & accept host
+  key** button: it scans, shows the fingerprints for review, and holds the ones
+  you accept so that Add, Test connection and Check prerequisites all work
+  against a host that has never been trusted. The keys are pinned only long
+  enough for a probe and rolled back afterwards, so nothing is stored unless a
+  server row is actually created — the same no-orphan rule the add path already
+  followed. The stale admin-only message is gone.
+
 ## 0.1.0-dev.36 — 2026-09-15
 
 ### Security

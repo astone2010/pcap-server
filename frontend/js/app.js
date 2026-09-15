@@ -1009,16 +1009,59 @@ function showAddServer() {
             <div class="form-group">${sshKeyPicker("new-srv", keys)}</div>
             <div class="form-group">${sudoOption("new-srv-sudo", false)}</div>
             <div class="form-actions">
+                <button class="btn btn-sm btn-secondary" data-action="scan-accept-keys"
+                        title="Scan this host for its SSH host keys, review the fingerprints, and accept them. Nothing connects to a host until its identity is pinned.">Scan &amp; accept host key</button>
                 <button class="btn btn-sm btn-primary" data-action="add-server">Add server</button>
                 <button class="btn btn-sm btn-secondary" data-action="probe-test">Test connection</button>
                 <button class="btn btn-sm btn-secondary" data-action="probe-prereq">Check prerequisites</button>
             </div>
+            <div id="host-key-status" style="margin-top:6px;font-size:0.8125rem" role="status" aria-live="polite"></div>
             <div id="add-server-error" class="error-msg"></div>
             <div id="server-test-result" style="margin-top:8px;font-size:0.8125rem"></div>
             <div id="prereq-result"></div>
         `;
+        // A fresh form trusts nothing yet: any keys accepted for a previous
+        // add attempt must not leak onto this one.
+        pendingAddKeys = null;
         bindUsernamePicker("new-srv");
     });
+}
+
+// Host keys the user reviewed and accepted with 'Scan & accept host key',
+// held here until they add/test/check the server -- never pinned server-side on
+// their own, so an abandoned form leaves no trust behind (the no-orphan rule
+// add_server documents). Keyed to the endpoint they were accepted for, so
+// editing the hostname or port after accepting discards them rather than
+// pinning one host's keys against another.
+let pendingAddKeys = null;
+
+function acceptedKeysFor(endpoint) {
+    return pendingAddKeys && pendingAddKeys.endpoint === endpoint ? pendingAddKeys.keys : null;
+}
+
+async function scanAcceptKeys() {
+    const status = $("host-key-status");
+    const host = $("new-srv-host").value.trim();
+    if (!host) {
+        status.innerHTML = `<span style="color:var(--danger)">Enter a hostname or IP first.</span>`;
+        return;
+    }
+    const endpoint = `${host}:${parseInt($("new-srv-port").value) || 22}`;
+    status.innerHTML = `<span class="spinner"></span> Asking ${escHtml(endpoint)} for its host keys...`;
+    try {
+        const keys = await reviewHostKeys(endpoint, "/api/host-keys/scan");
+        if (!keys) {
+            pendingAddKeys = null;
+            status.innerHTML = `<span style="color:var(--text-muted)">Not accepted -- nothing will be trusted for ${escHtml(endpoint)}.</span>`;
+            return;
+        }
+        pendingAddKeys = { endpoint, keys };
+        status.innerHTML = `<span style="color:var(--success)">✓ ${keys.length} host key(s) accepted for ${escHtml(endpoint)} `
+            + `— they will be pinned when you add, test, or check this server.</span>`;
+    } catch (e) {
+        pendingAddKeys = null;
+        status.innerHTML = `<span style="color:var(--danger)">Could not scan ${escHtml(endpoint)}: ${escHtml(e.message)}</span>`;
+    }
 }
 
 async function loadUsernames() {
@@ -1114,14 +1157,23 @@ function serverFormProblem(idPrefix) {
 // The add form's details, as the API wants them. Shared by add, test and
 // prereq so all three always probe exactly what the form says.
 function addFormServer() {
-    return {
+    const hostname = $("new-srv-host").value.trim();
+    const port = parseInt($("new-srv-port").value) || 22;
+    const body = {
         name: $("new-srv-name").value,
-        hostname: $("new-srv-host").value,
-        port: parseInt($("new-srv-port").value) || 22,
+        hostname,
+        port,
         username: usernameValue("new-srv"),
         ssh_key_name: $("new-srv-key").value,
         use_sudo: $("new-srv-sudo").checked,
     };
+    // Keys accepted via 'Scan & accept host key' ride along with add, test and
+    // check, so all three can reach a host that has never been trusted. Only
+    // when they were accepted for this exact endpoint -- editing the host or
+    // port after accepting drops them rather than pinning the wrong host's keys.
+    const accepted = acceptedKeysFor(`${hostname}:${port}`);
+    if (accepted) body.host_keys = accepted;
+    return body;
 }
 
 async function probeTest() {
@@ -1138,7 +1190,9 @@ async function probeTest() {
             method: "POST", body: JSON.stringify(addFormServer()),
         }));
     } catch (e) {
-        el.innerHTML = `<span style="color:var(--danger)">Failed: ${escHtml(e.message)}</span>`;
+        el.innerHTML = e.code === "host_not_trusted"
+            ? `<span style="color:var(--danger)">${escHtml(e.message)} Use <strong>Scan &amp; accept host key</strong> above, then test again.</span>`
+            : `<span style="color:var(--danger)">Failed: ${escHtml(e.message)}</span>`;
     }
 }
 
@@ -1156,7 +1210,9 @@ async function probePrereq() {
             method: "POST", body: JSON.stringify(addFormServer()),
         }));
     } catch (e) {
-        box.innerHTML = `<div class="prereq-error">${escHtml(e.message)}</div>`;
+        box.innerHTML = e.code === "host_not_trusted"
+            ? `<div class="prereq-error">${escHtml(e.message)} Use <strong>Scan &amp; accept host key</strong> above, then check again.</div>`
+            : `<div class="prereq-error">${escHtml(e.message)}</div>`;
     }
 }
 
@@ -6022,6 +6078,7 @@ function initEventDelegation() {
         "prereq-check": (id) => prereqCheck(id),
         "remove-server": (id) => removeServer(id),
         "add-server": () => addServer(),
+        "scan-accept-keys": () => scanAcceptKeys(),
         "probe-test": () => probeTest(),
         "probe-prereq": () => probePrereq(),
         "edit-server": (id) => editServer(id),

@@ -608,3 +608,76 @@ def test_repointing_a_server_at_a_new_host_drops_its_verification(api_client, si
 
     row = main.db.get_active_server(server_id, signed_in)
     assert row["kernel_verified_at"] == ""
+
+
+# --- accepting host keys before adding: Test/Check from the add form ---------
+
+
+@pytest.fixture()
+def host_not_trusted(monkeypatch):
+    """The real refusal for a host with no stored keys, as _connect raises it."""
+    from backend.ssh_manager import HostNotTrusted
+
+    async def test_connection(auth):
+        raise HostNotTrusted(
+            f"{auth.hostname}:{auth.port} has no trusted host keys yet, so its "
+            "identity cannot be checked."
+        )
+
+    monkeypatch.setattr(main.ssh_manager, "test_connection", test_connection)
+
+
+def test_probe_test_on_untrusted_host_is_a_structured_refusal(
+    api_client, signed_in, a_key, host_not_trusted
+):
+    """Test connection on a host whose keys are not pinned yet returns a code the
+    add form can act on -- pointing the user at 'Scan & accept host key' -- not a
+    bare 502, and not the old admin-only message."""
+    resp = api_client.post("/api/probe/test", json=_add_body())
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["code"] == "host_not_trusted"
+    assert "admin" not in str(detail).lower()
+    assert main.db.get_known_hosts(HOST, 22) == []
+
+
+def test_probe_test_with_accepted_keys_pins_them_transiently(
+    api_client, signed_in, a_key, monkeypatch
+):
+    """Keys accepted in the form let the probe reach a host that has never been
+    trusted -- pinned for the duration of the connection and forgotten again
+    after, so no orphan is left behind (the same invariant add_server keeps)."""
+    seen = {}
+
+    async def test_connection(auth):
+        # The keys must be in place *during* the connection...
+        seen["during"] = main.db.get_known_hosts(auth.hostname, auth.port)
+        return {"boot_id": "11111111-2222-3333-4444-555555555555"}
+
+    monkeypatch.setattr(main.ssh_manager, "test_connection", test_connection)
+
+    resp = api_client.post("/api/probe/test", json=_add_body(host_keys=_accepted_keys()))
+
+    assert resp.status_code == 200
+    assert len(seen["during"]) == 1                       # pinned while probing
+    assert main.db.get_known_hosts(HOST, 22) == []        # ...and rolled back after
+
+
+def test_probe_with_accepted_keys_leaves_an_already_trusted_endpoint_alone(
+    api_client, signed_in, a_key, monkeypatch
+):
+    """If the endpoint is already trusted, the transient pin is a no-op: the
+    stored keys are used and must survive the probe, never forgotten by it."""
+    main.ssh_manager.store_host_keys(HOST, 22, [{"key_type": "ssh-ed25519", "host_key": ED25519_BLOB}], signed_in)
+    before = main.db.get_known_hosts(HOST, 22)
+    assert before
+
+    async def test_connection(auth):
+        return {"boot_id": "11111111-2222-3333-4444-555555555555"}
+
+    monkeypatch.setattr(main.ssh_manager, "test_connection", test_connection)
+
+    resp = api_client.post("/api/probe/test", json=_add_body(host_keys=_accepted_keys(OTHER_BLOB)))
+
+    assert resp.status_code == 200
+    assert main.db.get_known_hosts(HOST, 22) == before    # untouched

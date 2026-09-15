@@ -28,11 +28,11 @@ from backend.auth import (
     generate_qr_data_uri,
     generate_totp_secret,
     get_totp_uri,
-    hash_password,
+    hash_password_async,
     needs_rehash,
     validate_session,
-    verify_absent_user,
-    verify_password,
+    verify_absent_user_async,
+    verify_password_async,
     verify_totp,
 )
 from backend.capture import (
@@ -61,6 +61,7 @@ from backend.models import (
     ServerAuth,
     ServerCreate,
     ServerInfo,
+    ServerProbe,
     UsernameRequest,
 )
 from backend.packet_parser import (
@@ -92,7 +93,12 @@ from backend.sanitizer import (
     check_capture,
     stream_sanitized_pcap,
 )
-from backend.ssh_manager import SSHManager, host_key_fingerprint, resolve_key_path
+from backend.ssh_manager import (
+    HostNotTrusted,
+    SSHManager,
+    host_key_fingerprint,
+    resolve_key_path,
+)
 from backend.tls import INSECURE_ALLOWED_PATHS as TLS_INSECURE_ALLOWED_PATHS
 from backend.tls import TlsManager, build_router as build_tls_router
 from backend.vault import CaptureVault, StartupRefused
@@ -104,7 +110,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.36"
+APP_VERSION = "0.1.0-dev.37"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -499,6 +505,12 @@ async def security_headers(request: Request, call_next):
     response = await call_next(request)
     for header, value in _SECURITY_HEADERS.items():
         response.headers.setdefault(header, value)
+    # API responses carry per-user data -- server lists, capture metadata, auth
+    # state -- that must not sit in a shared or disk cache. setdefault, so a
+    # route that deliberately sets its own Cache-Control (none do today) still
+    # wins; static assets are served by their own handler and are untouched.
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
     # HSTS only where TLS is genuinely in use. Sending it over plain HTTP is
     # ignored by browsers, and sending it from a LAN deployment that later
     # cannot do TLS would lock users out of their own tool.
@@ -604,6 +616,14 @@ async def auth_status(request: Request):
         if auth.startswith("Bearer "):
             token = auth[7:]
     user = validate_session(db, token) if token else None
+    # Both factors, not just the first. validate_session proves the password
+    # only; the version string is withheld until TOTP is confirmed too, for the
+    # same reason it is withheld from anonymous callers -- it tells whoever holds
+    # it which build to match advisories against, and a password-only session
+    # (a stolen or guessed password, no second factor) is exactly the threshold
+    # that gate is meant to sit above. Every other sensitive route already
+    # requires get_current_user (both factors); this field now matches.
+    full_auth = user is not None and bool(user["totp_confirmed"])
     return {
         "has_users": has_users,
         # The flag actually applied, not the variable. With built-in HTTPS the
@@ -622,8 +642,8 @@ async def auth_status(request: Request):
         "encryption": vault.status() if user else {
             "enabled": vault.enabled, "locked": vault.locked,
         },
-        "version": APP_VERSION if user else "",
-        "release_notes_url": f"{REPO_URL}/releases/tag/v{APP_VERSION}" if user else "",
+        "version": APP_VERSION if full_auth else "",
+        "release_notes_url": f"{REPO_URL}/releases/tag/v{APP_VERSION}" if full_auth else "",
         "authenticated": user is not None,
         "user": {
             "username": user["username"],
@@ -645,8 +665,15 @@ async def register(req: RegisterRequest, response: Response):
         raise HTTPException(409, "username taken")
 
     user_id = str(uuid.uuid4())
-    pw_hash = await asyncio.to_thread(hash_password, req.password)
-    db.create_user(user_id, req.username, pw_hash, is_admin=True)
+    pw_hash = await hash_password_async(req.password)
+    # Atomic: creates the first user as admin only if the table is still empty.
+    # The user_count() check above is a fast, friendly early-out; THIS is the
+    # guard that holds under concurrency. Without it, several registrations
+    # racing during the slow password hash each saw an empty table and each
+    # became admin -- so an attacker firing a burst alongside the operator's own
+    # first registration got an admin account of their own.
+    if not db.create_first_user(user_id, req.username, pw_hash):
+        raise HTTPException(403, "registration closed -- ask an admin to create your account")
 
     token, expires = create_session_token(db, user_id)
     _set_session_cookie(response, token)
@@ -661,15 +688,13 @@ async def login(req: LoginRequest, request: Request, response: Response):
 
     user = db.get_user_by_username(req.username)
     if user:
-        password_ok = await asyncio.to_thread(
-            verify_password, req.password, user["password_hash"]
-        )
+        password_ok = await verify_password_async(req.password, user["password_hash"])
     else:
         # Deliberately does the same scrypt work as a real verification.
         # `bool(user) and verify_password(...)` short-circuited, so an unknown
         # username answered in microseconds where a real one took ~100 ms --
         # a username oracle measurable from anywhere that can reach /login.
-        password_ok = await asyncio.to_thread(verify_absent_user, req.password)
+        password_ok = await verify_absent_user_async(req.password)
     if not password_ok:
         rate_limiter.record_failure(client_ip)
         raise HTTPException(401, "invalid credentials")
@@ -697,7 +722,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
     # to change anything.
     if needs_rehash(user["password_hash"]):
         db.update_password_hash(
-            user["id"], await asyncio.to_thread(hash_password, req.password)
+            user["id"], await hash_password_async(req.password)
         )
         logger.info("upgraded password hash cost for %s", user["username"])
 
@@ -753,7 +778,7 @@ async def admin_create_user(req: RegisterRequest, user: dict = Depends(require_a
     if db.get_user_by_username(req.username):
         raise HTTPException(409, "username taken")
     user_id = str(uuid.uuid4())
-    db.create_user(user_id, req.username, await asyncio.to_thread(hash_password, req.password))
+    db.create_user(user_id, req.username, await hash_password_async(req.password))
     return {"ok": True, "user_id": user_id}
 
 
@@ -1378,6 +1403,42 @@ def _pin_reviewed_keys(hostname: str, port: int, keys, user_id: str) -> list[dic
     return fingerprints
 
 
+@asynccontextmanager
+async def _transient_host_keys(hostname: str, port: int, host_keys, user_id: str):
+    """Pin reviewed keys just long enough to probe a not-yet-created server.
+
+    The add form's 'Scan & accept host key' step hands the accepted keys to Test
+    connection and Check prerequisites so they can reach a host that has never
+    been trusted. Same no-orphan invariant as add_server: keys pinned here for an
+    endpoint that had none are always forgotten again on the way out, because no
+    row references them. An endpoint that is already trusted is left untouched --
+    the probe uses what is stored, and this pins and forgets nothing.
+    """
+    pinned = False
+    if host_keys and not db.get_known_hosts(hostname, port):
+        _pin_reviewed_keys(hostname, port, host_keys, user_id)
+        pinned = True
+    try:
+        yield
+    finally:
+        if pinned:
+            forgotten = db.forget_known_host(hostname, port)
+            logger.info(
+                "rolled back %d transient host key(s) for %s:%d after a probe",
+                forgotten, hostname, port,
+            )
+
+
+def _host_not_trusted_error(exc: HostNotTrusted) -> HTTPException:
+    """Structured so the add form can send the user to 'Scan & accept host key'
+    rather than showing a bare failure."""
+    return HTTPException(409, {
+        "code": "host_not_trusted",
+        "reason": str(exc),
+        "remedy": "Use 'Scan & accept host key' to review and accept its fingerprints first.",
+    })
+
+
 async def _probe_before_create(auth: ServerAuth) -> tuple[str, str]:
     """Connect, run the self-target check, and report what was learned.
 
@@ -1584,11 +1645,15 @@ async def delete_username(username_id: str, user: dict = Depends(get_current_use
 # be discovered before it is saved, not after.
 
 @app.post("/api/probe/test")
-async def probe_test(auth: ServerAuth, user: dict = Depends(get_current_user)):
-    await _reject_self_target(auth.hostname)
-    _require_key(auth.ssh_key_name)
+async def probe_test(req: ServerProbe, user: dict = Depends(get_current_user)):
+    await _reject_self_target(req.hostname)
+    _require_key(req.ssh_key_name)
+    auth = ServerAuth(**{k: v for k, v in req.model_dump().items() if k != "host_keys"})
     try:
-        result = await ssh_manager.test_connection(auth)
+        async with _transient_host_keys(req.hostname, req.port, req.host_keys, user["id"]):
+            result = await ssh_manager.test_connection(auth)
+    except HostNotTrusted as exc:
+        raise _host_not_trusted_error(exc)
     except ConnectionError as exc:
         raise HTTPException(502, str(exc))
     except FileNotFoundError as exc:
@@ -1604,17 +1669,21 @@ async def probe_test(auth: ServerAuth, user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/probe/prereq-check")
-async def probe_prereq_check(auth: ServerAuth, user: dict = Depends(get_current_user)):
-    await _reject_self_target(auth.hostname)
-    _require_key(auth.ssh_key_name)
+async def probe_prereq_check(req: ServerProbe, user: dict = Depends(get_current_user)):
+    await _reject_self_target(req.hostname)
+    _require_key(req.ssh_key_name)
+    auth = ServerAuth(**{k: v for k, v in req.model_dump().items() if k != "host_keys"})
     try:
-        result = await ssh_manager.check_prerequisites(auth)
+        async with _transient_host_keys(req.hostname, req.port, req.host_keys, user["id"]):
+            result = await ssh_manager.check_prerequisites(auth)
+    except HostNotTrusted as exc:
+        raise _host_not_trusted_error(exc)
     except ConnectionError as exc:
         raise HTTPException(502, str(exc))
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc))
     except Exception:
-        logger.exception("prerequisite check failed for %s", auth.hostname)
+        logger.exception("prerequisite check failed for %s", req.hostname)
         raise HTTPException(502, "prerequisite check failed")
 
     finding = describe_if_same_kernel(result["facts"].get("boot_id", ""))

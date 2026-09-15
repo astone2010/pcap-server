@@ -20,6 +20,16 @@ from backend.models import ServerAuth
 
 logger = logging.getLogger(__name__)
 
+
+class HostNotTrusted(ConnectionError):
+    """The endpoint has no pinned host keys, so its identity cannot be checked.
+
+    A ConnectionError subclass so every existing `except ConnectionError`
+    handler still catches it unchanged; the distinct type lets the routes that
+    can do something about it (the add-form probes) recognise it and point the
+    caller at 'Scan & accept host key' rather than surfacing a bare failure.
+    """
+
 # asyncssh's login_timeout covers authentication only -- it starts once the TCP
 # connection is up. connect_timeout is the one that bounds the whole outbound
 # attempt, and asyncssh disables it by default, "relying on the system's default
@@ -339,10 +349,10 @@ class SSHManager:
             #
             # No chicken and egg: trusting a host goes through ssh-keyscan in
             # scan_host_keys(), which does not come through here.
-            raise ConnectionError(
-                f"{server.hostname}:{server.port} has no trusted host keys, so its "
-                "identity cannot be checked. An admin must trust it under "
-                "Admin > Known Hosts before it can be used."
+            raise HostNotTrusted(
+                f"{server.hostname}:{server.port} has no trusted host keys yet, so "
+                "its identity cannot be checked. Its host keys must be scanned and "
+                "accepted before it can be used."
             )
 
         try:

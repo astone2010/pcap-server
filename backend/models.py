@@ -311,6 +311,20 @@ class ServerCreate(ServerAuth):
     add_unverified: bool = False
 
 
+class ServerProbe(ServerAuth):
+    """Testing or checking a host from the add form, before any row exists.
+
+    Carries the keys the user accepted with 'Scan & accept host key' so the
+    probe can connect to an as-yet-untrusted host. They are pinned only for the
+    duration of the probe and forgotten again on the way out (no row references
+    them), so the same no-orphan invariant ServerCreate documents holds here.
+    Empty means the endpoint is already trusted, or the caller has not accepted
+    anything yet -- in which case an untrusted host is refused, as before.
+    """
+
+    host_keys: list[KnownHostKey] = Field(default_factory=list, max_length=8)
+
+
 class ServerInfo(ServerAuth):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     # PRETTY_NAME from the host's /etc/os-release, as of the last prerequisite

@@ -228,7 +228,7 @@ cd /opt/docker/pcapserver
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.36/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.37/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -329,7 +329,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.36` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.37` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -345,7 +345,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcapserver
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.36/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.37/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -374,13 +374,16 @@ changes something, and none of them work over plain HTTP.
    pcap-server runs on records pcap-server's own traffic, including your
    sign-in, so it is refused — see
    [Adding a server](docs/target-hosts.md#adding-a-server).
-3. **Accept the host's keys, which Add asks for on the way in.** Nothing can
-   connect to a host whose identity is not pinned, and the check that this is
-   not the machine pcap-server runs on needs a connection — so the fingerprints
-   come first, and the server is created after the host has answered. If the
-   host is already trusted because another server points at it, you are not
-   asked. (An existing server can be trusted later with the **Trust host**
-   button on it; admins can also work from Admin → Known hosts.)
+3. **Accept the host's keys.** Nothing can connect to a host whose identity is
+   not pinned, and the check that this is not the machine pcap-server runs on
+   needs a connection — so the fingerprints come first. Two ways: press **Scan &
+   accept host key** to review and accept them as an explicit step (which then
+   lets **Test connection** and **Check prerequisites** run before you commit),
+   or just press **Add**, which asks on the way in if the host is not trusted
+   yet. Either way the server is created after the host has answered. If the host
+   is already trusted because another server points at it, you are not asked. (An
+   existing server can be trusted later with the **Trust host** button on it;
+   admins can also work from Admin → Known hosts.)
 
    You are shown each key's SHA256 fingerprint and asked to accept before
    anything is pinned. Compare them against the host itself first — on the

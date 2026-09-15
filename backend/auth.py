@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import io
+import os
 import secrets
 import time
 import uuid
@@ -174,6 +176,49 @@ def verify_absent_user(password: str) -> bool:
     """Always False, at the same cost as verifying a real account."""
     verify_password(password, _ABSENT_USER_HASH)
     return False
+
+
+# Every scrypt hash or verify below allocates ~256 MB (maxmem at N=2**17) and
+# takes ~100 ms. Each call runs in a worker thread via asyncio.to_thread, and the
+# default executor will run min(32, cpu+4) of them at once -- so an unauthenticated
+# flood of logins pins gigabytes at a stroke. The login rate limiter does not stop
+# it: that counts *failures*, and a failure is only recorded AFTER the hash, so N
+# simultaneous first requests all pass the lock check and all allocate before any
+# of them counts.
+#
+# This semaphore is the bound the rate limiter is not. It caps how many scrypt
+# operations run at once across every caller and entry point; excess requests wait
+# their turn rather than each grabbing 256 MB. Every password hash/verify in the
+# app goes through the three wrappers below, so a new auth route cannot reintroduce
+# the flood by calling asyncio.to_thread(hash_password, ...) directly.
+#
+# Both login branches (real user and absent user) acquire the same gate, so the
+# constant-time property that verify_absent_user exists for is preserved under
+# load: neither path can drain a pool the other is starved of.
+def _scrypt_concurrency() -> int:
+    try:
+        value = int(os.environ.get("PCAP_SCRYPT_CONCURRENCY", "4"))
+    except ValueError:
+        return 4
+    return value if value >= 1 else 4
+
+
+_scrypt_gate = asyncio.Semaphore(_scrypt_concurrency())
+
+
+async def hash_password_async(password: str) -> str:
+    async with _scrypt_gate:
+        return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, stored: str) -> bool:
+    async with _scrypt_gate:
+        return await asyncio.to_thread(verify_password, password, stored)
+
+
+async def verify_absent_user_async(password: str) -> bool:
+    async with _scrypt_gate:
+        return await asyncio.to_thread(verify_absent_user, password)
 
 
 def hash_token(token: str) -> str:

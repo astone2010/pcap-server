@@ -104,7 +104,7 @@
 
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.36
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.37
     ports:
       - "8080:8080"
     volumes:
@@ -157,6 +157,16 @@ services:
     secrets:
       - pcap_master_key
     restart: unless-stopped
+    # Defence in depth against a memory spike. Each password verification runs
+    # scrypt, which is deliberately memory-hard (~128 MB per call); the app caps
+    # how many run at once (PCAP_SCRYPT_CONCURRENCY, default 4), so the login
+    # path alone stays well under this. A hard ceiling here means that even an
+    # unforeseen allocation path cannot take the host down with it -- the
+    # container is killed and restarted instead. Uncomment and size it above your
+    # real peak: the baseline is well under 200 MB, but parsing a very large
+    # capture with tshark can spike transiently, so leave generous headroom (a
+    # limit set too low will OOM-kill a legitimate large-capture view).
+    # mem_limit: 1g
 
 secrets:
   pcap_master_key:

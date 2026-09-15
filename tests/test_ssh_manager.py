@@ -798,16 +798,23 @@ def test_connect_refuses_a_host_with_no_trusted_keys(manager, monkeypatch):
     assert "target.example:22" in str(exc.value)
 
 
-def test_refusal_names_where_to_trust_the_host(manager):
+def test_refusal_tells_the_operator_to_scan_and_accept(manager):
     """The message is the only thing standing between the operator and a
-    connection that simply does not work."""
+    connection that simply does not work -- so it must name the action that
+    fixes it. Since dev.36 that action is non-admin (Scan & accept host key in
+    the add form), so the message must NOT send them to the admin-only Known
+    Hosts screen, which is what it wrongly said before."""
+    from backend.ssh_manager import HostNotTrusted
+
     _plaintext_key(manager)
     manager._db = StubKnownHostsDB([])
 
-    with pytest.raises(ConnectionError) as exc:
+    with pytest.raises(HostNotTrusted) as exc:
         asyncio.run(manager._connect(_server()))
 
-    assert "Known Hosts" in str(exc.value)
+    message = str(exc.value)
+    assert "scanned and accepted" in message
+    assert "admin" not in message.lower()
 
 
 def test_a_mismatched_host_key_is_not_reported_as_a_setup_step(manager, monkeypatch):

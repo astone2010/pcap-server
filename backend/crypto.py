@@ -130,7 +130,12 @@ class Cryptor:
             raise ValueError(f"DEK must be {DEK_LEN} bytes, got {len(dek)}")
         nonce, wrapped = self._wrap_dek(dek)
         header = MAGIC + self.kek_id + nonce + wrapped
-        assert len(header) == HEADER_LEN, len(header)
+        # Not an assert: asserts strip under `python -O`, and a header of the
+        # wrong length must never be written silently. This is an internal
+        # invariant on bytes we just assembled, so it should be unreachable --
+        # which is exactly why it raises rather than vanishes under -O.
+        if len(header) != HEADER_LEN:
+            raise ValueError(f"envelope header must be {HEADER_LEN} bytes, got {len(header)}")
         return header
 
     def _build_header(self) -> tuple[bytes, AESGCM]:
