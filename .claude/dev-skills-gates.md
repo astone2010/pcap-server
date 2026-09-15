@@ -198,10 +198,54 @@ IMPLEMENTATION DONE (uncommitted):
                 check" with the boot-id paragraph directly under it. app.js's
                 standing warning no longer claims the LAN address is
                 invisible, because it is not.
-📦 RELEASE    ⏳ branch synced (0 ahead, 0 behind at session start).
+📦 RELEASE    ✅ branch synced before staging (git fetch; 0 ahead, 0 behind).
                 PR ➖ N/A -- no PRs until 1.0, branch canonical (memory
-                release-process; user 2026-09-15). Commit not yet approved.
-🚀 SHIP       ⬜
+                release-process; user 2026-09-15), as dev.27-34.
+                Commit 2916f09, approved by the user ("commit and push") and
+                executed by Claude at their explicit instruction rather than
+                presented, as dev.34. 21 files, +1156/-70; staged list reviewed
+                before commit (no keys, no .env, no capture data). Pushed;
+                ls-remote -> 2916f09.
+                Git identity was already set this time (the user's repo-scoped
+                config from dev.34 survived), so no repeat of that failure.
+                CI on the branch push: Check 34983013960 success (8m13s), Lint
+                workflows 34983013974 success (8s). Both correct on a branch
+                push -- lint fires because .github/workflows/** changed.
+                Release notes drafted and shown; awaiting approval.
+🚀 SHIP       ✅ SHIPPED 2026-09-15. Tag block handed to the user and run by
+                them; never executed here (SKILL.md 5.8). Four post-ship
+                checks, all verified:
+                 * tag v0.1.0-dev.35 on the remote -> 2916f09, the same commit
+                   branch Check passed on.
+                 * Release run 34984099369 success (1m17s). GitHub release
+                   v0.1.0-dev.35 (Dev), prerelease, published
+                   2026-09-15T14:49:19Z. Approved notes applied with
+                   gh release edit (2653 chars, replacing release.yml's auto
+                   compare link).
+                 * PR ➖ N/A -- no PRs before 1.0.
+                 * Artifact is the image, not a release asset (0 assets is
+                   correct here): ghcr :0.1.0-dev.35 and :dev share one real
+                   digest sha256:fd6f20215301aac770252e2673116177523872c95b70
+                   66636fcd0a9f57c0a41f. Cross-check: :0.1.0-dev.34 still
+                   reads sha256:00738f77... exactly as this file recorded it
+                   last session, so the digest lookup is sound.
+                   NOTE for next time: `gh api /user/packages/...` returns 403
+                   (token lacks read:packages). The digests above came from
+                   the anonymous registry API instead -- get a pull token from
+                   ghcr.io/token?scope=repository:<owner>/<repo>:pull, then
+                   HEAD the manifest with an OCI/Docker Accept header and read
+                   docker-content-digest. No extra scope needed.
+                 * THE CI FIX IS PROVEN, and tag time was the only place it
+                   could be: the v0.1.0-dev.35 tag push fired Release ONLY.
+                   dev.34's tag push fired Release AND Lint workflows (run
+                   34977747554 on ref v0.1.0-dev.34) -- both still visible in
+                   gh run list, side by side.
+                RELEASE SEQUENCE 0.1.0-dev.35 CLOSED AND SHIPPED.
+
+## Uncommitted at close: this file's dev.35 ship record
+Same as every prior release -- the ship record cannot be inside the commit it
+describes. It gets swept into the next release's commit, as dev.34's was into
+2916f09.
 
 ## Session opened 2026-09-15 (local CLI, Debian 13, zsh, dev-skills 2.18.0)
 Re-derived from evidence (SKILL.md S2), not trusted from the prior entry below.
