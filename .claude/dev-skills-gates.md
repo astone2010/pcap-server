@@ -1,5 +1,90 @@
 # Dev Skills gate state
 
+## ADD-SERVER / HOST-KEY AUDIT — 2026-09-15, asked for by the user
+"audit the entire add server process... clunky... still have issues with the
+key hosts" then "fully review the add server flow with the host keys... Check
+all iterations of the process to find flaws."
+
+USER'S TARGET DESIGN, stated by them, not inferred:
+ "Before clicking add on the server, ANY of the action buttons should ask for
+  the host keys and then store them ephemeral until the user adds."
+So Test connection and Check prerequisites must gather keys the same way Add
+does, hold them client-side, and only Add persists. Backend ALREADY supports
+this (_transient_host_keys, main.py:1405, pins-probes-forgets; pendingAddKeys,
+app.js:1036, is already the endpoint-keyed ephemeral slot). The gap is entirely
+in the frontend: probeTest/probePrereq never gather.
+
+USER-REPORTED BUG, reproduced and root-caused:
+ "when the key is forgotten the trust icon on the server page does not change"
+ROOT CAUSE: the detail pane's header pills (app.js:783-794) are WRITE-ONCE.
+selectServer draws them on click; nothing redraws them. Three symptoms:
+  a) Admin -> Known hosts Forget/Delete/Purge call loadAdminKnownHosts() ONLY.
+     loadServers() is never called (app.js:6002, 5952, 6008) -> activeServers
+     keeps a stale host_trusted.
+  b) List -> Trust host DOES call loadServers() (app.js:759) -- pill still
+     stale, because the pane is not redrawn.
+  c) Detail -> Check prerequisites calls loadServers() then refreshes ONLY
+     #server-os (app.js:862-866), under a comment saying a full re-render
+     "would throw away the results just drawn above it". Intent right, scope
+     too narrow: Check prerequisites is the very action that flips verified
+     false->true, so the fix reports success and the pane still reads
+     "Never checked".
+FIX SHAPE: a targeted renderServerDetailPills(srv) touching the header + the
+blocked-why banner only (preserving what that comment protects), plus
+loadServers() on the three admin handlers.
+
+EVERY ITERATION, trust asked for or not (verified by reading each handler):
+ 1 Add form / Add server        ✅ prompts (POST->400->scan->confirm->POST)
+ 2 Add form / Test connection   ❌ fails host_not_trusted, tells you to press #4
+ 3 Add form / Check prereqs     ❌ same
+ 4 Add form / Scan & accept     ✅ explicit -- REDUNDANT with #1
+ 5 Edit form / Save changes     ❌ NO key step at all. New endpoint silently
+                                   untrusted; old endpoint's keys ORPHANED
+ 6 Detail / Test connection     ❌ bare "Failed: msg" (app.js:1332), no hint,
+                                   inconsistent with #2 which does hint
+ 7 Detail / Check prerequisites ❌ bare error
+ 8 Detail / Start capture       ❌ refused
+ 9 List row / Trust host        ✅ prompts, but pill stale after (b above)
+10 Admin / Known hosts          ✅ works, never refreshes the Servers tab
+
+OTHER FLAWS FOUND (all verified in source, none fixed yet):
+ * EDIT ORPHANS KEYS. update_server (main.py:1586) never refcounts the endpoint
+   it left. remove_server (main.py:1492) is the ONLY caller of
+   count_servers_for_endpoint. Repoint host1->host2 and host1's keys stay
+   pinned with nothing referencing them -- the exact orphan class the dev.36
+   Admin purge button exists to mop up, manufactured by the edit path. No test
+   covers it (grepped tests/).
+ * TWO ERROR CODES FOR ONE CONDITION: add_server raises host_keys_required,
+   the probes raise host_not_trusted. Every caller must know both.
+ * STALE "✓ accepted" LINE. scanAcceptKeys writes #host-key-status
+   (app.js:1042). There is NO listener on new-srv-host / new-srv-port --
+   checked every reference. Edit the host after accepting and acceptedKeysFor
+   (app.js:1038) correctly drops the keys (endpoint-keyed) while the green
+   "✓ accepted for old:22" stays on screen. Add then re-scans and re-prompts,
+   reading as a failed accept.
+ * FINGERPRINT REVIEW IS window.confirm() (app.js:5907). The one decision in
+   the product that needs a human to compare 43 base64 chars, in an
+   unstyleable proportional-font dialog that cannot be made monospace, cannot
+   be copied out of, and blocks the page so the host cannot be consulted. If
+   every action button now routes through it (the user's design), it gets
+   pressed MORE -- so it wants to become a real in-page modal: monospace, copy
+   button, paste-the-expected-value box that diffs.
+ * FOUR PEER BUTTONS, NO ORDER (app.js:1012-1019). Only Add is btn-primary.
+   The user's design collapses this to three in a real order and deletes #4.
+ * 409 ON trust-host (main.py:1333) tells the user "an admin has to forget the
+   old keys". If theirs is the ONLY server at that endpoint, deleting it
+   forgets them via the refcount -- self-service exists and the message hides
+   it. Common case on a rebuilt host.
+ * ONE MACHINE, TWO TRUST RECORDS: known_hosts is UNIQUE(hostname, port), so
+   foo.local:22 and 192.168.1.5:22 are separate decisions for one box.
+   Inherent to the design and defensible; nothing in the UI hints at it.
+
+SOUND, checked and NOT a finding: the no-orphan invariant in add_server's
+finally (main.py:1258); kernel_verified_at / os_name / self_target_reason all
+correctly cleared on endpoint change (database.py:631-640); trust-host being
+endpoint-matched and refusing to REPLACE trust; pinning what was on screen
+rather than a re-scan. The clunkiness is in the seams, not the design.
+
 ## Session opened 2026-09-15 #5 — WORK COMMIT: CI bundle M2/M3/M4
 Track: WORK COMMIT (no APP_VERSION bump, no artifact, no tag). Required by
 SKILL.md S2: 🔒 SECURITY on the changed code + commit approval. VERSION / BUILD
