@@ -25,5 +25,5 @@ pydantic==2.10.3
 pydantic-settings==2.7.0
 python-multipart==0.0.32
 pyotp==2.9.0
-qrcode[pil]==8.0
+qrcode[pil]==8.2
 cryptography==50.0.1

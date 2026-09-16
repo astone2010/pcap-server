@@ -9,7 +9,7 @@
 # committed -- 929 API and 134 browser tests, no failures and no new warnings.
 # asyncio_mode = "auto" and the function-scoped fixture loop in pyproject.toml
 # are unchanged and still honoured.
-pytest==9.0.3
+pytest==9.1.1
 pytest-asyncio==1.4.0
 httpx==0.28.1
 
