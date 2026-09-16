@@ -158,6 +158,25 @@ class UsernameRequest(BaseModel):
         return validate_ssh_username(v)
 
 
+class PastedPrivateKey(BaseModel):
+    """An SSH private key typed or pasted in, rather than uploaded as a file.
+
+    The upload route takes the key's name from the filename, which a paste does
+    not have -- so the name is its own field here, validated against exactly the
+    same rule the upload applies to a filename. Nothing about the key material
+    is validated at this layer beyond a size bound: what makes a private key
+    usable is whether asyncssh can import it, which is ssh_manager's
+    normalise_private_key, not a regex.
+
+    The bound is the same 64 KB the upload route enforces. A 4096-bit RSA key is
+    about 3 KB, so this is generous by an order of magnitude and still refuses a
+    body meant to exhaust memory.
+    """
+
+    name: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._-]+$")
+    key: str = Field(min_length=1, max_length=64 * 1024)
+
+
 class KnownHostEndpoint(BaseModel):
     """The (hostname, port) pair both host-key endpoints take.
 
@@ -314,7 +333,7 @@ class ServerCreate(ServerAuth):
 class ServerProbe(ServerAuth):
     """Testing or checking a host from the add form, before any row exists.
 
-    Carries the keys the user accepted with 'Scan & accept host key' so the
+    Carries the keys the user accepted in the host key review so the
     probe can connect to an as-yet-untrusted host. They are pinned only for the
     duration of the probe and forgotten again on the way out (no row references
     them), so the same no-orphan invariant ServerCreate documents holds here.

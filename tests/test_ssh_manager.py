@@ -801,7 +801,7 @@ def test_connect_refuses_a_host_with_no_trusted_keys(manager, monkeypatch):
 def test_refusal_tells_the_operator_to_scan_and_accept(manager):
     """The message is the only thing standing between the operator and a
     connection that simply does not work -- so it must name the action that
-    fixes it. Since dev.36 that action is non-admin (Scan & accept host key in
+    fixes it. Since dev.36 that action is non-admin (the host key review in
     the add form), so the message must NOT send them to the admin-only Known
     Hosts screen, which is what it wrongly said before."""
     from backend.ssh_manager import HostNotTrusted

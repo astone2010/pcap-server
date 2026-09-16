@@ -3306,3 +3306,79 @@ body {
     color: var(--danger);
     font-size: 0.8125rem;
 }
+
+/* --- host key review dialog ---
+   The fingerprints are the whole point of this dialog, so they are the one
+   thing in it set in a monospace face at full contrast: a proportional font
+   is what made the confirm() it replaces so hard to check against, because
+   base64 in a proportional face hides exactly the transpositions you are
+   looking for. */
+.host-key-dialog { max-width: 620px; }
+
+.host-key-table { width: 100%; margin-top: 4px; }
+.host-key-table td, .host-key-table th { padding: 6px 8px; vertical-align: middle; }
+.host-key-table .host-key-fp {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    word-break: break-all;
+}
+.host-key-table .host-key-type { white-space: nowrap; color: var(--text-secondary); }
+
+/* Set by the compare box below: the row whose fingerprint the pasted value
+   matches, so the answer lands on the key itself and not only in a message. */
+.host-key-table tr.host-key-match { background: var(--success-bg, rgba(63, 185, 80, 0.12)); }
+.host-key-table tr.host-key-match .host-key-fp { color: var(--success); }
+
+.host-key-skipped { margin: 6px 0 0; color: var(--warning, #d29922); font-size: 0.8125rem; }
+
+.host-key-cmd {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 4px;
+}
+.host-key-cmd code {
+    flex: 1;
+    padding: 6px 8px;
+    background: var(--bg-input, var(--bg-primary));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+
+.host-key-compare {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 4px;
+}
+.host-key-compare input[type="text"] {
+    flex: 1;
+    padding: 6px 8px;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    background: var(--bg-input, var(--bg-primary));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.host-key-compare-result { font-size: 0.8125rem; white-space: nowrap; }
+.host-key-compare-result.is-match { color: var(--success); }
+.host-key-compare-result.is-miss { color: var(--danger); }
+
+/* --- pasted SSH private key --- */
+.key-paste-area {
+    width: 100%;
+    min-height: 120px;
+    padding: 8px;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    background: var(--bg-input, var(--bg-primary));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    resize: vertical;
+}

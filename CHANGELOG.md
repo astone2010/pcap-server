@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.1.0-dev.38 — 2026-09-15
+
+Adding a server, reviewed end to end. The host-key step was the awkward part of
+this app: four buttons in no stated order, only one of which collected
+fingerprints, and the other three failing with instructions to go back and press
+it.
+
+### Changed
+
+- **Every action button on the add form asks for host keys.** **Test
+  connection**, **Check prerequisites** and **Add server** each collect the
+  host's fingerprints the first time they need them, hold them in the page, and
+  pin them for good only when the server is added. A form you walk away from
+  still leaves no trust behind. The separate **Scan & accept host key** button is
+  gone — with all three collecting, it had nothing left to do.
+- **The fingerprint review is a real dialog.** It was a `window.confirm()`: the
+  one decision in this app that needs a human to compare 43 base64 characters,
+  rendered in a proportional font, impossible to copy out of, and blocking the
+  page you would check it against. It now shows the fingerprints in monospace
+  with a copy button each, and a **Compare a fingerprint** box — paste what the
+  host printed and the matching key lights up, ignoring the `SHA256:` prefix and
+  any stray spacing, so it compares on what the fingerprint means rather than how
+  it was copied.
+- **One error code where there were two.** An endpoint with no trusted keys now
+  always answers `409` with code `host_keys_required`, naming `hostname` and
+  `port` as their own fields. Adding a server used to answer `400
+  host_keys_required` and the probe routes `409 host_not_trusted` for the same
+  condition, so every caller had to know both. **This is a breaking API change**
+  for anything outside the UI that keyed on the old status or code.
+- **SSH keys can be pasted, not only uploaded.** Admin → SSH keys takes the key
+  text directly, which is where most people have it. Same checks, same sealing,
+  same admin-only rule as the upload.
+
+### Fixed
+
+- **Editing a server no longer orphans its old host keys.** Repointing the last
+  server at an address now forgets that address's keys, using the same
+  cross-user refcount the delete path has had since dev.36. Without it every
+  corrected typo and every host that moved left keys pinned with nothing
+  referencing them — the orphans Admin → Known hosts grew a purge button for,
+  manufactured faster than the button could clear them.
+- **The trust and "never checked" pills on a server's page update when they
+  change.** They were written once when the server was opened and never again,
+  so forgetting keys in Admin, pressing **Trust host**, and running **Check
+  prerequisites** all left them stale. The last was the worst: **Check
+  prerequisites** is the action that clears "Never checked", and it reported
+  success under a pill still saying the server had never been checked.
+  Forgetting or pinning keys from the Admin tab now refreshes the Servers tab
+  too, which it never did.
+- **An SSH key is checked when you add it, not the first time a capture needs
+  it.** A public key pasted by mistake, or a key with a passphrase — which this
+  app can never use, having nowhere to ask for one — used to be accepted and
+  then fail as an opaque SSH error on an unrelated screen. Both are refused at
+  the point of adding, by name. This covers the upload route as well, which
+  validated the filename and the size and never the bytes.
+- **Editing a server's address offers to trust the new one.** Repointing a
+  server left it unusable with no hint on the form; the first sign was a "Host
+  not trusted" banner on the list afterwards, with the fix behind a different
+  button on a different pane.
+- **The "✓ host keys accepted" line no longer lies.** Changing the hostname or
+  port after accepting dropped the keys — correctly, since they are keyed on the
+  endpoint — while the message stayed on screen saying they were held. The next
+  action then re-scanned and re-asked, which read as the accept having failed.
+
+### Documentation
+
+- README's add-a-server walkthrough rewritten around the new flow, including
+  paste-to-compare and pasting an SSH key.
+- `docs/architecture.md`: how `withHostKeys` keeps the server as the authority
+  on trust, the single `host_keys_required` contract, and the edit-path refcount.
+- `docs/operating.md`: pasting a key, and the two mistakes now caught at ingest.
+
+### Internal
+
+- Two test fixtures were hiding coverage. The browser suite's SSH key was the
+  literal string `# placeholder for tests; not a key` — and `_connect` loads the
+  client key *before* it consults the trust store, so every probe became a
+  generic 502 and the `409` the add form branches on could never be observed.
+  Its `clean_slate` fixture also reset servers and usernames but not
+  `known_hosts`, so a host one test trusted was one the next test never got
+  asked about.
+
 ## 0.1.0-dev.37 — 2026-09-15
 
 ### Security

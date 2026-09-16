@@ -607,18 +607,36 @@ server used to leave its keys behind for the next person to add that hostname.
 other `active_servers` query, because the table it guards is global — makes the
 delete path forget the keys when the count reaches zero.
 
-**Probing before the row exists.** `Scan & accept host key` in the add form
-holds the accepted keys client-side and hands them to Add, Test connection and
-Check prerequisites alike, so all three can reach a host that has never been
-trusted. The two probe routes (`POST /api/probe/test`, `/api/probe/prereq-check`)
-take those keys on a `ServerProbe` and pin them only for the duration of the
+**Probing before the row exists.** Every action button on the add form gathers
+host keys itself. `withHostKeys` in `app.js` attempts the action first and only
+a `host_keys_required` answer sends the user to the review — so the server stays
+the authority on whether an endpoint is already trusted, and a host some other
+server already verified is never re-reviewed. The accepted keys are held
+client-side in `pendingAddKeys`, keyed on the endpoint they were accepted for,
+and handed to Add, Test connection and Check prerequisites alike.
+
+The two probe routes (`POST /api/probe/test`, `/api/probe/prereq-check`) take
+those keys on a `ServerProbe` and pin them only for the duration of the
 connection, forgetting them again in a `finally` — the same "keys survive only if
 a row references them" invariant `add_server` keeps, since a probe creates no row.
 An endpoint that is already trusted is left untouched: the pin is a no-op and the
-stored keys are used and kept. When no keys are supplied and the endpoint is
-untrusted, `_connect` raises `HostNotTrusted` and the probe routes turn it into a
-`host_not_trusted` code the form uses to point at the scan button — not the
-admin-only refusal it wrongly gave before.
+stored keys are used and kept.
+
+**One code for one condition.** When no keys are supplied and the endpoint is
+untrusted, `add_server` refuses before connecting and `_connect` raises
+`HostNotTrusted` from the probes. Both now answer `409` with code
+`host_keys_required`, naming `hostname` and `port` as their own fields. They used
+to differ — a `400 host_keys_required` from add and a `409 host_not_trusted` from
+the probes — which meant every caller had to know both, and the form handled one
+of them on Add while the probe buttons handled the other. A single handler is
+only possible because the answer is single.
+
+**Editing forgets the endpoint it leaves.** `update_server` runs the same
+cross-user `count_servers_for_endpoint` refcount the delete path does, so
+repointing the last server at an address forgets that address's keys. Without it
+every corrected typo left an orphan behind — the same orphans Admin → Known
+hosts grew a purge button for, manufactured faster than the button could clear
+them.
 
 ---
 

@@ -228,7 +228,7 @@ cd /opt/docker/pcapserver
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.37/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.38/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -329,7 +329,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.37` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.38` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -345,7 +345,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcapserver
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.37/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.38/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -367,8 +367,14 @@ repo but that one file.
 HTTPS first — [step 7 of the Quick start](#7-turn-on-https). Every step below
 changes something, and none of them work over plain HTTP.
 
-1. **Upload an SSH key.** Admin → SSH keys. It is sealed under the master key
-   the moment it lands, the same way captures are.
+1. **Add an SSH key.** Admin → SSH keys. Either upload the private key file or
+   paste the key straight in — most people have it on the clipboard out of a
+   terminal, and writing it to a file first was a step that existed only because
+   the upload route did. Either way it is checked as it arrives (a public key or
+   one with a passphrase is refused there and then, not later against a host)
+   and sealed under the master key the moment it lands, the same way captures
+   are. It must have no passphrase: pcap-server connects unattended and has
+   nowhere to ask for one.
 2. **Add the server.** Servers → + Add. Give it a name, a hostname and the login
    it should use. It has to be a *different* machine: capturing from the box
    pcap-server runs on records pcap-server's own traffic, including your
@@ -376,27 +382,29 @@ changes something, and none of them work over plain HTTP.
    [Adding a server](docs/target-hosts.md#adding-a-server).
 3. **Accept the host's keys.** Nothing can connect to a host whose identity is
    not pinned, and the check that this is not the machine pcap-server runs on
-   needs a connection — so the fingerprints come first. Two ways: press **Scan &
-   accept host key** to review and accept them as an explicit step (which then
-   lets **Test connection** and **Check prerequisites** run before you commit),
-   or just press **Add**, which asks on the way in if the host is not trusted
-   yet. Either way the server is created after the host has answered. If the host
-   is already trusted because another server points at it, you are not asked. (An
-   existing server can be trusted later with the **Trust host** button on it;
-   admins can also work from Admin → Known hosts.)
+   needs a connection — so the fingerprints come first. There is nothing extra
+   to press: **Test connection**, **Check prerequisites** and **Add server** all
+   ask for the host's keys the first time they need them. Whichever you reach
+   for, the review appears; the keys are held in the page and pinned for good
+   only when you add the server, so a form you walk away from leaves no trust
+   behind. If the host is already trusted because another server points at it,
+   you are not asked. (An existing server can be trusted later with the **Trust
+   host** button on it; admins can also work from Admin → Known hosts.)
 
-   You are shown each key's SHA256 fingerprint and asked to accept before
-   anything is pinned. Compare them against the host itself first — on the
-   target, run:
+   Each key's SHA256 fingerprint is shown and nothing is pinned until you
+   accept. Compare them against the host itself first — on the target, over a
+   console or a session you already trust, run:
 
    ```bash
    for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done
    ```
 
-   The fingerprints are printed in OpenSSH's own format, so the two lists
-   should match character for character. Accepting without comparing pins
-   whatever answered on that address, which is the one thing host key
-   verification exists to prevent.
+   Rather than reading 43 base64 characters off two screens, paste what the
+   host printed into **Compare a fingerprint** and the matching key lights up —
+   the `SHA256:` prefix and any stray spacing are ignored, so it compares on
+   what the fingerprint means rather than how it was copied. Accepting without
+   comparing pins whatever answered on that address, which is the one thing
+   host key verification exists to prevent.
 
    Declining, or an add that fails for any other reason, leaves nothing pinned:
    keys accepted for a server that is not created are forgotten again. If the

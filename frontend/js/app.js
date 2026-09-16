@@ -558,7 +558,10 @@ function selectStaticTab(name) {
     // host in Admin and coming back here showed it as still untrusted, from a
     // copy of the data taken before the trust existed.
     if (name === "servers") {
-        loadServers();
+        // The list is redrawn from the reload; the open detail pane is not,
+        // because it is written once by selectServer. Refreshing its pills is
+        // the other half of the fix this comment describes.
+        loadServers().then(() => refreshServerDetailState(selectedServerId));
     }
 }
 
@@ -756,6 +759,9 @@ async function trustServerHost(serverId) {
         return;
     }
     await loadServers();
+    // The row's banner comes back from the reload above; the detail pane's
+    // pill does not, and this button is most often pressed while looking at it.
+    refreshServerDetailState(selectedServerId);
 }
 
 // What the right-hand pane holds when no server is chosen: at first load (it
@@ -769,16 +775,9 @@ const SERVERS_WELCOME = `
         <button type="button" class="btn btn-primary" data-action="show-add-server">+ Add a server</button>
     </div>`;
 
-function selectServer(id) {
-    const srv = activeServers.find((s) => s.id === id);
-    if (!srv) return;
-    selectedServerId = id;
-    document.querySelectorAll(".server-item").forEach((el) => el.classList.remove("active"));
-    document.querySelector(`.server-item[data-id="${CSS.escape(id)}"]`)?.classList.add("active");
-
-    // Read as facts, not as a form. These used to be disabled inputs, which
-    // look exactly like fields that ought to take typing and quietly do not;
-    // Edit is the way in, and it is on the action row below.
+// The header pills and whether capturing is allowed, derived in one place so
+// the initial render and every later refresh cannot disagree.
+function serverDetailState(srv) {
     const untrusted = srv.host_trusted === false;
     const trust = srv.host_trusted === undefined
         ? ""
@@ -791,11 +790,63 @@ function selectServer(id) {
     // its host was down is trusted and unchecked at the same time.
     const unverified = srv.verified === false && !untrusted;
     const checked = unverified ? '<span class="pill pill-warn">Never checked</span>' : "";
-    const blocked = untrusted || unverified;
-    const blockedWhy = untrusted
-        ? "This host is not trusted yet, so a capture would be refused. Trust it first."
-        : "Nothing has connected to this host yet, so a capture would be refused. "
-          + "Run Check prerequisites first.";
+    return {
+        trust,
+        checked,
+        blocked: untrusted || unverified,
+        blockedWhy: untrusted
+            ? "This host is not trusted yet, so a capture would be refused. Trust it first."
+            : "Nothing has connected to this host yet, so a capture would be refused. "
+              + "Run Check prerequisites first.",
+    };
+}
+
+// Refresh just the trust/checked pills and the capture button of the open
+// server, leaving everything below them alone.
+//
+// These used to be written once by selectServer and never again, so the three
+// actions that change them all left them lying: forgetting keys in Admin ->
+// Known hosts (which did not even reload the servers), Trust host on the list
+// (which did), and Check prerequisites on this very pane -- the action that
+// exists to turn "Never checked" into checked, reporting success under a pill
+// that still said it had never been checked.
+//
+// Deliberately not a re-render of the pane: prereqCheck draws its results into
+// it, and redrawing would throw them away. That constraint is what the old
+// comment here was protecting; it was right, it was just read as a reason to
+// refresh nothing but the OS line.
+function refreshServerDetailState(id) {
+    if (selectedServerId !== id) return;
+    const srv = activeServers.find((x) => x.id === id);
+    const head = document.querySelector(".server-detail-head");
+    if (!srv || !head) return;
+
+    const { trust, checked, blocked, blockedWhy } = serverDetailState(srv);
+    head.querySelectorAll(".pill").forEach((el) => el.remove());
+    head.insertAdjacentHTML("beforeend", `${trust}${checked}`);
+
+    const capture = document.querySelector('.server-detail-actions [data-action="capture-from-server"]');
+    if (capture) {
+        capture.disabled = blocked;
+        if (blocked) capture.title = blockedWhy;
+        else capture.removeAttribute("title");
+    }
+
+    const os = $("server-os");
+    if (os) os.innerHTML = serverOsFact(srv);
+}
+
+function selectServer(id) {
+    const srv = activeServers.find((s) => s.id === id);
+    if (!srv) return;
+    selectedServerId = id;
+    document.querySelectorAll(".server-item").forEach((el) => el.classList.remove("active"));
+    document.querySelector(`.server-item[data-id="${CSS.escape(id)}"]`)?.classList.add("active");
+
+    // Read as facts, not as a form. These used to be disabled inputs, which
+    // look exactly like fields that ought to take typing and quietly do not;
+    // Edit is the way in, and it is on the action row below.
+    const { trust, checked, blocked, blockedWhy } = serverDetailState(srv);
     const sid = escHtml(srv.id);
     $("server-form-area").innerHTML = `
         <div class="server-detail">
@@ -859,11 +910,10 @@ async function prereqCheck(id) {
         const res = await api(`/api/servers/${id}/prereq-check`, { method: "POST" });
         renderPrereqs(box, res);
         await loadServers();
-        // Only the OS fact, not a re-render of the pane: that would throw away
-        // the results just drawn above it.
-        const srv = activeServers.find((x) => x.id === id);
-        const os = $("server-os");
-        if (srv && os && selectedServerId === id) os.innerHTML = serverOsFact(srv);
+        // A successful check is exactly what clears "Never checked", so the
+        // pills have to move with it -- in place, because the results were
+        // just drawn into this pane and a re-render would discard them.
+        refreshServerDetailState(id);
     } catch (e) {
         box.innerHTML = `<div class="prereq-error">${escHtml(e.message)}</div>`;
     }
@@ -1008,12 +1058,19 @@ function showAddServer() {
             </div>
             <div class="form-group">${sshKeyPicker("new-srv", keys)}</div>
             <div class="form-group">${sudoOption("new-srv-sudo", false)}</div>
+            <!-- Three buttons, not four. 'Scan & accept host key' used to sit
+                 first and was the only one that collected fingerprints, so the
+                 other three failed on an untrusted host with instructions to go
+                 back and press it. All three now ask for host keys themselves
+                 the first time they need them, which leaves nothing for a
+                 separate button to do. -->
             <div class="form-actions">
-                <button class="btn btn-sm btn-secondary" data-action="scan-accept-keys"
-                        title="Scan this host for its SSH host keys, review the fingerprints, and accept them. Nothing connects to a host until its identity is pinned.">Scan &amp; accept host key</button>
-                <button class="btn btn-sm btn-primary" data-action="add-server">Add server</button>
-                <button class="btn btn-sm btn-secondary" data-action="probe-test">Test connection</button>
-                <button class="btn btn-sm btn-secondary" data-action="probe-prereq">Check prerequisites</button>
+                <button class="btn btn-sm btn-secondary" data-action="probe-test"
+                        title="Connect and report what answered. Asks you to review the host's fingerprints first if it has never been trusted; nothing is stored until you add the server.">Test connection</button>
+                <button class="btn btn-sm btn-secondary" data-action="probe-prereq"
+                        title="Check the host has what a capture needs, read-only. Asks you to review the host's fingerprints first if it has never been trusted.">Check prerequisites</button>
+                <button class="btn btn-sm btn-primary" data-action="add-server"
+                        title="Add this server. Asks you to review the host's fingerprints first if it has never been trusted, and pins them for good.">Add server</button>
             </div>
             <div id="host-key-status" style="margin-top:6px;font-size:0.8125rem" role="status" aria-live="polite"></div>
             <div id="add-server-error" class="error-msg"></div>
@@ -1024,10 +1081,11 @@ function showAddServer() {
         // add attempt must not leak onto this one.
         pendingAddKeys = null;
         bindUsernamePicker("new-srv");
+        forgetPendingKeysOnEdit();
     });
 }
 
-// Host keys the user reviewed and accepted with 'Scan & accept host key',
+// Host keys the user reviewed and accepted, whichever action button asked,
 // held here until they add/test/check the server -- never pinned server-side on
 // their own, so an abandoned form leaves no trust behind (the no-orphan rule
 // add_server documents). Keyed to the endpoint they were accepted for, so
@@ -1039,28 +1097,82 @@ function acceptedKeysFor(endpoint) {
     return pendingAddKeys && pendingAddKeys.endpoint === endpoint ? pendingAddKeys.keys : null;
 }
 
-async function scanAcceptKeys() {
-    const status = $("host-key-status");
-    const host = $("new-srv-host").value.trim();
-    if (!host) {
-        status.innerHTML = `<span style="color:var(--danger)">Enter a hostname or IP first.</span>`;
-        return;
-    }
-    const endpoint = `${host}:${parseInt($("new-srv-port").value) || 22}`;
-    status.innerHTML = `<span class="spinner"></span> Asking ${escHtml(endpoint)} for its host keys...`;
-    try {
-        const keys = await reviewHostKeys(endpoint, "/api/host-keys/scan");
-        if (!keys) {
+function setHostKeyStatus(html) {
+    const el = $("host-key-status");
+    if (el) el.innerHTML = html;
+}
+
+// Accepting keys for one endpoint must not leave a claim standing about
+// another. acceptedKeysFor already refused to hand them over once the host or
+// port changed -- it is keyed on the endpoint -- but the green "✓ accepted"
+// line stayed on screen, so the form went on saying the host was dealt with
+// while the keys behind that sentence had been dropped. The next action then
+// re-scanned and re-asked, which reads as the accept having failed.
+function forgetPendingKeysOnEdit() {
+    for (const id of ["new-srv-host", "new-srv-port"]) {
+        $(id)?.addEventListener("input", () => {
+            if (!pendingAddKeys) return;
+            const endpoint = `${$("new-srv-host").value.trim()}:${parseInt($("new-srv-port").value) || 22}`;
+            if (endpoint === pendingAddKeys.endpoint) return;
             pendingAddKeys = null;
-            status.innerHTML = `<span style="color:var(--text-muted)">Not accepted -- nothing will be trusted for ${escHtml(endpoint)}.</span>`;
-            return;
+            setHostKeyStatus(
+                '<span style="color:var(--text-muted)">Host changed &mdash; the keys accepted '
+                + 'for the previous address were discarded.</span>'
+            );
+        });
+    }
+}
+
+// Every action button gathers host keys, rather than one button gathering them
+// and the other three failing with instructions to go and press it.
+//
+// The server stays the authority on whether an endpoint is already trusted:
+// the action is attempted first and only a host_keys_required answer triggers
+// the scan. That is why the form never has to guess, and why a host some other
+// server already verified against is not re-reviewed.
+//
+// Keys collected here are held in `pendingAddKeys` and nowhere else until the
+// server is added. Test connection and Check prerequisites carry them to the
+// probe, which pins them only for the length of the call and forgets them
+// again (_transient_host_keys) -- so an abandoned form leaves no trust behind.
+async function withHostKeys(endpoint, run) {
+    try {
+        return await run(acceptedKeysFor(endpoint));
+    } catch (e) {
+        if (e.code !== "host_keys_required") throw e;
+        let keys;
+        try {
+            keys = await reviewHostKeys(endpoint, "/api/host-keys/scan");
+        } catch (scanFailed) {
+            // Could not reach the host to ask at all -- distinct from being
+            // asked and declining, and the caller decides what to do about it.
+            // Add offers to pre-stage the server; the probes have nothing to
+            // offer, because there is nothing to probe.
+            setHostKeyStatus(
+                `<span style="color:var(--danger)">Could not scan ${escHtml(endpoint)}: `
+                + `${escHtml(scanFailed.message)}</span>`
+            );
+            const failed = new Error(
+                `Could not get host keys from ${endpoint}: ${scanFailed.message}`
+            );
+            failed.code = "host_scan_failed";
+            failed.cause = scanFailed.message;
+            throw failed;
+        }
+        if (!keys) {
+            const declined = new Error(
+                `Not done — the host keys for ${endpoint} were not accepted, and nothing `
+                + "can connect to a host whose identity is not pinned."
+            );
+            declined.code = "host_keys_declined";
+            throw declined;
         }
         pendingAddKeys = { endpoint, keys };
-        status.innerHTML = `<span style="color:var(--success)">✓ ${keys.length} host key(s) accepted for ${escHtml(endpoint)} `
-            + `— they will be pinned when you add, test, or check this server.</span>`;
-    } catch (e) {
-        pendingAddKeys = null;
-        status.innerHTML = `<span style="color:var(--danger)">Could not scan ${escHtml(endpoint)}: ${escHtml(e.message)}</span>`;
+        setHostKeyStatus(
+            `<span style="color:var(--success)">✓ ${keys.length} host key(s) accepted for `
+            + `${escHtml(endpoint)} — they are pinned for good when you add this server.</span>`
+        );
+        return await run(keys);
     }
 }
 
@@ -1156,7 +1268,7 @@ function serverFormProblem(idPrefix) {
 
 // The add form's details, as the API wants them. Shared by add, test and
 // prereq so all three always probe exactly what the form says.
-function addFormServer() {
+function addFormServer(keys) {
     const hostname = $("new-srv-host").value.trim();
     const port = parseInt($("new-srv-port").value) || 22;
     const body = {
@@ -1167,13 +1279,21 @@ function addFormServer() {
         ssh_key_name: $("new-srv-key").value,
         use_sudo: $("new-srv-sudo").checked,
     };
-    // Keys accepted via 'Scan & accept host key' ride along with add, test and
-    // check, so all three can reach a host that has never been trusted. Only
+    // Accepted keys ride along with add, test and check, so all three can
+    // reach a host that has never been trusted. Only
     // when they were accepted for this exact endpoint -- editing the host or
     // port after accepting drops them rather than pinning the wrong host's keys.
-    const accepted = acceptedKeysFor(`${hostname}:${port}`);
-    if (accepted) body.host_keys = accepted;
+    // Passed in by withHostKeys, which is the only thing that decides whether
+    // this request carries keys: reaching for them here instead meant the
+    // caller and the collector could disagree about which endpoint was meant.
+    const accepted = keys === undefined ? acceptedKeysFor(`${hostname}:${port}`) : keys;
+    if (accepted && accepted.length) body.host_keys = accepted;
     return body;
+}
+
+// The endpoint the form currently names, which is what host keys are keyed on.
+function addFormEndpoint() {
+    return `${$("new-srv-host").value.trim()}:${parseInt($("new-srv-port").value) || 22}`;
 }
 
 async function probeTest() {
@@ -1186,13 +1306,14 @@ async function probeTest() {
     $("add-server-error").textContent = "";
     el.innerHTML = '<span class="spinner"></span> Testing...';
     try {
-        el.innerHTML = renderTestResult(await api("/api/probe/test", {
-            method: "POST", body: JSON.stringify(addFormServer()),
-        }));
+        el.innerHTML = renderTestResult(await withHostKeys(addFormEndpoint(), (keys) =>
+            api("/api/probe/test", {
+                method: "POST", body: JSON.stringify(addFormServer(keys)),
+            })));
     } catch (e) {
-        el.innerHTML = e.code === "host_not_trusted"
-            ? `<span style="color:var(--danger)">${escHtml(e.message)} Use <strong>Scan &amp; accept host key</strong> above, then test again.</span>`
-            : `<span style="color:var(--danger)">Failed: ${escHtml(e.message)}</span>`;
+        el.innerHTML = `<span style="color:var(--danger)">${
+            e.code === "host_keys_declined" ? escHtml(e.message) : `Failed: ${escHtml(e.message)}`
+        }</span>`;
     }
 }
 
@@ -1206,13 +1327,12 @@ async function probePrereq() {
     $("add-server-error").textContent = "";
     box.innerHTML = '<div class="prereq-pending"><span class="spinner"></span> Probing host (read-only)...</div>';
     try {
-        renderPrereqs(box, await api("/api/probe/prereq-check", {
-            method: "POST", body: JSON.stringify(addFormServer()),
-        }));
+        renderPrereqs(box, await withHostKeys(addFormEndpoint(), (keys) =>
+            api("/api/probe/prereq-check", {
+                method: "POST", body: JSON.stringify(addFormServer(keys)),
+            })));
     } catch (e) {
-        box.innerHTML = e.code === "host_not_trusted"
-            ? `<div class="prereq-error">${escHtml(e.message)} Use <strong>Scan &amp; accept host key</strong> above, then check again.</div>`
-            : `<div class="prereq-error">${escHtml(e.message)}</div>`;
+        box.innerHTML = `<div class="prereq-error">${escHtml(e.message)}</div>`;
     }
 }
 
@@ -1224,42 +1344,37 @@ async function loadSSHKeys() {
     }
 }
 
-// Scan a host for the add form and get the user's answer about it.
-//
-// Returns the accepted keys, an empty array to mean "add it without verifying
-// anything", or null when the user said no and nothing should be created.
+// Adding a server when the host cannot be scanned at all.
 //
 // The two failure modes are deliberately not treated alike. A scan that
 // SUCCEEDED and was then declined means the user read the fingerprints and
 // said no; following that with "add it anyway?" would be asking them to
-// reverse the answer they just gave. A scan that could not reach the host at
-// all is a different situation entirely -- it is the pre-staging case,
-// configuring a server before the machine it points at exists, which the old
-// flow allowed and this one must not quietly remove.
-async function scanAndAcceptForAdd(endpoint) {
-    let keys;
-    try {
-        keys = await reviewHostKeys(endpoint, "/api/host-keys/scan");
-    } catch (scanFailed) {
-        if (!confirm(
-            `Could not get host keys from ${endpoint}:\n\n${scanFailed.message}\n\n`
-            + "Add it anyway, without verifying its identity?\n\n"
-            + "Nothing will be trusted and nothing will be checked, so captures from "
-            + "it are refused until you trust its keys and run Check prerequisites. "
-            + "Useful for setting a server up before its host is running."
-        )) {
-            $("add-server-error").textContent = `Not added -- ${scanFailed.message}`;
-            return null;
-        }
-        return [];
-    }
-    if (!keys) {
-        $("add-server-error").textContent =
-            "Not added -- the host keys were not accepted, and nothing can connect "
-            + "to a host whose identity is not pinned.";
-        return null;
-    }
-    return keys;
+// reverse the answer they just gave -- withHostKeys throws
+// host_keys_declined for that and this is never reached. A scan that could
+// not reach the host at all is a different situation entirely: it is the
+// pre-staging case, configuring a server before the machine it points at
+// exists, which the old flow allowed and this one must not quietly remove.
+async function confirmAddUnverified(endpoint, reason) {
+    return confirm(
+        `Could not get host keys from ${endpoint}:\n\n${reason}\n\n`
+        + "Add it anyway, without verifying its identity?\n\n"
+        + "Nothing will be trusted and nothing will be checked, so captures from "
+        + "it are refused until you trust its keys and run Check prerequisites. "
+        + "Useful for setting a server up before its host is running."
+    );
+}
+
+// Keys were accepted but nothing answered afterwards. Said plainly, because
+// the row looks identical to a verified one and its captures will be refused
+// until something connects.
+function warnAddedButUnreachable(endpoint, reason) {
+    alert(
+        `${endpoint} was added, but nothing could connect to it yet:\n\n`
+        + `${reason}\n\n`
+        + "Its host keys are pinned, but the check that this is not the machine "
+        + "pcap-server runs on has never had a connection to run over -- so "
+        + "captures from it are refused until you run Check prerequisites."
+    );
 }
 
 async function addServer() {
@@ -1269,49 +1384,40 @@ async function addServer() {
         $("add-server-error").textContent = problem;
         return;
     }
-    const body = addFormServer();
-    const endpoint = `${body.hostname}:${body.port}`;
+    const endpoint = addFormEndpoint();
+    let pinned = false;
     try {
         let added;
-        let pinned = false;
         try {
-            // Sent without keys first. The server is the authority on whether
-            // this endpoint is already trusted, so the fingerprints are asked
-            // for only when it says so -- rather than the form guessing and
-            // re-prompting for a host another server already verified against.
-            added = await api("/api/servers", {
-                method: "POST", body: JSON.stringify(body),
+            // Identical to Test connection and Check prerequisites now: the
+            // action is attempted, and only a host_keys_required answer sends
+            // the user to review fingerprints. The difference is what happens
+            // afterwards -- this is the call that makes the pinning permanent.
+            added = await withHostKeys(endpoint, (keys) => {
+                pinned = Boolean(keys && keys.length);
+                return api("/api/servers", {
+                    method: "POST", body: JSON.stringify(addFormServer(keys)),
+                });
             });
         } catch (e) {
-            if (e.code !== "host_keys_required") throw e;
-            const keys = await scanAndAcceptForAdd(endpoint);
-            if (keys === null) {              // declined, or declined to add unverified
+            if (e.code === "host_keys_declined") {
+                $("add-server-error").textContent = e.message;
                 return;
             }
-            pinned = keys.length > 0;
-            // Pinning happens inside the create now. If the probe then refuses
-            // this host -- because it turns out to be the machine pcap-server
-            // runs on -- the keys are rolled back with it, so declining to
-            // create a server never leaves trust behind for it.
+            // The scan itself could not reach the host: offer the pre-staging path.
+            if (e.code !== "host_scan_failed") throw e;
+            if (!await confirmAddUnverified(endpoint, e.cause)) {
+                $("add-server-error").textContent = `Not added — ${e.cause}`;
+                return;
+            }
+            pinned = false;
             added = await api("/api/servers", {
                 method: "POST",
-                body: JSON.stringify(
-                    pinned ? { ...body, host_keys: keys } : { ...body, add_unverified: true }
-                ),
+                body: JSON.stringify({ ...addFormServer(null), add_unverified: true }),
             });
         }
-        if (added.unreachable && pinned) {
-            // Keys were accepted but nothing answered afterwards. Said plainly,
-            // because the row looks identical to a verified one and its
-            // captures will be refused until something connects.
-            alert(
-                `${endpoint} was added, but nothing could connect to it yet:\n\n`
-                + `${added.unreachable}\n\n`
-                + "Its host keys are pinned, but the check that this is not the machine "
-                + "pcap-server runs on has never had a connection to run over -- so "
-                + "captures from it are refused until you run Check prerequisites."
-            );
-        }
+        if (added.unreachable && pinned) warnAddedButUnreachable(endpoint, added.unreachable);
+        pendingAddKeys = null;
         await loadServers();
         // The stored-username list sits on this tab now, so a name introduced
         // by this server has to appear in it without a reload.
@@ -1398,6 +1504,28 @@ async function editServer(id) {
     bindUsernamePicker("edit-srv");
 }
 
+// Repointing a server at an address nothing has vouched for leaves it unusable,
+// and the edit form had no way to say so -- the first sign was a "Host not
+// trusted" banner on the list afterwards, with the fix behind a different
+// button on a different pane. Offered here instead, while the person who just
+// changed the address is still looking at it.
+async function offerTrustAfterMove(id, hostname, port, before, updated) {
+    const now = activeServers.find((x) => x.id === id);
+    if (!now || now.host_trusted !== false) return;
+
+    const forgot = updated && updated.host_keys_forgotten
+        ? `The keys for ${before.hostname}:${before.port} were forgotten, `
+          + "because no server points at it any more.\n\n"
+        : "";
+    if (confirm(
+        `${hostname}:${port} has no trusted host keys.\n\n${forgot}`
+        + "Nothing can connect to this server until its identity is pinned. "
+        + "Review its host keys now?"
+    )) {
+        await trustServerHost(id);
+    }
+}
+
 async function saveServerEdit(id) {
     $("edit-server-error").textContent = "";
     const problem = serverFormProblem("edit-srv");
@@ -1405,13 +1533,17 @@ async function saveServerEdit(id) {
         $("edit-server-error").textContent = problem;
         return;
     }
+    const before = activeServers.find((x) => x.id === id);
+    const hostname = $("edit-srv-host").value.trim();
+    const port = parseInt($("edit-srv-port").value) || 22;
+    const moved = before && (before.hostname !== hostname || before.port !== port);
     try {
-        await api(`/api/servers/${id}`, {
+        const updated = await api(`/api/servers/${id}`, {
             method: "PUT",
             body: JSON.stringify({
                 name: $("edit-srv-name").value,
-                hostname: $("edit-srv-host").value,
-                port: parseInt($("edit-srv-port").value) || 22,
+                hostname,
+                port,
                 username: usernameValue("edit-srv"),
                 ssh_key_name: $("edit-srv-key").value,
                 use_sudo: $("edit-srv-sudo").checked,
@@ -1419,6 +1551,8 @@ async function saveServerEdit(id) {
         });
         await loadServers();
         loadUsernameList();
+
+        if (moved) await offerTrustAfterMove(id, hostname, port, before, updated);
         selectServer(id);
     } catch (e) {
         $("edit-server-error").textContent = e.message;
@@ -5683,6 +5817,42 @@ async function adminUploadKey() {
     }
 }
 
+async function adminPasteKey() {
+    const msgEl = $("admin-key-msg");
+    msgEl.textContent = "";
+    msgEl.className = "error-msg";
+    const nameEl = $("admin-key-paste-name");
+    const keyEl = $("admin-key-paste");
+    const name = nameEl.value.trim();
+    if (!name) {
+        msgEl.textContent = "Give the key a name first";
+        return;
+    }
+    if (!keyEl.value.trim()) {
+        msgEl.textContent = "Paste the private key first";
+        return;
+    }
+    try {
+        await api("/api/admin/ssh-keys/paste", {
+            method: "POST",
+            body: JSON.stringify({ name, key: keyEl.value }),
+        });
+        // Cleared on success only. Wiping it on a failure would mean a full
+        // re-paste to fix a name that merely collided, and buys nothing: the
+        // key has already crossed the wire by then, so the textarea is not
+        // where its exposure is decided. Over plain HTTP this request never
+        // leaves at all -- the read-only middleware refuses it with the
+        // key-specific reason, which is where that exposure IS decided.
+        keyEl.value = "";
+        nameEl.value = "";
+        msgEl.textContent = `Key "${name}" saved`;
+        msgEl.className = "success-msg";
+        loadAdminSSHKeys();
+    } catch (e) {
+        msgEl.textContent = e.message;
+    }
+}
+
 async function adminDeleteKey(name) {
     if (!confirm(`Delete SSH key "${name}"? Servers using this key will no longer connect.`)) return;
     try {
@@ -5884,6 +6054,127 @@ function splitEndpoint(endpoint) {
 // and always has been; /api/host-keys/scan is the same non-mutating scan
 // opened to any user, because every user can add a server and the fingerprints
 // now have to be shown before the server exists.
+// Normalising so a pasted fingerprint compares on what it means rather than
+// how it was copied. ssh-keygen prints "SHA256:abc...", some tools print the
+// bare base64, and a copy out of a terminal often brings spaces with it.
+function normaliseFingerprint(value) {
+    return String(value || "").trim().replace(/^SHA256:/i, "").replace(/\s+/g, "");
+}
+
+// The host key review, as a real dialog rather than a window.confirm().
+//
+// Resolves to the keys the user accepted, or null if they declined. Every
+// caller that pins keys comes through here -- the add form, the per-server
+// Trust host button and the admin known-hosts screen -- so there is one place
+// that decides what "reviewed" means and one question the user learns once.
+// One row per reviewable key. Built with createElement and textContent
+// throughout, never innerHTML: a key type and a fingerprint come from whatever
+// answered on that address, which is precisely the input not to trust on the
+// screen whose whole job is deciding whether to trust it.
+function renderHostKeyRows(rows, usable) {
+    rows.textContent = "";
+    for (const k of usable) {
+        const tr = document.createElement("tr");
+        tr.dataset.fingerprint = normaliseFingerprint(k.fingerprint);
+
+        const type = document.createElement("td");
+        type.className = "host-key-type";
+        type.textContent = k.key_type;
+
+        const fp = document.createElement("td");
+        fp.className = "host-key-fp";
+        fp.textContent = k.fingerprint;
+
+        const copy = document.createElement("td");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-xs btn-secondary";
+        btn.textContent = "Copy";
+        btn.onclick = () => copyText(k.fingerprint, btn);
+        copy.append(btn);
+
+        tr.append(type, fp, copy);
+        rows.append(tr);
+    }
+}
+
+// Paste what the host printed and let the machine compare. Live, and the
+// matching row lights up rather than the answer landing only in a message
+// beside it -- with more than one key offered, "matches" on its own does not
+// say which.
+function wireFingerprintCompare(rows, expected, result) {
+    const compare = () => {
+        const typed = normaliseFingerprint(expected.value);
+        let hit = false;
+        for (const tr of rows.children) {
+            const match = Boolean(typed) && tr.dataset.fingerprint === typed;
+            tr.classList.toggle("host-key-match", match);
+            hit = hit || match;
+        }
+        result.className = "host-key-compare-result"
+            + (!typed ? "" : hit ? " is-match" : " is-miss");
+        result.textContent = !typed ? "" : hit ? "✓ matches" : "✗ no match";
+    };
+    expected.value = "";
+    expected.oninput = compare;
+    compare();
+}
+
+// The host key review, as a real dialog rather than a window.confirm().
+//
+// Resolves to the keys the user accepted, or null if they declined. Every
+// caller that pins keys comes through here -- the add form, the per-server
+// Trust host button and the admin known-hosts screen -- so there is one place
+// that decides what "reviewed" means and one question the user learns once.
+function openHostKeyDialog(endpoint, usable, skipped) {
+    const dialog = $("host-key-dialog");
+    const rows = $("host-key-rows");
+
+    $("host-key-endpoint").textContent = endpoint;
+    $("host-key-verify-cmd").textContent =
+        "for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done";
+
+    renderHostKeyRows(rows, usable);
+    wireFingerprintCompare(rows, $("host-key-expected"), $("host-key-compare-result"));
+
+    const skippedEl = $("host-key-skipped");
+    skippedEl.hidden = !skipped;
+    if (skipped) {
+        skippedEl.textContent =
+            `${skipped} further key(s) could not be read and will not be stored.`;
+    }
+
+    $("btn-host-key-copy").onclick = (e) =>
+        copyText($("host-key-verify-cmd").textContent, e.currentTarget);
+
+    return new Promise((resolve) => {
+        let answer = null;
+        $("btn-host-key-accept").onclick = () => { answer = usable; dialog.close(); };
+        $("btn-host-key-reject").onclick = () => { answer = null; dialog.close(); };
+        // Covers Escape and the backdrop too, so a dismissed dialog is a
+        // decline rather than a promise nobody settles.
+        dialog.addEventListener("close", () => {
+            $("host-key-expected").value = "";
+            resolve(answer);
+        }, { once: true });
+        dialog.showModal();
+        $("btn-host-key-reject").focus();
+    });
+}
+
+async function copyText(text, btn) {
+    try {
+        await navigator.clipboard.writeText(text);
+        const was = btn.textContent;
+        btn.textContent = "Copied";
+        setTimeout(() => { btn.textContent = was; }, 1200);
+    } catch {
+        // Clipboard is blocked on insecure origins, which is exactly where
+        // this app tells people not to run it. Say so rather than failing mute.
+        btn.textContent = "Select and copy";
+    }
+}
+
 async function reviewHostKeys(endpoint, scanPath) {
     const target = splitEndpoint(endpoint);
     const scan = await api(scanPath, {
@@ -5900,17 +6191,7 @@ async function reviewHostKeys(endpoint, scanPath) {
         throw new Error(`${endpoint} offered no host key that could be read`);
     }
 
-    const listed = usable.map((k) => `    ${k.key_type}\n    ${k.fingerprint}`).join("\n\n");
-    const note = skipped
-        ? `\n\n${skipped} further key(s) could not be read and will not be stored.`
-        : "";
-    const accepted = confirm(
-        `${endpoint} answered with ${usable.length} host key(s):\n\n${listed}${note}\n\n`
-        + "Check these against the host itself before accepting. On "
-        + `${target.hostname}, run:\n\n`
-        + "    for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done\n\n"
-        + "Accept these keys and verify every future connection against them?"
-    );
+    const accepted = await openHostKeyDialog(endpoint, usable, skipped);
     if (!accepted) return null;
 
     // What comes back is what was on screen a moment ago -- never a re-scan,
@@ -5943,6 +6224,13 @@ async function adminTrustHost(endpoint) {
             `Pinned ${result.stored} key(s) for ${endpoint}: `
             + result.keys.map((k) => k.key_type).join(", ");
         loadAdminKnownHosts();
+        // Trust changed for every server pointing at that endpoint, so the
+        // Servers tab is stale from this moment -- including the pill of
+        // whichever server is open behind this panel. Reloaded here rather
+        // than left until something else happens to reload it.
+        await loadServers();
+        refreshServerDetailState(selectedServerId);
+
     } catch (e) {
         msgEl.className = "error-msg";
         msgEl.textContent = e.message;
@@ -5997,6 +6285,12 @@ async function purgeOrphanedHosts() {
         ? `Removed ${removed} key(s); could not forget ${failed.join(", ")}`
         : `Removed ${removed} key(s) from ${hosts.length} orphaned host(s)`;
     loadAdminKnownHosts();
+    // Orphans are by definition endpoints no server points at, so this should
+    // change nothing on the Servers tab -- reloaded anyway, because "should"
+    // is doing load-bearing work in that sentence and the refcount it rests on
+    // is exactly what is being exercised.
+    await loadServers();
+    refreshServerDetailState(selectedServerId);
 }
 
 async function adminForgetHost(endpoint) {
@@ -6011,6 +6305,13 @@ async function adminForgetHost(endpoint) {
         msgEl.className = "success-msg";
         msgEl.textContent = `Removed ${result.removed} key(s) for ${endpoint}`;
         loadAdminKnownHosts();
+        // Trust changed for every server pointing at that endpoint, so the
+        // Servers tab is stale from this moment -- including the pill of
+        // whichever server is open behind this panel. Reloaded here rather
+        // than left until something else happens to reload it.
+        await loadServers();
+        refreshServerDetailState(selectedServerId);
+
     } catch (e) {
         msgEl.className = "error-msg";
         msgEl.textContent = e.message;
@@ -6059,6 +6360,7 @@ function initStaticHandlers() {
     $("btn-admin-create-user")?.addEventListener("click", adminCreateUser);
     $("btn-add-username")?.addEventListener("click", addStoredUsername);
     $("btn-admin-upload-key")?.addEventListener("click", adminUploadKey);
+    $("btn-admin-paste-key")?.addEventListener("click", adminPasteKey);
 }
 
 // The containers themselves exist from page load even though their contents
@@ -6078,7 +6380,6 @@ function initEventDelegation() {
         "prereq-check": (id) => prereqCheck(id),
         "remove-server": (id) => removeServer(id),
         "add-server": () => addServer(),
-        "scan-accept-keys": () => scanAcceptKeys(),
         "probe-test": () => probeTest(),
         "probe-prereq": () => probePrereq(),
         "edit-server": (id) => editServer(id),

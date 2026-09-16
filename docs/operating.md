@@ -113,14 +113,26 @@ stopped — it touches three rows of the metadata database and no capture file.
 
 ## SSH keys
 
-Upload private keys from the **Admin** tab. They are stored in the `ssh-keys/`
-directory (mounted at `/app/ssh-keys`) and offered as options when connecting to
-a remote server. Keys can be uploaded and deleted from the GUI; no manual file
-placement is needed. When a master key is configured (`MASTER_KEY_FILE` in
-`docker-compose.yml`), uploaded keys are sealed under it the same way
-captures are — a key never exists as a plaintext file on disk, and one
-uploaded before encryption was enabled is sealed in place automatically the
-next time the container starts.
+Add private keys from the **Admin** tab, either by uploading the key file or by
+pasting the key in — the clipboard is where most people have it, and the two go
+through exactly the same checks and the same storage. They are kept in the
+`ssh-keys/` directory (mounted at `/app/ssh-keys`) and offered as options when
+connecting to a remote server. Keys can be added and deleted from the GUI; no
+manual file placement is needed. When a master key is configured
+(`MASTER_KEY_FILE` in `docker-compose.yml`), keys are sealed under it the same
+way captures are — a key never exists as a plaintext file on disk, and one
+added before encryption was enabled is sealed in place automatically the next
+time the container starts.
+
+A key is parsed as it arrives rather than the first time something tries to use
+it. Two mistakes that used to surface minutes later as an SSH failure on an
+unrelated screen are refused at the point of adding:
+
+- **a public key.** The easy one to get wrong: the two files sit side by side
+  and differ by one suffix. It is the one *without* `.pub` that belongs here.
+- **a key with a passphrase.** pcap-server connects unattended and has nowhere
+  to ask for one, so such a key cannot work here however valid it is elsewhere.
+  `ssh-keygen -p -f <keyfile>` removes it — on a copy.
 
 The key you upload here is the one that has to be authorised on your target
 hosts. If those are still on password authentication, the author's
@@ -140,8 +152,8 @@ opening a capture in the Viewer, the protocol tree and hex dump, display
 filters, and saved views you already have.
 
 **What is refused:** everything that changes state or exports in bulk. Starting
-a capture. Adding or editing a server. Trusting a host's SSH keys. Uploading an
-SSH key. Saving a view. Every admin setting. Downloading a capture. Each refusal
+a capture. Adding or editing a server. Trusting a host's SSH keys. Adding an
+SSH key, uploaded or pasted. Saving a view. Every admin setting. Downloading a capture. Each refusal
 comes back as an explanation rather than a bare 403, and the app shows a banner
 saying why.
 

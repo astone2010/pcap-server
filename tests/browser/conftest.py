@@ -44,6 +44,8 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+
+import asyncssh
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -205,11 +207,20 @@ def live_server():
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
         raise
-    # add_server refuses a key name that is not present in SSH_KEYS_DIR. The
-    # contents are never read by the endpoint under test -- only the presence
-    # of the file is checked -- so this is a placeholder, not a key.
-    (server.ssh_keys_dir / "browser-test-key").write_text(
-        "# placeholder for tests; not a key\n"
+    # A real key, not a placeholder.
+    #
+    # It used to be the string "# placeholder for tests; not a key", on the
+    # reasoning that only the presence of the file is checked. That is true of
+    # add_server and false of anything that connects: _connect loads the client
+    # key BEFORE it consults the trust store, so an unparseable key turned every
+    # probe into a generic "SSH connection failed" 502 -- masking the 409 that
+    # says the host is not trusted, which is the answer the add form branches
+    # on. A test for that branch could never see it.
+    #
+    # Nothing here ever completes a handshake (TEST-NET-3 answers nothing), so
+    # this key authenticates against nothing. It only has to parse.
+    (server.ssh_keys_dir / "browser-test-key").write_bytes(
+        asyncssh.generate_private_key("ssh-ed25519").export_private_key("openssh")
     )
     try:
         yield LiveServer(url=server.url, root=root, totp_secret=_seed_admin(server.url))

@@ -10,6 +10,8 @@ perfectly the entire time, which is why every test then in the repo passed.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tests.browser.conftest import needs_browser
@@ -31,11 +33,25 @@ def clean_slate(api_client):
     Stored usernames matter as much as servers here: the username field renders
     as a plain text box while none are stored and as a dropdown once one is, so
     a leftover name from an earlier test changes the form this one is driving.
+
+    Host trust matters for the same reason and was NOT being reset, which is a
+    gap this suite got away with only while no test pinned anything. The tests
+    for the review dialog do pin keys, and an endpoint another test left
+    trusted is one this one never gets asked about: the form goes straight
+    through to a real connection instead of showing the review. That failure
+    looks exactly like a broken button and is nothing of the sort, so the trust
+    store is emptied here alongside everything else.
     """
     for server in api_client.get("/api/servers").json():
         api_client.delete(f"/api/servers/{server['id']}")
     for username in api_client.get("/api/usernames").json():
         api_client.delete(f"/api/usernames/{username['id']}")
+    for host in api_client.get("/api/admin/host-trust").json():
+        if host["key_types"]:
+            api_client.post(
+                "/api/admin/known-hosts/forget",
+                json={"hostname": host["hostname"], "port": host["port"]},
+            )
     yield
 
 
@@ -366,3 +382,177 @@ async def test_a_refetch_keeps_the_open_server_highlighted(app_page):
 
     assert await app_page.query_selector("#server-list .server-item.active"), \
         "the open server lost its highlight when the list was refetched"
+
+
+# --- the host key review dialog ---------------------------------------------
+#
+# The fingerprints used to be shown in a window.confirm(): the one decision in
+# this app that needs a human to compare 43 base64 characters, rendered in a
+# proportional font, uncopyable, blocking the page you would check them
+# against. It is an in-page <dialog> now, with the comparison done by the
+# machine when you paste what the host printed.
+#
+# Every test above drives the scan-FAILURE path, because TEST-NET-3 answers
+# nothing -- so none of them reaches the review at all. The scan is stubbed
+# here instead, which is the only way to see the dialog without a real host
+# that answers on 22.
+
+REVIEW_FP = "SHA256:4S1x+Tn5CQ2mV9wAqk3ZbYd7uEHrJ0LpNcXvFgWtQiM"
+REVIEW_BLOB = "AAAAC3NzaC1lZDI1NTE5AAAAIFn+HAuUUzmPJJ/9Fm6nWFEfyOfj/psANlzU7NQKcBtN"
+
+
+async def _stub_scan(page, keys=None):
+    """Answer /api/host-keys/scan without an SSH host, so the review appears."""
+    if keys is None:
+        keys = [{"key_type": "ssh-ed25519", "host_key": REVIEW_BLOB, "fingerprint": REVIEW_FP}]
+
+    async def handler(route):
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": True, "keys": keys}),
+        )
+
+    await page.route("**/api/host-keys/scan", handler)
+
+
+async def _open_review(page, hostname=HOST):
+    """Fill the form, press Add, and wait for the review dialog to open."""
+    await _fill_add_form(page, hostname)
+    await page.click("button[data-action='add-server']")
+    await page.wait_for_selector("#host-key-dialog[open]")
+
+
+async def test_the_review_dialog_shows_the_fingerprints_it_scanned(app_page):
+    """The fingerprint has to be on screen to be checked at all."""
+    await _stub_scan(app_page)
+    await _open_review(app_page)
+
+    assert HOST in await app_page.text_content("#host-key-endpoint")
+    rows = await app_page.text_content("#host-key-rows")
+    assert REVIEW_FP in rows
+    assert "ssh-ed25519" in rows
+
+
+async def test_pasting_the_matching_fingerprint_confirms_it(app_page):
+    """The whole reason this stopped being a confirm(): the comparison is the
+    machine's job, not the reader's."""
+    await _stub_scan(app_page)
+    await _open_review(app_page)
+
+    await app_page.fill("#host-key-expected", REVIEW_FP)
+    await app_page.wait_for_selector("#host-key-compare-result.is-match")
+    assert "matches" in await app_page.text_content("#host-key-compare-result")
+    # The answer lands on the key itself, not only in a message beside it.
+    assert await app_page.query_selector("#host-key-rows tr.host-key-match")
+
+
+async def test_pasting_a_different_fingerprint_says_so(app_page):
+    """The case that matters: a mismatch is what a MITM looks like from here."""
+    await _stub_scan(app_page)
+    await _open_review(app_page)
+
+    await app_page.fill("#host-key-expected", "SHA256:WRONGWRONGWRONGWRONGWRONGWRONGWRONGWRONGwxy")
+    await app_page.wait_for_selector("#host-key-compare-result.is-miss")
+    assert "no match" in await app_page.text_content("#host-key-compare-result")
+    assert not await app_page.query_selector("#host-key-rows tr.host-key-match")
+
+
+async def test_the_comparison_ignores_the_sha256_prefix_and_spacing(app_page):
+    """ssh-keygen prints 'SHA256:abc...'; some tools print the bare base64, and
+    a copy out of a terminal often brings whitespace with it. Comparing on what
+    it means rather than how it was copied is the difference between a check
+    people run and one they give up on."""
+    await _stub_scan(app_page)
+    await _open_review(app_page)
+
+    await app_page.fill("#host-key-expected", f"  {REVIEW_FP.removeprefix('SHA256:')}  ")
+    await app_page.wait_for_selector("#host-key-compare-result.is-match")
+
+
+async def test_cancelling_the_review_pins_nothing_and_adds_nothing(app_page, api_client):
+    """Declining is a real answer. It was one in the confirm() too, and the
+    no-orphan invariant depends on it staying one."""
+    await _stub_scan(app_page)
+    await _open_review(app_page)
+
+    await app_page.click("#btn-host-key-reject")
+    await app_page.wait_for_selector("#host-key-dialog[open]", state="detached", timeout=5000)
+
+    await app_page.wait_for_selector("#add-server-error >> text=not accepted")
+    assert api_client.get("/api/servers").json() == []
+    assert [h for h in api_client.get("/api/admin/host-trust").json()
+            if h["hostname"] == HOST and h["key_types"]] == []
+
+
+async def test_dismissing_the_review_with_escape_counts_as_declining(app_page, api_client):
+    """A dialog closed by Escape or the backdrop must settle the promise as a
+    decline, not leave the flow waiting on an answer that never comes."""
+    await _stub_scan(app_page)
+    await _open_review(app_page)
+
+    await app_page.keyboard.press("Escape")
+    await app_page.wait_for_selector("#add-server-error >> text=not accepted", timeout=5000)
+    assert api_client.get("/api/servers").json() == []
+
+
+async def test_accepting_the_review_pins_the_keys_and_adds_the_server(app_page, api_client):
+    """The other half, and the one the old suite could not reach: it needed a
+    host with real keys to review. Stubbing the scan buys that."""
+    await _stub_scan(app_page)
+    await _open_review(app_page)
+
+    # Adding succeeds but nothing can connect to TEST-NET-3 afterwards, so the
+    # unreachable alert follows. It is a native confirm/alert, unlike the review.
+    async with accepting_dialogs(app_page):
+        await app_page.click("#btn-host-key-accept")
+        await app_page.wait_for_selector(f"#server-list >> text={HOST}")
+
+    trusted = [h for h in api_client.get("/api/admin/host-trust").json()
+               if h["hostname"] == HOST]
+    assert trusted and trusted[0]["key_types"] == ["ssh-ed25519"], \
+        "accepting the review has to pin exactly the key that was reviewed"
+
+
+async def test_test_connection_asks_for_host_keys_too(app_page):
+    """The user-facing point of this release: every action button collects
+    fingerprints, rather than one button collecting them and the other three
+    failing with instructions to go and press it."""
+    await _stub_scan(app_page)
+    await _fill_add_form(app_page, HOST)
+
+    await app_page.click("button[data-action='probe-test']")
+    await app_page.wait_for_selector("#host-key-dialog[open]", timeout=15000)
+    assert REVIEW_FP in await app_page.text_content("#host-key-rows")
+
+
+async def test_check_prerequisites_asks_for_host_keys_too(app_page):
+    """Same for the third button."""
+    await _stub_scan(app_page)
+    await _fill_add_form(app_page, HOST)
+
+    await app_page.click("button[data-action='probe-prereq']")
+    await app_page.wait_for_selector("#host-key-dialog[open]", timeout=15000)
+    assert REVIEW_FP in await app_page.text_content("#host-key-rows")
+
+
+async def test_the_separate_scan_button_is_gone(app_page):
+    """It collected fingerprints and the other three buttons did not, which is
+    what made the form read as a four-step ritual in no stated order. With all
+    three collecting, it has nothing left to do."""
+    await _fill_add_form(app_page, HOST)
+    assert not await app_page.query_selector("[data-action='scan-accept-keys']")
+
+
+async def test_changing_the_host_after_accepting_discards_the_keys(app_page):
+    """acceptedKeysFor is keyed on the endpoint, so the keys were already
+    dropped -- but the green '✓ accepted' line stayed on screen saying
+    otherwise, and the next action re-scanned and re-asked, which reads as the
+    accept having failed."""
+    await _stub_scan(app_page)
+    await _open_review(app_page)
+    await app_page.click("#btn-host-key-accept")
+    await app_page.wait_for_selector("#host-key-status >> text=accepted", timeout=15000)
+
+    await app_page.fill("#new-srv-host", OTHER_HOST)
+    await app_page.wait_for_selector("#host-key-status >> text=discarded")

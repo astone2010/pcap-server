@@ -653,8 +653,35 @@
                         <div id="admin-ssh-keys" class="admin-table-container"></div>
                         <div class="admin-inline-form admin-page-form">
                             <input type="file" id="admin-key-file" style="font-size:0.8125rem">
-                            <button id="btn-admin-upload-key" class="btn btn-sm btn-secondary">Upload key</button>
+                            <button id="btn-admin-upload-key" class="btn btn-sm btn-secondary">Upload key file</button>
                         </div>
+                        <!-- Pasting is how people usually have a key to hand: it
+                             is already on the clipboard from a terminal, and
+                             writing it out to a file purely to upload it was a
+                             step that existed only because the route did. -->
+                        <details class="admin-page-form">
+                            <summary>Or paste a key</summary>
+                            <div class="form-group">
+                                <label for="admin-key-paste-name">Name</label>
+                                <input type="text" id="admin-key-paste-name" placeholder="e.g. capture-key"
+                                       autocomplete="off" autocapitalize="off" spellcheck="false">
+                            </div>
+                            <div class="form-group">
+                                <label for="admin-key-paste">Private key</label>
+                                <textarea id="admin-key-paste" class="key-paste-area"
+                                          autocomplete="off" autocapitalize="off" spellcheck="false"
+                                          placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea>
+                            </div>
+                            <button id="btn-admin-paste-key" class="btn btn-sm btn-secondary">Save pasted key</button>
+                            <p class="explainer-note">
+                                The whole file, including its <code>BEGIN</code> and
+                                <code>END</code> lines. It must be the private half
+                                (no <code>.pub</code>) and must have no passphrase
+                                &mdash; pcap-server connects unattended and has
+                                nowhere to ask for one. It is checked here, not
+                                later against a host.
+                            </p>
+                        </details>
                         <div id="admin-key-msg" class="error-msg"></div>
                     </section>
 
@@ -849,6 +876,53 @@
     <div class="sanitize-actions">
         <button type="button" id="btn-column-reset" class="btn btn-sm btn-secondary">Reset to default columns</button>
         <button type="button" class="btn btn-sm btn-primary" data-close-dialog>Done</button>
+    </div>
+</dialog>
+
+<!-- Host key review. Replaces a window.confirm(): the one decision in this
+     app that needs a human to compare 43 base64 characters, and a native
+     dialog renders them in a proportional font that cannot be copied out of
+     and blocks the page you would check them against. Shared by the add flow
+     and Admin -> Known hosts, so both ask the same question the same way. -->
+<dialog id="host-key-dialog" class="stats-dialog host-key-dialog" aria-labelledby="host-key-dialog-title">
+    <h2 id="host-key-dialog-title" class="sanitize-title">Accept host keys?</h2>
+    <p class="sanitize-target">
+        <strong id="host-key-endpoint"></strong> answered with the keys below.
+        Every future connection to it is verified against exactly these.
+    </p>
+
+    <table class="stats-table host-key-table">
+        <thead><tr><th>Type</th><th>Fingerprint</th><th></th></tr></thead>
+        <tbody id="host-key-rows"></tbody>
+    </table>
+    <p id="host-key-skipped" class="host-key-skipped" hidden></p>
+
+    <h3 class="sanitize-subhead">Check them against the host</h3>
+    <p class="explainer-note">
+        Accepting a key you have not checked trusts whatever answered on that
+        address. On the host itself &mdash; over a console or a session you
+        already trust, not this one &mdash; run:
+    </p>
+    <div class="host-key-cmd">
+        <code id="host-key-verify-cmd"></code>
+        <button type="button" id="btn-host-key-copy" class="btn btn-sm btn-secondary">Copy</button>
+    </div>
+
+    <h3 class="sanitize-subhead">Compare a fingerprint</h3>
+    <p class="explainer-note">
+        Optional, and the reliable way to do it: paste what the host printed and
+        let the machine compare, rather than reading 43 characters by eye.
+    </p>
+    <div class="host-key-compare">
+        <input type="text" id="host-key-expected" placeholder="SHA256:..."
+               autocomplete="off" autocapitalize="off" spellcheck="false"
+               aria-label="Fingerprint reported by the host">
+        <span id="host-key-compare-result" class="host-key-compare-result" role="status" aria-live="polite"></span>
+    </div>
+
+    <div class="sanitize-actions">
+        <button type="button" id="btn-host-key-reject" class="btn btn-sm btn-secondary">Cancel</button>
+        <button type="button" id="btn-host-key-accept" class="btn btn-sm btn-primary">Accept and pin</button>
     </div>
 </dialog>
 

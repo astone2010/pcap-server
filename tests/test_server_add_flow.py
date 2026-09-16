@@ -138,11 +138,21 @@ def test_adding_an_untrusted_host_without_keys_is_refused_and_creates_nothing(
     Refused with a code rather than prose, because the form branches on it to
     decide whether to scan -- the server is the authority on whether this
     endpoint is already trusted.
+
+    409, and the same code the probes answer with: "this endpoint has no
+    trusted keys" is one condition, and it used to come back as a 400 from here
+    and a 409 host_not_trusted from the probes, so every caller had to know
+    both. withHostKeys in the frontend is the single handler that replaced
+    them, and it can only be single if the answer is.
     """
     resp = api_client.post("/api/servers", json=_add_body())
 
-    assert resp.status_code == 400
+    assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "host_keys_required"
+    # The endpoint is named as its own fields, not only inside the sentence,
+    # so a caller can scan exactly what was refused.
+    assert resp.json()["detail"]["hostname"] == HOST
+    assert resp.json()["detail"]["port"] == 22
     assert main.db.get_known_hosts(HOST, 22) == []
     assert [s for s in main.db.list_active_servers(signed_in) if s["hostname"] == HOST] == []
 
@@ -350,7 +360,7 @@ def test_adding_unverified_is_never_the_default(api_client, signed_in, a_key):
     so the form cannot drift into skipping the review by accident."""
     resp = api_client.post("/api/servers", json=_add_body())
 
-    assert resp.status_code == 400
+    assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "host_keys_required"
 
 
@@ -621,7 +631,9 @@ def host_not_trusted(monkeypatch):
     async def test_connection(auth):
         raise HostNotTrusted(
             f"{auth.hostname}:{auth.port} has no trusted host keys yet, so its "
-            "identity cannot be checked."
+            "identity cannot be checked.",
+            hostname=auth.hostname,
+            port=auth.port,
         )
 
     monkeypatch.setattr(main.ssh_manager, "test_connection", test_connection)
@@ -631,12 +643,19 @@ def test_probe_test_on_untrusted_host_is_a_structured_refusal(
     api_client, signed_in, a_key, host_not_trusted
 ):
     """Test connection on a host whose keys are not pinned yet returns a code the
-    add form can act on -- pointing the user at 'Scan & accept host key' -- not a
-    bare 502, and not the old admin-only message."""
+    add form can act on -- so the button collects fingerprints itself -- not a
+    bare 502, and not the old admin-only message.
+
+    The SAME code the add route answers with. Test connection, Check
+    prerequisites and Add server all take one path through withHostKeys now,
+    and that only works because all three refusals are indistinguishable to it.
+    """
     resp = api_client.post("/api/probe/test", json=_add_body())
     assert resp.status_code == 409
     detail = resp.json()["detail"]
-    assert detail["code"] == "host_not_trusted"
+    assert detail["code"] == "host_keys_required"
+    assert detail["hostname"] == HOST
+    assert detail["port"] == 22
     assert "admin" not in str(detail).lower()
     assert main.db.get_known_hosts(HOST, 22) == []
 
@@ -681,3 +700,115 @@ def test_probe_with_accepted_keys_leaves_an_already_trusted_endpoint_alone(
 
     assert resp.status_code == 200
     assert main.db.get_known_hosts(HOST, 22) == before    # untouched
+
+
+# --- editing a server: the endpoint it leaves behind -------------------------
+#
+# Deleting a server already forgot the keys for an endpoint nothing points at
+# any more. Editing did not, so every corrected typo and every host that moved
+# left its keys pinned with no server referencing them -- the same orphans the
+# Admin -> Known hosts purge button exists to clear, manufactured by the edit
+# path faster than the button could clear them. There was no test for this
+# either way, which is how it survived the release that added the refcount.
+
+
+def _create_trusted_server(api_client, signed_in, hostname, monkeypatch, blob=ED25519_BLOB):
+    """A server at `hostname` with its host keys pinned, via the real add path."""
+    async def probe(auth):
+        return {"boot_id": "11111111-2222-3333-4444-555555555555"}
+
+    monkeypatch.setattr(main.ssh_manager, "test_connection", probe)
+    resp = api_client.post(
+        "/api/servers",
+        json=_add_body(hostname=hostname, host_keys=_accepted_keys(blob)),
+    )
+    assert resp.status_code == 200, resp.text
+    assert main.db.get_known_hosts(hostname, 22)
+    return resp.json()["id"]
+
+
+def test_repointing_the_last_server_forgets_the_endpoint_it_left(
+    api_client, signed_in, a_key, monkeypatch
+):
+    server_id = _create_trusted_server(api_client, signed_in, HOST, monkeypatch)
+
+    resp = api_client.put(
+        f"/api/servers/{server_id}",
+        json={
+            "hostname": OTHER_HOST, "port": 22, "username": "alice",
+            "ssh_key_name": "alice-key", "name": "target",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["host_keys_forgotten"] == 1
+    assert main.db.get_known_hosts(HOST, 22) == []      # no orphan left behind
+    assert main.db.get_known_hosts(OTHER_HOST, 22) == []  # and none invented
+
+
+def test_repointing_keeps_keys_another_server_still_uses(
+    api_client, signed_in, a_key, monkeypatch
+):
+    """The refcount is the point, not the move. An endpoint a sibling still
+    points at keeps its keys -- forgetting them would break that sibling to
+    tidy up after this one."""
+    staying = _create_trusted_server(api_client, signed_in, HOST, monkeypatch)
+    moving = api_client.post(
+        "/api/servers", json=_add_body(hostname=HOST, name="second")
+    )
+    assert moving.status_code == 200, moving.text
+    moving_id = moving.json()["id"]
+
+    resp = api_client.put(
+        f"/api/servers/{moving_id}",
+        json={
+            "hostname": OTHER_HOST, "port": 22, "username": "alice",
+            "ssh_key_name": "alice-key", "name": "second",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["host_keys_forgotten"] == 0
+    assert main.db.get_known_hosts(HOST, 22)   # still trusted, for `staying`
+    assert staying
+
+
+def test_editing_without_moving_forgets_nothing(
+    api_client, signed_in, a_key, monkeypatch
+):
+    """A rename, a new username or a different key is not a move, and must not
+    drop the trust for an endpoint the server still points at."""
+    server_id = _create_trusted_server(api_client, signed_in, HOST, monkeypatch)
+    before = main.db.get_known_hosts(HOST, 22)
+
+    resp = api_client.put(
+        f"/api/servers/{server_id}",
+        json={
+            "hostname": HOST, "port": 22, "username": "bob",
+            "ssh_key_name": "alice-key", "name": "renamed",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["host_keys_forgotten"] == 0
+    assert main.db.get_known_hosts(HOST, 22) == before
+
+
+def test_changing_only_the_port_is_a_move(
+    api_client, signed_in, a_key, monkeypatch
+):
+    """known_hosts is keyed on (hostname, port), so 22 -> 2222 is a different
+    endpoint even though the hostname did not change."""
+    server_id = _create_trusted_server(api_client, signed_in, HOST, monkeypatch)
+
+    resp = api_client.put(
+        f"/api/servers/{server_id}",
+        json={
+            "hostname": HOST, "port": 2222, "username": "alice",
+            "ssh_key_name": "alice-key", "name": "target",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["host_keys_forgotten"] == 1
+    assert main.db.get_known_hosts(HOST, 22) == []

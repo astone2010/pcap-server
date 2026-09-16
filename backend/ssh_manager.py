@@ -21,14 +21,91 @@ from backend.models import ServerAuth
 logger = logging.getLogger(__name__)
 
 
+class PrivateKeyRejected(ValueError):
+    """A stored key that asyncssh will not import, caught at ingest.
+
+    Until now a key was only ever parsed at connect time (_load_client_key), so
+    pasting a public key by mistake, or a key with a passphrase this app has no
+    way to ask for, was accepted silently and surfaced minutes later as an
+    asyncssh error on an unrelated screen. Both are decided here instead, while
+    the person who has the key is still looking at it.
+    """
+
+
+def normalise_private_key(raw: bytes) -> bytes:
+    """Tidy a pasted or uploaded private key, and refuse one that cannot work.
+
+    asyncssh is more forgiving than it looks -- it imports a key with CRLF line
+    endings, no trailing newline, or surrounding blank space quite happily
+    (checked against asyncssh 2.24, not assumed). The normalising here is so
+    that what lands on disk is the conventional form for any other tool that
+    reads it, not to make asyncssh cope.
+
+    What this is really for is the two inputs that can never work, and today
+    fail late:
+      * a PUBLIC key, which is the easy paste to get wrong -- both files sit
+        side by side and differ by one suffix; and
+      * a key protected by a passphrase, which nothing in this app can supply,
+        so it is broken here however valid it is elsewhere.
+
+    The key material never appears in the message or the logs: a failure says
+    what kind of failure it is, and nothing about the bytes.
+    """
+    if not raw.strip():
+        raise PrivateKeyRejected("that is empty -- paste the whole private key, including its BEGIN and END lines")
+
+    # \r\n and lone \r -> \n, exactly one trailing newline, no leading blank space.
+    text = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    normalised = text.strip(b" \t\n") + b"\n"
+
+    try:
+        asyncssh.import_private_key(normalised)
+    except asyncssh.KeyEncryptionError as exc:
+        raise PrivateKeyRejected(
+            "that key is encrypted and the passphrase was not accepted. "
+            "pcap-server cannot prompt for a passphrase, so the key it stores has "
+            "to be one that opens without it."
+        ) from exc
+    except asyncssh.KeyImportError as exc:
+        detail = str(exc).lower()
+        if "passphrase" in detail:
+            raise PrivateKeyRejected(
+                "that key is protected by a passphrase. pcap-server connects "
+                "unattended and has nowhere to ask for one, so it cannot use it. "
+                "Use a key with no passphrase, or remove it with "
+                "`ssh-keygen -p -f <keyfile>` on a copy."
+            ) from exc
+        if normalised.startswith((b"ssh-", b"ecdsa-", b"sk-")) or b"PUBLIC KEY" in normalised:
+            raise PrivateKeyRejected(
+                "that looks like a PUBLIC key. The private key is the other file -- "
+                "the one WITHOUT the .pub suffix, beginning "
+                "'-----BEGIN OPENSSH PRIVATE KEY-----'."
+            ) from exc
+        raise PrivateKeyRejected(
+            "that is not a private key asyncssh can read. It should begin with a "
+            "'-----BEGIN ... PRIVATE KEY-----' line and end with the matching END line."
+        ) from exc
+
+    return normalised
+
+
 class HostNotTrusted(ConnectionError):
     """The endpoint has no pinned host keys, so its identity cannot be checked.
 
     A ConnectionError subclass so every existing `except ConnectionError`
     handler still catches it unchanged; the distinct type lets the routes that
-    can do something about it (the add-form probes) recognise it and point the
-    caller at 'Scan & accept host key' rather than surfacing a bare failure.
+    can do something about it recognise it and tell the caller to collect
+    fingerprints rather than surfacing a bare failure.
+
+    Carries the endpoint rather than leaving it to be parsed back out of the
+    message: the API answer names the host and port as their own fields, so the
+    caller can scan exactly what failed instead of splitting a sentence.
     """
+
+    def __init__(self, message: str, hostname: str = "", port: int = 0):
+        super().__init__(message)
+        self.hostname = hostname
+        self.port = port
 
 # asyncssh's login_timeout covers authentication only -- it starts once the TCP
 # connection is up. connect_timeout is the one that bounds the whole outbound
@@ -352,7 +429,9 @@ class SSHManager:
             raise HostNotTrusted(
                 f"{server.hostname}:{server.port} has no trusted host keys yet, so "
                 "its identity cannot be checked. Its host keys must be scanned and "
-                "accepted before it can be used."
+                "accepted before it can be used.",
+                hostname=server.hostname,
+                port=server.port,
             )
 
         try:

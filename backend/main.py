@@ -58,6 +58,7 @@ from backend.models import (
     DisplayFilterRequest,
     KnownHostConfirm,
     KnownHostEndpoint,
+    PastedPrivateKey,
     ServerAuth,
     ServerCreate,
     ServerInfo,
@@ -95,8 +96,10 @@ from backend.sanitizer import (
 )
 from backend.ssh_manager import (
     HostNotTrusted,
+    PrivateKeyRejected,
     SSHManager,
     host_key_fingerprint,
+    normalise_private_key,
     resolve_key_path,
 )
 from backend.tls import INSECURE_ALLOWED_PATHS as TLS_INSECURE_ALLOWED_PATHS
@@ -110,7 +113,7 @@ SSH_KEYS_DIR = Path(os.environ.get("SSH_KEYS_DIR", "/app/ssh-keys"))
 CAPTURES_DIR = Path(os.environ.get("CAPTURES_DIR", "/app/captures"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 
-APP_VERSION = "0.1.0-dev.37"
+APP_VERSION = "0.1.0-dev.38"
 REPO_URL = "https://github.com/darthrater78/pcap-server"
 
 # Expired rows and aged-out limiter keys are rejected wherever they are read,
@@ -1285,15 +1288,10 @@ async def add_server(req: ServerCreate, user: dict = Depends(get_current_user)):
     pinned = False
     if not db.get_known_hosts(req.hostname, req.port):
         if not req.host_keys and not req.add_unverified:
-            raise HTTPException(400, {
-                "code": "host_keys_required",
-                "reason": f"{req.hostname}:{req.port} has no trusted host keys yet.",
-                "explanation":
-                    "Scan the host and accept its fingerprints before adding it. "
-                    "Until its identity is pinned, nothing can connect to it -- "
-                    "including the check that this is not the machine pcap-server "
-                    "runs on.",
-            })
+            raise _host_keys_required_error(
+                req.hostname, req.port,
+                f"{req.hostname}:{req.port} has no trusted host keys yet.",
+            )
         if req.host_keys:
             _pin_reviewed_keys(req.hostname, req.port, req.host_keys, user["id"])
             pinned = True
@@ -1366,9 +1364,11 @@ async def trust_server_host(
             "code": "host_already_trusted",
             "reason": f"{srv.hostname}:{srv.port} already has stored host keys.",
             "explanation":
-                "Replacing keys that are already pinned is an admin action, under "
-                "Admin -> Known Hosts. If this host has genuinely been rebuilt, an "
-                "admin has to forget the old keys before new ones can be accepted.",
+                "This route establishes trust where there is none; it never replaces "
+                "it. If the host has genuinely been rebuilt, the old keys have to go "
+                "first -- an admin can forget them under Admin -> Known Hosts, and if "
+                "this is the only server pointing at that endpoint, deleting it "
+                "forgets them too and you can add it again.",
         })
     fingerprints = _pin_reviewed_keys(srv.hostname, srv.port, req.keys, user["id"])
     return {"ok": True, "stored": len(fingerprints), "keys": fingerprints}
@@ -1407,9 +1407,9 @@ def _pin_reviewed_keys(hostname: str, port: int, keys, user_id: str) -> list[dic
 async def _transient_host_keys(hostname: str, port: int, host_keys, user_id: str):
     """Pin reviewed keys just long enough to probe a not-yet-created server.
 
-    The add form's 'Scan & accept host key' step hands the accepted keys to Test
-    connection and Check prerequisites so they can reach a host that has never
-    been trusted. Same no-orphan invariant as add_server: keys pinned here for an
+    The add form's review step hands the accepted keys to Test connection and
+    Check prerequisites -- whichever of them asked for them -- so they can reach
+    a host that has never been trusted. Same no-orphan invariant as add_server: keys pinned here for an
     endpoint that had none are always forgotten again on the way out, because no
     row references them. An endpoint that is already trusted is left untouched --
     the probe uses what is stored, and this pins and forgets nothing.
@@ -1429,14 +1429,33 @@ async def _transient_host_keys(hostname: str, port: int, host_keys, user_id: str
             )
 
 
-def _host_not_trusted_error(exc: HostNotTrusted) -> HTTPException:
-    """Structured so the add form can send the user to 'Scan & accept host key'
-    rather than showing a bare failure."""
+# One code for one condition. add_server refuses before it connects (the
+# endpoint has nothing stored and the caller sent nothing), the probes find out
+# from the handshake -- but to a caller both mean the same thing: this endpoint
+# needs host keys before anything can talk to it. They used to answer with two
+# different codes, so every caller had to know both, and the add form's two
+# probe buttons handled one of them while add handled the other.
+HOST_KEYS_REQUIRED = "host_keys_required"
+
+
+def _host_keys_required_error(hostname: str, port: int, reason: str) -> HTTPException:
+    """Structured so the caller can go and collect fingerprints rather than
+    showing a bare failure. Every route that needs trust raises this one."""
     return HTTPException(409, {
-        "code": "host_not_trusted",
-        "reason": str(exc),
-        "remedy": "Use 'Scan & accept host key' to review and accept its fingerprints first.",
+        "code": HOST_KEYS_REQUIRED,
+        "reason": reason,
+        "hostname": hostname,
+        "port": port,
+        "explanation":
+            "Nothing can connect to a host until its identity is pinned -- "
+            "including the check that this is not the machine pcap-server runs on. "
+            "Review its fingerprints and accept them, then try again.",
     })
+
+
+def _from_host_not_trusted(exc: HostNotTrusted) -> HTTPException:
+    """The same refusal as add_server's, reached from the other direction."""
+    return _host_keys_required_error(exc.hostname, exc.port, str(exc))
 
 
 async def _probe_before_create(auth: ServerAuth) -> tuple[str, str]:
@@ -1584,16 +1603,46 @@ async def test_server(server_id: str, user: dict = Depends(get_current_user)):
 
 @app.put("/api/servers/{server_id}")
 async def update_server(server_id: str, auth: ServerAuth, user: dict = Depends(get_current_user)):
+    """Repoint a server, and clean up the endpoint it left behind.
+
+    Deleting a server already forgets the keys for an endpoint nothing points
+    at any more (remove_server). Editing did not, so every corrected typo and
+    every host that moved left its keys pinned forever with no server
+    referencing them -- the same orphans Admin -> Known hosts grew a purge
+    button for, manufactured by the edit path faster than the button could
+    clear them.
+
+    Same refcount and the same cross-user rule as the delete path, for the same
+    reason: the table is global, so another user's server still verifying
+    against that endpoint keeps it trusted.
+    """
     # Checked on edit too: otherwise a benign server could be repointed at the host.
     await _reject_self_target(auth.hostname)
     _require_key(auth.ssh_key_name)
+
+    # Read before the update -- afterwards the row names the new endpoint and
+    # the old one is unrecoverable.
+    previous = _require_server(server_id, user["id"])
     updated = db.update_active_server(
         server_id, user["id"], auth.name, auth.hostname, auth.port,
         auth.username, auth.ssh_key_name, auth.use_sudo,
     )
     if not updated:
         raise HTTPException(404, "server not found")
-    return _server_from_row(db.get_active_server(server_id, user["id"]))
+
+    forgotten = 0
+    moved = (previous.hostname, previous.port) != (auth.hostname, auth.port)
+    if moved and db.count_servers_for_endpoint(previous.hostname, previous.port) == 0:
+        forgotten = db.forget_known_host(previous.hostname, previous.port)
+        if forgotten:
+            logger.info(
+                "forgot %d host key(s) for %s:%d -- the last server pointing at it "
+                "was repointed to %s:%d",
+                forgotten, previous.hostname, previous.port, auth.hostname, auth.port,
+            )
+
+    row = _server_from_row(db.get_active_server(server_id, user["id"]))
+    return {**row.model_dump(), "host_keys_forgotten": forgotten}
 
 
 # --- stored SSH usernames ---
@@ -1653,7 +1702,7 @@ async def probe_test(req: ServerProbe, user: dict = Depends(get_current_user)):
         async with _transient_host_keys(req.hostname, req.port, req.host_keys, user["id"]):
             result = await ssh_manager.test_connection(auth)
     except HostNotTrusted as exc:
-        raise _host_not_trusted_error(exc)
+        raise _from_host_not_trusted(exc)
     except ConnectionError as exc:
         raise HTTPException(502, str(exc))
     except FileNotFoundError as exc:
@@ -1677,7 +1726,7 @@ async def probe_prereq_check(req: ServerProbe, user: dict = Depends(get_current_
         async with _transient_host_keys(req.hostname, req.port, req.host_keys, user["id"]):
             result = await ssh_manager.check_prerequisites(auth)
     except HostNotTrusted as exc:
-        raise _host_not_trusted_error(exc)
+        raise _from_host_not_trusted(exc)
     except ConnectionError as exc:
         raise HTTPException(502, str(exc))
     except FileNotFoundError as exc:
@@ -1719,26 +1768,65 @@ async def list_ssh_keys(user: dict = Depends(get_current_user)):
     return sorted(keys)
 
 
-@app.post("/api/admin/ssh-keys")
-async def upload_ssh_key(file: UploadFile, user: dict = Depends(require_admin)):
-    name = file.filename or ""
-    if not name or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+def _store_ssh_key(name: str, content: bytes) -> dict:
+    """Validate, normalise and seal a private key under `name`.
+
+    Shared by the upload and the paste route so the two cannot drift: the same
+    name rule, the same size bound, the same refusal to overwrite, the same
+    parse check, and the same sealing. Before this existed only the upload
+    route stored keys, and it checked the name and the size but never whether
+    the bytes were a private key at all.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
         raise HTTPException(400, "invalid key name — use only letters, digits, dots, dashes, underscores")
     if len(name) > 255:
-        raise HTTPException(400, "filename too long")
+        raise HTTPException(400, "key name too long")
     dest = _key_path(name)
     if dest.exists():
         raise HTTPException(409, f"key '{name}' already exists")
-    content = await file.read()
     if len(content) > 64 * 1024:
-        raise HTTPException(400, "key file too large (max 64 KB)")
+        raise HTTPException(400, "key is too large (max 64 KB)")
+
+    # Parsed before it is stored, not at connect time. A public key or a
+    # passphrase-protected key used to be accepted here and fail minutes later
+    # against a host, reported from a screen that never mentioned the key.
+    try:
+        content = normalise_private_key(content)
+    except PrivateKeyRejected as exc:
+        raise HTTPException(400, str(exc)) from exc
+
     SSH_KEYS_DIR.mkdir(parents=True, exist_ok=True)
     # Sealed before it ever touches disk when a master key is configured --
-    # same as captures, an uploaded private key never exists as a plaintext
-    # file on the volume.
+    # same as captures, a stored private key never exists as a plaintext file
+    # on the volume.
     dest.write_bytes(vault.cryptor.seal_bytes(content) if vault.cryptor else content)
     dest.chmod(0o600)
+    logger.info("stored SSH private key %r (%d bytes)", name, len(content))
     return {"ok": True, "name": name}
+
+
+@app.post("/api/admin/ssh-keys")
+async def upload_ssh_key(file: UploadFile, user: dict = Depends(require_admin)):
+    return _store_ssh_key(file.filename or "", await file.read())
+
+
+@app.post("/api/admin/ssh-keys/paste")
+async def paste_ssh_key(req: PastedPrivateKey, user: dict = Depends(require_admin)):
+    """Store a private key that was typed or pasted rather than uploaded.
+
+    The same operation as the upload, reached a different way: copying a key
+    out of a terminal is how people usually have one to hand, and requiring it
+    to become a file first was a step that existed only because the route did.
+
+    Deliberately NOT widened to every user. Adding a server is something any
+    user can do, but the key store is shared -- every server picks from the
+    same list -- so who may put a credential into it stays an admin decision,
+    exactly as the upload route has it.
+
+    The body is JSON, so this rides the same 64 KB cap the middleware already
+    grants anything under /api/admin/ssh-keys rather than the small default.
+    """
+    return _store_ssh_key(req.name, req.key.encode())
 
 
 @app.delete("/api/admin/ssh-keys/{key_name}")

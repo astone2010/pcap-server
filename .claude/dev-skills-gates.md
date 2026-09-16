@@ -1,5 +1,128 @@
 # Dev Skills gate state
 
+## RELEASE SEQUENCE 0.1.0-dev.38 — the add-server host-key flow
+Track: RELEASE SEQUENCE (user-facing behaviour change). Scope chosen by the user
+via AskUserQuestion: "Roll it all in" PLUS the paste-to-compare modal, then the
+SSH-key paste added mid-flight on their "I also want the private SSH key to be
+pasteable and not just uploaded".
+
+Env: the system prompt says managed remote container; the working tree carried a
+LOCAL session's files. Put to the user, who answered "Local CLI, remote" -- read
+as their own box reached remotely. Claude EXECUTES git after approval (the
+container-reclaim risk makes a presented block the losing bet either way), which
+is also what dev.34/35/37 did on the user's explicit instruction.
+Model: Opus 5, above the Sonnet ceiling. Flagged twice; user chose the task
+rather than switching down, consistent with every prior release.
+
+🔢 VERSION    ✅ 0.1.0-dev.38 in all seven refs (backend/main.py:116,
+              docker-compose.yml:107, README 231/332/348, reverse-proxy
+              117/372). v0.1.0-dev.37 confirmed on the remote -> d513564.
+              REPO_URL + release_notes_url present.
+🔨 BUILD      ✅ ./scripts/check.sh EXIT=0, 1556 passed / 0 failed (308s).
+              dev.37's baseline was 1532, so +24 are this change's.
+              Run THREE times: after the feature, after the quality refactor,
+              after the doc/comment sweep. Green each time.
+              CONTAINER: localhost/pcap-server:0.1.0-dev.38 builds (641MB);
+              boots, / and /js/app.js = 200, 0 tracebacks. Served app.js carries
+              withHostKeys/openHostKeyDialog/refreshServerDetailState/
+              normaliseFingerprint/adminPasteKey and ZERO scan-accept-keys.
+              Served index.html carries the dialog + paste UI. The VALIDATOR was
+              exercised in the image's own interpreter: real key accepted, public
+              key and passphrase-protected key both refused by name.
+              Both new routes answer 403 unauthenticated over plain HTTP -- the
+              read-only middleware firing BEFORE auth, which is the right answer
+              for a route carrying a private key.
+🔒 SECURITY   ✅ 0 Critical, 0 High, 0 Medium. pip-audit: no known
+              vulnerabilities; NO new dependency (asyncssh already present, so
+              requirements.txt and Dockerfile are untouched).
+              THE POINT: the one surface that renders hostile input does it
+              without innerHTML at all. A key_type and fingerprint come from
+              whatever answered on that address -- the exact input not to trust,
+              on the screen deciding whether to trust it. renderHostKeyRows uses
+              createElement + textContent throughout. Every other new innerHTML
+              site (5, all checked) interpolates escHtml'd values or constants.
+              Private key handling: never logged (main.py logs name + byte count
+              only); all 5 PrivateKeyRejected messages name the failure kind and
+              never the bytes; paste refused over plain HTTP with the
+              key-specific reason; rides the existing 128KB cap via
+              startswith("/api/admin/ssh-keys"); model caps the field at 64KB;
+              stays ADMIN-ONLY like the upload -- deliberately NOT widened,
+              because the key store is shared by every server.
+              Authorisation otherwise unchanged. trust-host keeps both bounds
+              (endpoint-matched, refuses to REPLACE trust); only its 409 wording
+              changed, to stop sending people to an admin when deleting their own
+              last server at that endpoint does it.
+              DELIBERATE BREAKING CHANGE, flagged not buried: add_server 400 ->
+              409 and host_not_trusted -> host_keys_required. One condition, one
+              code -- that unification is what lets withHostKeys be a single
+              handler. Anything outside the UI keying on the old status/code
+              breaks. Pre-1.0; the CHANGELOG says so in terms.
+              QUALITY, fixed during the gate not deferred: openHostKeyDialog was
+              83 lines doing three jobs -> renderHostKeyRows (26) /
+              wireFingerprintCompare (17) / orchestrator (35). addServer 63->52,
+              saveServerEdit 51->32. And a comment that LIED (adminPasteKey
+              claimed the textarea was cleared on failure too; it is not) --
+              corrected the comment, not the code, because wiping it on a 409
+              name collision forces a full re-paste and buys nothing once the key
+              has crossed the wire.
+              NOTED, NOT CHANGED: _connect parses OUR client key before checking
+              whether the TARGET is trusted. Ingest validation makes an
+              unparseable stored key much harder to create now, so the order was
+              left alone rather than widen this diff. For dev.39.
+📄 DOCS       ✅ CHANGELOG dev.38 (Changed/Fixed/Documentation/Internal), with
+              the breaking API change called out explicitly. README's
+              add-a-server walkthrough rewritten around the new flow, plus
+              paste-to-compare and pasting an SSH key. architecture.md:
+              withHostKeys keeping the server authoritative on trust, the single
+              host_keys_required contract, the edit-path refcount.
+              operating.md: pasting a key and the two mistakes caught at ingest.
+              STALE-REFERENCE SWEEP: five comments in app.js, main.py, models.py
+              and test_ssh_manager.py described "Scan & accept host key" as the
+              CURRENT mechanism -- all corrected. The only surviving mention is
+              the deliberate historical note explaining why there are now three
+              buttons. _host_not_trusted_error renamed _from_host_not_trusted,
+              since it now emits a differently-named code.
+📦 RELEASE    ⏳ branch synced (git fetch -> 0 ahead / 0 behind). PR ➖ N/A --
+              no PRs before 1.0 (memory release-process), branch canonical.
+              Diff: 17 files, +1505/-257. No keys, .env or capture data staged.
+              AWAITING COMMIT APPROVAL.
+🚀 SHIP       ⬜ tag block goes to the USER to run (SKILL.md 5.8), as always.
+
+### WHAT THIS RELEASE DOES, against what the user asked for
+User: "audit the entire add server process... clunky... still have issues with
+the key hosts", then "fully review the add server flow with the host keys...
+Check all iterations of the process to find flaws", with the design stated
+outright: "any of the action buttons should ask for the host keys and then store
+them ephemeral until the user adds", plus "when the key is forgotton the trust
+icon on the server page does not change", plus "I also want the private SSH key
+to be pasteable and not just uploaded".
+ 1. withHostKeys: Test connection / Check prerequisites / Add server all gather
+    keys on demand, held in pendingAddKeys, pinned for good only by Add. The
+    separate Scan & accept button is DELETED -- nothing left for it to do.
+ 2. The trust/never-checked pills refresh in place (refreshServerDetailState),
+    from all five paths that change them. Root cause was that selectServer wrote
+    them once and nothing ever redrew them; the worst case was Check
+    prerequisites reporting success under a pill still reading "Never checked".
+ 3. The fingerprint review is a real <dialog> with monospace fingerprints, copy
+    buttons, and a paste-to-compare box that ignores the SHA256: prefix and
+    spacing.
+ 4. update_server refcount-forgets the endpoint it leaves (the orphan factory).
+ 5. The edit form offers to trust a newly-pointed-at address.
+ 6. SSH keys can be pasted; both routes now validate at ingest.
+
+### TWO TEST FIXTURES WERE HIDING COVERAGE (found during Gate 2)
+ * tests/browser/conftest.py wrote the literal string "# placeholder for tests;
+   not a key" as browser-test-key, on the reasoning that only the file's
+   PRESENCE is checked. True of add_server, false of anything that connects:
+   _connect loads the client key BEFORE consulting the trust store, so every
+   probe became a generic 502 "SSH connection failed" and the 409 the add form
+   branches on could never be observed. A test for that branch was impossible.
+ * clean_slate reset servers and usernames but NOT known_hosts, so a host one
+   test trusted was one the next test never got asked about.
+Both fixed. The browser suite got FASTER (152s -> 132s) because the probe now
+fails fast on 409 instead of attempting a real connection to TEST-NET-3.
+
+
 ## ADD-SERVER / HOST-KEY AUDIT — 2026-09-15, asked for by the user
 "audit the entire add server process... clunky... still have issues with the
 key hosts" then "fully review the add server flow with the host keys... Check
