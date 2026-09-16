@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.1.0-dev.39 — 2026-09-16
+
+Dependency updates only. The ten Dependabot pull requests opened after dev.37
+enabled it are merged here, plus the updates it had not yet opened because of
+its five-at-a-time limit. There are no changes to the app's features, its
+configuration, or its API. Upgrading is a pull of the new image. Nothing needs
+to change in `docker-compose.yml` except the tag.
+
+### Changed
+
+- **The runtime dependencies in the image moved forward:**
+  - uvicorn 0.34.0 → 0.53.0
+  - starlette 1.3.1 → 1.6.0
+  - pydantic 2.10.3 → 2.13.5
+  - aiofiles 24.1.0 → 25.1.0
+  - qrcode 8.0 → 8.2
+  - pyotp 2.9.0 → 2.10.0
+
+  Several were pinned at releases from 2023–2024 and had only ever been moved
+  when an advisory forced it. uvicorn is the large jump. The app builds its own
+  uvicorn config to serve HTTPS from a sealed key (`backend/serve.py`), so the
+  parts it relies on were checked against the new version directly: the TLS
+  config fields, the certificate load, and the `should_exit` flag that
+  certificate renewal uses to restart in place. None of them changed, and the
+  test suite's real-HTTPS start-up tests pass. No known advisories apply to
+  either the old versions or the new ones — this is staying current, not a
+  security fix.
+
+### Removed
+
+- **`pydantic-settings` is no longer installed.** It was listed in
+  `backend/requirements.txt` from the first commit, but nothing ever imported
+  it, so it was shipping in the image as unused code.
+
+### Documentation
+
+- The Python 3.11–3.13 range that `scripts/check.sh` enforces (and the README
+  explains) no longer claims pydantic-core has no 3.14 wheel — the new pin
+  does have one. The ceiling stays at 3.13 until the suite has been run on
+  3.14, and the error message now says that instead.
+
+### Internal
+
+- **Test-only updates:** pytest 9.0.3 → 9.1.1, and playwright 1.62.0 → 1.63.0.
+  The new playwright uses a newer Chromium build: run
+  `.venv/bin/python -m playwright install chromium` once, or the browser suites
+  report as SKIPPED.
+- **CI and release actions moved to their current major versions:**
+  - actions/checkout v4 → v7.0.1
+  - actions/setup-python v5 → v7
+  - docker/login-action v3.7.0 → v4.6.0
+  - docker/build-push-action v6.19.2 → v7.3.0
+  - softprops/action-gh-release v2.6.2 → v3.0.3
+
+  The main change across these majors is the move to the Node 24 runtime, which
+  GitHub-hosted runners already provide. None of the inputs removed in those
+  majors were in use. The release workflow's actions stay pinned to full commit
+  SHAs, and each new SHA was checked against its tag in two places: the action
+  repository's tags, and the GitHub API. The release-side actions only run on a
+  tag push, so this release's own publish is their first run.
+
 ## 0.1.0-dev.38 — 2026-09-15
 
 Adding a server, reviewed end to end. The host-key step was the awkward part of

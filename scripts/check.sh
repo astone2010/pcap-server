@@ -18,16 +18,22 @@ echo
 
 # --- which interpreter builds the venv ------------------------------------
 #
-# The pins decide this, not whatever `python3` happens to be. pydantic-core
-# (via pydantic==2.10.3) ships wheels up to cp313; past that pip falls back to
-# building it from source, which needs PyO3 <= 3.13 and dies with
+# The pins decide this, not whatever `python3` happens to be. The ceiling was
+# set when pydantic-core (via pydantic==2.10.3) shipped wheels only up to cp313;
+# past that pip fell back to building it from source, which needed PyO3 <= 3.13
+# and died with
 #
 #   error: the configured Python interpreter version (3.14) is newer than
 #   PyO3's maximum supported version (3.13)
 #
 # buried in a few hundred lines of cargo output that never mentions Python
-# versions at all. Fedora 44 ships 3.14 as `python3`, so this is not
+# versions at all. Fedora 44 ships 3.14 as `python3`, so this was not
 # hypothetical -- the script was simply unrunnable there.
+#
+# pydantic 2.13.5 (dev.39) pulls a pydantic-core that does ship cp314 wheels,
+# so that particular failure is gone. The ceiling stays at 3.13 until the suite
+# has actually been run on 3.14 -- every other compiled pin has to install and
+# pass there too, and nothing has shown that yet.
 #
 # 3.12 is what the Dockerfile and .github/workflows/check.yml use, so it is the
 # version this project is actually exercised on, and it is tried first. The
@@ -76,7 +82,7 @@ else
         fi
     done
     if [ -z "$INTERPRETER" ]; then
-        echo "No supported Python found. This project needs ${PYTHON_MIN}-${PYTHON_MAX}; pydantic-core has no wheel above ${PYTHON_MAX} and its source build refuses to compile." >&2
+        echo "No supported Python found. This project needs ${PYTHON_MIN}-${PYTHON_MAX}, the range its test suite has been run on." >&2
         echo "Found: python3 = $(python_version python3)" >&2
         echo "Install one (e.g. 'sudo dnf install python3.12' or 'sudo apt install python3.12-venv'), or set PYTHON=/path/to/python3.12" >&2
         exit 1

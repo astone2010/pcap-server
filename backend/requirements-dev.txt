@@ -19,4 +19,4 @@ httpx==0.28.1
 # browser with `python -m playwright install chromium`, or point
 # PCAP_TEST_CHROMIUM at one the environment already ships. Without it those
 # tests report as SKIPPED, and scripts/check.sh says so before pytest runs.
-playwright==1.62.0
+playwright==1.63.0

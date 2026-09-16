@@ -228,7 +228,7 @@ cd /opt/docker/pcapserver
 # 2. Fetch the compose file for a specific release. Pinning it to the tag is
 #    what keeps the file and the image version it names in step with each
 #    other -- see "Choosing a version" below before substituting another tag.
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.38/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.39/docker-compose.yml
 
 # 3. Create the four bind-mounted directories, and close them to other users
 #    on this host. All four must exist before the first start: Docker would
@@ -329,7 +329,7 @@ back to step 3. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.38` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `v0.1.0-dev.39` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
 | `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
 
 Pin a release unless you specifically want to track. The
@@ -345,7 +345,7 @@ there is one:
 
 ```bash
 cd /opt/docker/pcapserver
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.38/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.39/docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -802,11 +802,13 @@ the checks, so CI and a developer's machine cannot pass and fail independently
 of each other.
 
 **It needs Python 3.11–3.13, and it picks the interpreter itself.** The ceiling
-is not a preference: `pydantic-core` ships no wheel above cp313, and pip's
-source fallback needs PyO3 ≤ 3.13, so on a newer Python the install dies in a
-Rust build that never mentions Python versions. Distributions have started
-shipping 3.14 as `python3` — Fedora 44 does — which made the script unrunnable
-on a current machine.
+is the newest Python the suite has actually been run on. It was first forced:
+until dev.39 the pinned `pydantic-core` shipped no wheel above cp313, pip's
+source fallback needed PyO3 ≤ 3.13, and on a newer Python the install died in a
+Rust build that never mentions Python versions. The current pin does ship 3.14
+wheels, but the ceiling moves only once the whole suite has passed on 3.14.
+Distributions have started shipping 3.14 as `python3` (Fedora 44 does), so on
+such a machine the script needs a 3.13 or older interpreter installed alongside.
 
 So it searches `python3.12`, `python3.13`, `python3.11`, then `python3`, and
 uses the first one in range; 3.12 comes first because that is what the
@@ -818,8 +820,8 @@ same unreadable failure. If nothing suitable is installed it says so in one
 line, with the range and what it found:
 
 ```
-No supported Python found. This project needs 3.11-3.13; pydantic-core has no
-wheel above 3.13 and its source build refuses to compile.
+No supported Python found. This project needs 3.11-3.13, the range its test
+suite has been run on.
 Found: python3 = 3.14.7
 Install one (e.g. 'sudo dnf install python3.12'), or set PYTHON=/path/to/python3.12
 ```

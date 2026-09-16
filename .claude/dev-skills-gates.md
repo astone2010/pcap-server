@@ -1,5 +1,77 @@
 # Dev Skills gate state
 
+## RELEASE SEQUENCE 0.1.0-dev.39 — the Dependabot batch (2026-09-16)
+Track: RELEASE SEQUENCE -- merging into the canonical branch counts as a release (SKILL.md 2).
+User: "Dev 38 was pushed" (live box REDEPLOYED to dev.38 -- carried item closed),
+"Merge #4 and #10, then batch the rest". Plan chosen via AskUserQuestion:
+one release dev.39, commit A = local merge of #4 + #10, commit B = the other
+eight, one push after every gate. Pushing the merges marks all ten PRs merged.
+Opus approved for this task.
+Env: same box as dev.38 ("Local CLI, remote"); gh logged in as darthrater78.
+Claude EXECUTES git after approval; tag pushes go to the user (5.8).
+Start: caf2737 (= v0.1.0-dev.38), 0 ahead / 0 behind, tree clean.
+METHOD: all ten diffs applied UNCOMMITTED so the gates test the exact final
+tree. The real merges are done at commit time, and the final tree is diffed
+against this one (it must be identical).
+Only conflict: the uvicorn and starlette lines are adjacent in requirements.txt;
+resolved by taking both bumps.
+
+SCOPE WIDENED (user, 2026-09-16): "yes, roll them into dev.39" -- the pins
+Dependabot had not opened yet (5-PR limit): uvicorn 0.52.4->0.53.0, pydantic
+2.10.3->2.13.5, pyotp 2.9.0->2.10.0, playwright 1.62.0->1.63.0. pydantic-settings
+turned out to be UNUSED (never imported); the user chose "Remove it" -> dropped
+from requirements.txt. check.sh/README said pydantic-core has no cp314 wheel --
+no longer true for the new pin; the wording now says the 3.13 ceiling holds until
+the suite runs on 3.14 (none on this box, so the ceiling is NOT raised).
+The first suite pass below covered the ten-PR tree only; it was re-run after
+this change (/tmp/dev39-check2.log) in a venv with pydantic-settings uninstalled.
+uvicorn/starlette now live at github.com/Kludex/* -- the original 2017 repo,
+transferred to its maintainer, and PyPI's project_urls agree. Not a hijack.
+
+🔢 VERSION    ✅ 0.1.0-dev.39 in all seven refs (backend/main.py:116,
+              docker-compose.yml:107, README 231/332/348, reverse-proxy
+              117/372). v0.1.0-dev.38 -> caf2737 is on the remote.
+🔨 BUILD      ✅ FINAL TREE: check.sh EXIT=0, 1556 passed / 0 failed / 0 skipped
+              (306s), venv without pydantic-settings, chromium v1243 for
+              playwright 1.63. Image rebuilt (BUILD_EXIT=0) and booted: / 200 in
+              2s, app.js 200, auth/status 200, servers 401, ssh-keys 401,
+              paste 403, login 401, 0 tracebacks; in-image uvicorn 0.53.0,
+              pydantic 2.13.5, pyotp 2.10.0, pydantic-settings ABSENT.
+              FIRST PASS (ten-PR tree): 1556 passed (309s;
+              dev.38 took 308s, so the slow start was the concurrent docker build).
+              2 NEW WARNINGS, both raised inside starlette 1.6's own test client
+              (test-only): "httpx with starlette.testclient is deprecated;
+              install httpx2", and anyio's BlockingPortal alias. httpx2 is a new
+              package -- vet it before adopting; not done in this release.
+              CONTAINER ✅ localhost/pcap-server:0.1.0-dev.39 builds. Booted with
+              a throwaway PCAP_MASTER_KEY: / = 200 in 2s; app.js 200;
+              auth/status 200; servers 401; login 401; ssh-keys/paste 403
+              (plain-HTTP refusal, as in dev.38); 0 tracebacks. In-image
+              versions: uvicorn 0.52.4, starlette 1.6.0, aiofiles 25.1.0,
+              qrcode 8.2, fastapi 0.141.1. (Without a key the image REFUSES TO
+              START, which is correct.)
+🔒 SECURITY   ✅ 0 Critical / 0 High / 0 Medium -- signed off by the user.
+              pip-audit (final pins): no known vulns in requirements.txt or -dev.txt.
+              Quality: no app code changed; check.sh edit is comment + one echo
+              string (bash -n clean).
+              New action SHAs match their tags in BOTH git ls-remote and the
+              API: checkout 3d3c42e5 v7.0.1, login dbcb8138 v4.6.0,
+              build-push 53b7df96 v7.3.0, gh-release efb35369 v3.0.3.
+              Breaking changes in those majors: Node 24 runtime (hosted
+              runners fine); build-push removed the DOCKER_BUILD_* env vars and
+              setup-python removed the pip-install input -- neither is used.
+              uvicorn API used by serve.py/tls manager (Config ssl_* fields,
+              load(), Server.should_exit) checked present in 0.52.4.
+              check.yml/lint-workflows still use floating tags (@v7) -- the
+              existing Low finding, unchanged in kind.
+📄 DOCS       ✅ CHANGELOG dev.39 (Changed/Removed/Documentation/Internal),
+              rewritten for the widened scope. README + check.sh no longer claim
+              pydantic-core lacks cp314. No doc mentions any old dep/action
+              version or pydantic-settings (grepped).
+📦 RELEASE    ✅ synced (0/0). Both commits approved by the user ("yes, commit
+              and push both"). PR ➖ N/A -- no PRs before 1.0; branch canonical.
+🚀 SHIP       ⬜ tag block goes to the USER.
+
 ## RELEASE SEQUENCE 0.1.0-dev.38 — the add-server host-key flow
 Track: RELEASE SEQUENCE (user-facing behaviour change). Scope chosen by the user
 via AskUserQuestion: "Roll it all in" PLUS the paste-to-compare modal, then the
@@ -82,11 +154,12 @@ rather than switching down, consistent with every prior release.
               the deliberate historical note explaining why there are now three
               buttons. _host_not_trusted_error renamed _from_host_not_trusted,
               since it now emits a differently-named code.
-📦 RELEASE    ⏳ branch synced (git fetch -> 0 ahead / 0 behind). PR ➖ N/A --
-              no PRs before 1.0 (memory release-process), branch canonical.
+📦 RELEASE    ✅ commit caf2737, pushed. PR ➖ N/A -- no PRs before 1.0
+              (memory release-process), branch canonical.
               Diff: 17 files, +1505/-257. No keys, .env or capture data staged.
-              AWAITING COMMIT APPROVAL.
-🚀 SHIP       ⬜ tag block goes to the USER to run (SKILL.md 5.8), as always.
+🚀 SHIP       ✅ SHIPPED (user-driven tag). Verified 2026-09-16: tag
+              v0.1.0-dev.38 -> caf2737 on the remote; release published
+              2026-09-16T00:49:43Z (prerelease); Release workflow success.
 
 ### WHAT THIS RELEASE DOES, against what the user asked for
 User: "audit the entire add server process... clunky... still have issues with
