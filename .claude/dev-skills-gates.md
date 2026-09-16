@@ -70,7 +70,38 @@ transferred to its maintainer, and PyPI's project_urls agree. Not a hijack.
               version or pydantic-settings (grepped).
 📦 RELEASE    ✅ synced (0/0). Both commits approved by the user ("yes, commit
               and push both"). PR ➖ N/A -- no PRs before 1.0; branch canonical.
-🚀 SHIP       ⬜ tag block goes to the USER.
+   PUSHED 2026-09-16: caf2737..b4cd983 (78f713b = #4+#10, b4cd983 = the other
+   8 + release). All ten dependabot heads verified ancestors; GitHub shows
+   PRs #1-#10 MERGED. Final tree == tested tree except this file's sign-off
+   lines. Lint workflows run 35080273648 success; Check 35080273790 running.
+   Check 35080273790 on b4cd983: success (setup-python@v7, checkout@v7 fine).
+   Container restart mid-watch killed the watcher only; state intact.
+🚀 SHIP       ✅ SHIPPED 2026-09-16. User said "ship", approved the notes, and ran
+              the tag block from /home/serveradmin/pcap-server (never executed
+              here, SKILL.md 5.8). Four post-ship checks, all verified:
+               * tag v0.1.0-dev.39 on the remote -> b4cd983, the commit Check
+                 passed on.
+               * Release run 35082550885 success -- first run of login-action
+                 v4.6.0, build-push v7.3.0, gh-release v3.0.3, checkout v7.0.1.
+               * GitHub release published 10:01:25Z, prerelease, approved notes
+                 applied with gh release edit. 0 file assets -- as every release;
+                 the artifact is the image.
+               * PRs #1-#10 MERGED.
+               * ghcr.io/darthrater78/pcap-server:0.1.0-dev.39 PULLED and checked:
+                 APP_VERSION 0.1.0-dev.39, uvicorn 0.53.0, starlette 1.6.0,
+                 pydantic 2.13.5, pyotp 2.10.0, pydantic-settings absent.
+
+### FOLLOW-UPS out of dev.39
+ * docker/setup-buildx-action is still v3.12.0 (Node 20). The release run warns
+   "forced to run on Node.js 24". Most likely the next Dependabot PR, queued
+   behind the 5-PR limit.
+ * httpx2: starlette 1.6's test client wants it. It's a new package; vet it first.
+ * Python 3.14: pydantic-core now has cp314 wheels. The ceiling could rise once
+   the suite has run on 3.14 (none on this box).
+ * Still open from earlier: the _connect order (for dev.39 -> now dev.40), M5 / L1 / M1-code,
+   and the workflow audit findings (tag-on-branch check, concurrency, timeouts,
+   persist-credentials, floating tags in check.yml and lint-workflows.yml).
+
 
 ## RELEASE SEQUENCE 0.1.0-dev.38 — the add-server host-key flow
 Track: RELEASE SEQUENCE (user-facing behaviour change). Scope chosen by the user
