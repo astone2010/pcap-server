@@ -1,5 +1,122 @@
 # Changelog
 
+## 1.0.0 — 2026-09-17
+
+The first stable release. Forty development builds turned a tcpdump-over-SSH
+helper into something you can hand to a team: captures encrypted at rest, a
+Wireshark-style viewer in the browser, sanitized sharing, and HTTPS built in.
+
+### Highlights
+
+#### Captures are safe at rest and in transit
+- **Encrypted at rest.** AES-256-GCM envelope encryption with the master key
+  kept off the data volume. Captures are decrypted in flight, so no plaintext
+  pcap ever touches disk. SSH private keys are sealed the same way.
+- **Master key rotation without re-encrypting anything.** `backend.rekey`
+  rewraps each capture's key: 84 bytes rewritten per file, whatever the capture
+  weighs.
+- **Read-only over plain HTTP.** The app will not start a capture, accept a
+  key or hand a capture over a connection anyone on the path can read.
+
+#### HTTPS built in
+- **pcap-server gets its own Let's Encrypt certificate.** DNS-01 through about
+  two hundred providers, with no proxy and no inbound port, so a machine on a
+  private LAN still gets a real, browser-trusted certificate. It renews itself.
+  Set it up in **Admin → HTTPS** or from the command line.
+- Guides for Caddy, nginx and Nginx Proxy Manager, including a self-signed
+  setup for anyone without a domain.
+
+#### A Wireshark-style viewer in the browser
+- Packet list, protocol tree and hex dump. Clicking a field highlights its
+  bytes, and clicking a byte selects its field.
+- Right-click anything to filter on it. Display filters autocomplete.
+- **Follow TCP/UDP Stream**, **Protocol Hierarchy** and **Conversations**.
+- Any tshark field can be a column. Columns are saved to your account.
+- **Saved views**: named filters on a capture, each downloadable as its own
+  pcap.
+- On `any` captures, a column shows which interface each packet crossed.
+
+#### Capturing is harder to get wrong
+- A capture filter library grouped by what you are hunting, plus your own saved
+  filters.
+- Captures are named, summarised before they start, and badged with their
+  filter afterwards.
+- Warns when a filter cannot match anything, such as
+  `tcp port 80 and tcp port 443`.
+
+#### Sanitized sharing
+- **Sanitize** downloads a copy with credentials masked and IP addresses, MAC
+  addresses, hostnames and usernames replaced. The same capture always gets the
+  same stand-ins, and a summary lists anything it could not vouch for.
+
+#### Built for a team
+- Multi-user with mandatory TOTP, enforced by the API and not only by the UI.
+- Admins can reset another account's MFA, and a host-side tool recovers a
+  locked-out sole admin.
+- A read-only prerequisite check prints the exact capture-privilege commands
+  for each host. It prefers a group-restricted `cap_net_raw` to sudo.
+
+#### Trust in the target
+- **An untrusted host is refused, never connected to unverified.** Fingerprints
+  are reviewed and compared before they are pinned. Keys from an add that does
+  not complete are rolled back.
+- **pcap-server will not capture from itself.** Doing so would record your own
+  sign-in. The check covers aliases, loopback, the gateway and, via the
+  target's kernel boot id, the Docker host addressed by its own LAN IP.
+
+#### A locked-down container
+- All Linux capabilities dropped except five, `no-new-privileges`, a read-only
+  root filesystem, and the app running as a non-root user.
+
+### Bugs squashed
+
+- **Every capture failed at the last step under uvloop,** and the error path
+  deleted the pcap it had just downloaded. (dev.10)
+- **The viewer was blank and every capture counted zero packets** in the
+  container, while the same file opened fine in Wireshark. (dev.11)
+- **A capture that failed to launch held a concurrency slot forever.** Enough
+  failures and every capture was refused until a restart. (dev.10)
+- **A login rate-limiter bypass.** A spoofed `X-Forwarded-For` allowed
+  unlimited password guessing. (dev.8)
+- **Two-factor was enforced only by the UI.** A client that ignored it held a
+  password-only session with the whole API behind it. (dev.11)
+- **An untrusted host was connected to with host key checking off,** and the
+  SSH key offered to whatever answered on that address. (dev.17)
+- **Login could exhaust server memory.** 40 concurrent requests drove one
+  instance from 85 MB to 1.14 GB. (dev.37)
+- **Deleting a running capture let go of it** instead of stopping it, and
+  wrote it back as a failed capture. (dev.17)
+- **A shipped frontend fix could fail to reach the browser,** which kept
+  serving the previous release's page from its cache. (dev.19)
+- **Eight library capture filters were refused by the app's own API.** (dev.22)
+- **Certificate requests failed polling local DNS** on networks where other
+  tools issue certificates for the same domain. (dev.29)
+- **A host that drops SYNs hung the request for two minutes.** (dev.36)
+
+### Upgrading
+
+- **From a dev build:** re-copy the service block from `docker-compose.yml` at
+  `v1.0.0` into your `compose.yaml`, then `docker compose pull && docker
+  compose up -d`. Data, captures and keys are untouched, and the database
+  migrates itself.
+- **Image tags:** `v1.0.0` is the first release to move `:latest`. **`:dev` does
+  not follow stable releases**, so anyone tracking `:dev` stays on 0.1.0-dev.40
+  until they switch to a pinned tag or `:latest`.
+
+### Changes since 0.1.0-dev.40
+
+No code changes beyond the version. Documentation only:
+
+- **The README is a short tour.** Each section links to the document that holds
+  the detail. New `docs/viewer.md`, `docs/sanitizing.md` and
+  `docs/development.md`. Install troubleshooting, choosing a version and
+  upgrading move to `docs/operating.md`.
+- **`docker-compose.yml` leads with the block to paste.** Setup steps first,
+  then the service block with no comments in it, to be pasted into
+  `compose.yaml`, then all the explanation. The resolved settings are identical.
+- The version table in `docs/operating.md` describes `:latest`, and notes that
+  `:dev` does not follow stable releases.
+
 ## 0.1.0-dev.40 — 2026-09-17
 
 Hardening. The container runs locked down, a release can no longer publish a

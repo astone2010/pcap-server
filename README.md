@@ -20,7 +20,7 @@ only reach over SSH.
 **There is nothing to clone and nothing to build.**
 
 1. Go to
-   [`docker-compose.yml`](https://github.com/darthrater78/pcap-server/blob/v0.1.0-dev.40/docker-compose.yml)
+   [`docker-compose.yml`](https://github.com/darthrater78/pcap-server/blob/v1.0.0/docker-compose.yml)
    and follow the setup steps at the top of it. They have you paste its
    service block into a file named `compose.yaml` on your Docker host.
 2. **Back up the master key** it generates somewhere other than this machine.

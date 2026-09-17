@@ -54,8 +54,9 @@ the setup steps. Nothing is lost — there is no data yet.
 
 | Tag | What it is |
 |---|---|
-| `v0.1.0-dev.40` | A specific release, and what the compose file at that tag pins its image to. Reproducible: the same tag is the same bytes next month |
-| `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
+| `1.0.0` | A specific release, and what the compose file at tag `v1.0.0` pins its image to. Reproducible: the same tag is the same bytes next month |
+| `:latest` | A floating tag moved to each new stable release. `docker compose pull` will change the running version underneath you without the compose file changing at all |
+| `:dev` | A floating tag moved to each new `-dev` build only. It does not follow stable releases: it stays on the last dev build (0.1.0-dev.40) until another dev build is published |
 
 Pin a release unless you specifically want to track. The
 [releases page](https://github.com/darthrater78/pcap-server/releases) lists what
