@@ -27,8 +27,8 @@ the `docker compose run` maintenance commands need, `no-new-privileges` is set,
 and the root filesystem is read-only, with `/tmp` in memory. The app process
 itself runs as `appuser` with no capabilities at all. Capturing happens on the
 target host, so the container never needs `NET_RAW`. A compose file written
-before dev.40 has none of this. Copy the `cap_drop` through `tmpfs` block from
-the current file into yours.
+before dev.40 has none of this. Copy the `cap_drop` through `tmpfs` lines from
+the block in the current `docker-compose.yml` into your `compose.yaml`.
 
 The container's entrypoint chowns the bind mounts to its own non-root user but
 does not set a mode, so a directory created at a default umask is world-readable

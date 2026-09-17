@@ -47,6 +47,22 @@ A display filter tshark cannot parse is reported back with tshark's own message
 and the position it objected to. An empty packet list therefore always means the
 filter was valid and nothing matched it.
 
+## What a capture says it captured afterwards
+
+Each capture in the list carries a badge naming its filter: the library's own
+name where there is one, so `tcp port 443` shows as **HTTPS**, and the
+expression itself where there is not. The exact text is on hover either way.
+
+This matters more than it sounds. An empty packet list from a filtered capture
+and an empty packet list from a quiet network look identical, and they lead to
+opposite conclusions. Captures taken before this existed carry no badge: their
+filter was never recorded, and it is not guessed at from the command.
+
+Saved capture filters (**Save filter**, beside the BPF box) appear at the top of
+the library as **Your filters**. Like saved display filters they are **private
+to your account** — a capture filter usually names the hosts and ports you are
+investigating. Deleting one does not touch any capture already taken with it.
+
 ## Building a display filter by clicking
 
 Most display filters do not need to be typed. **Right-click** anything in the

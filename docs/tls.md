@@ -85,7 +85,7 @@ docker compose exec -it pcap-server python -m backend.tls issue \
 docker compose restart pcap-server
 ```
 
-Run it from the directory holding `docker-compose.yml` — elsewhere, `docker
+Run it from the directory holding `compose.yaml` — elsewhere, `docker
 compose` answers `no configuration file provided`. From anywhere,
 `docker exec -it <container> python -m backend.tls ...` does the same, with the
 container's name from `docker ps` (for example `pcap-server-1`).
@@ -108,7 +108,7 @@ host could read from `ps`.
 ## After the switch
 
 - **The address becomes `https://` on the same port you already use** — the
-  host side of the `ports:` line in `docker-compose.yml`. With the shipped
+  host side of the `ports:` line in `compose.yaml`. With the shipped
   `"8080:8080"` that is `https://pcap.example.com:8080`; with `"9443:8080"` it
   is `:9443`. Plain HTTP stops answering there: the port now speaks only TLS.
   The right-hand `8080` is the app's port inside the container and stays as it
@@ -244,7 +244,7 @@ For passphrase mode, use a [reverse proxy](reverse-proxy.md).
 | `too many certificates already issued` | A Let's Encrypt rate limit. Use [staging](#testing-with-staging) while experimenting |
 | `recursive nameservers: NS 127.0.0.11:53 returned NXDOMAIN` | 0.1.0-dev.28 only, which polled your DNS before validating. From dev.29 pcap-server waits instead — see below |
 | `NXDOMAIN looking up TXT for _acme-challenge...` from Let's Encrypt | The record was not published by the time Let's Encrypt looked. Raise **Wait before validation** |
-| `no configuration file provided: not found` from `docker compose exec` | You are not in the directory holding `docker-compose.yml`. `cd` there, or use `docker exec -it <container> ...` |
+| `no configuration file provided: not found` from `docker compose exec` | You are not in the directory holding `compose.yaml`. `cd` there, or use `docker exec -it <container> ...` |
 | `HTTPS NOT ENABLED: ... Serving plain HTTP` in the log at startup | A certificate is stored but its key would not open — most often the master key was replaced without [rotating](operating.md#rotating-the-master-key). The app starts on plain HTTP rather than not at all, so you can get in and fix it |
 | `REFUSING TO START` mentioning passphrase | See [Passphrase mode](#passphrase-mode) |
 | The browser shows garbage or "connection reset" at `http://` | The port speaks TLS now. Use `https://` |

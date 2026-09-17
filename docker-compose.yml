@@ -2,115 +2,35 @@
 # FIRST-TIME SETUP
 # ============================================================================
 #
-# One paste, run from the directory THIS FILE is in (docker compose looks for it
-# there). The data directory is named in full, so it can be anywhere:
+# 1. Create the data directory and the master key, on the Docker host:
 #
 #     sudo mkdir -p /opt/docker/pcapserver && sudo chown "$USER" /opt/docker/pcapserver
 #     mkdir -p /opt/docker/pcapserver/{ssh-keys,data,captures,secrets}
 #     chmod 0700 /opt/docker/pcapserver/{ssh-keys,data,captures,secrets}
 #     openssl rand -base64 32 > /opt/docker/pcapserver/secrets/master.key
 #     chmod 0400 /opt/docker/pcapserver/secrets/master.key
+#
+# 2. PASTE THE BLOCK BELOW INTO A FILE NAMED compose.yaml -- everything from
+#    `services:` down to the END OF compose.yaml line. Put that file in
+#    whatever directory you keep compose files in.
+#
+# 3. From the directory holding compose.yaml, start it and check it:
+#
 #     docker compose up -d
 #     docker compose ps
 #     docker compose logs pcap-server | grep -i encryption
 #
-# You want `encryption enabled (key id ...)` from that last line, and `running`
-# -- not `restarting` -- from `docker compose ps`. Then open
-# http://<host>:8080 and create the admin account. Have an authenticator app to
-# hand: TOTP enrolment is part of creating it.
+#    You want `running` -- not `restarting` -- from `ps`, and
+#    `encryption enabled (key id ...)` from the logs. Then open
+#    http://<host>:8080 and create the admin account. Have an authenticator
+#    app to hand: TOTP enrolment is part of creating it.
 #
-# Using a different directory than /opt/docker/pcapserver? Substitute it in
-# every line above AND in the four `source:` lines and the
-# secret's `file:` at the bottom of this file -- they're written out in full,
-# not relative to where this file sits, so both places need to agree.
+# 4. Back up secrets/master.key somewhere other than this machine.
 #
-# That's the whole install. Everything below is explanation and the less
-# common cases (secrets error that isn't one, running the data directory
-# somewhere other than next to this file, a start that fails) -- not more
-# steps.
+# Using a different data directory than /opt/docker/pcapserver? Change it in
+# step 1, and in the four `source:` lines and the `file:` line of the block.
 #
-# ----------------------------------------------------------------------------
-# WHAT EACH LINE IS FOR
-#
-#   mkdir       The four directories this file bind-mounts. All four must exist
-#               BEFORE the first start, or Docker creates them itself as
-#               root-owned -- or creates a directory where you meant a file.
-#
-#   chmod 0700  Closes them to other accounts on this host. Not belt-and-braces:
-#               at a default umask they are world-readable, and data/ holds the
-#               SQLite database, which stores every user's TOTP secret as plain
-#               text because the app has to compute codes from it. Anyone who
-#               can read that file can produce a valid second factor for any
-#               account. Password hashes are scrypt and sessions are kept as
-#               digests, so those are a slower problem; the TOTP seeds are the
-#               immediate one.
-#
-#   openssl     The master key, generated once, before the first start. The app
-#               refuses to start without one rather than storing captures in the
-#               clear. 0400 because it is the one file that opens all the rest.
-#
-# ----------------------------------------------------------------------------
-# WHERE THE PATHS RESOLVE
-#
-# The volumes and the secret's `file:` below are absolute paths, not `./`
-# paths. The setup above keeps this file and the data directory together for
-# simplicity, but that's a choice, not a requirement: because the paths are
-# absolute, they don't care where this compose file sits. Run it from wherever
-# you keep compose files for your other services if you'd rather -- only the
-# `docker compose` commands need to run from that directory; the data
-# directory can be anywhere.
-#
-# Either way, pick the data directory deliberately: it holds your captures and
-# the key that decrypts them. Installing it somewhere other than
-# /opt/docker/pcapserver means changing each `source:` and the
-# `secrets: file:` at the bottom to match, keeping every `target:` exactly as
-# it is:
-#
-#        source: /opt/docker/pcapserver/captures
-#        target: /app/captures          # unchanged -- this is inside the container
-#
-# ----------------------------------------------------------------------------
-# KEEP A COPY OF secrets/master.key SOMEWHERE ELSE. Captures are encrypted with
-# it and there is no recovery path: lose the key and every stored capture is
-# gone. Keep it OUT of data/ and captures/ -- a key stored beside the data it
-# protects protects nothing.
-#
-# If that key is ever exposed, do not just overwrite it: the app will refuse to
-# start against captures the new key cannot open. Rotate it properly --
-# see "Rotating the master key" in the README.
-#
-# A "secret ... not found" line right after `docker compose up -d` is
-# Compose, not the app -- it can log that once while the secret's file mount
-# is still settling, before the container actually needs it. It clears on its
-# own a moment later. Give it a few seconds, then re-check `docker compose ps`
-# and the logs before troubleshooting further.
-#
-# OWNERSHIP. On each start the entrypoint chowns ssh-keys/, data/ and captures/
-# to the container's non-root user (appuser, UID 1000), because a bind mount
-# arrives with whatever the host gave it. No manual chown needed -- but note
-# that if your host account is NOT UID 1000, those three stop belonging to you
-# after the first start and need sudo to inspect. secrets/ is left alone: the
-# Docker daemon reads the key as root before the container exists.
-#
-# SSH keys are managed via the Admin panel in the web UI.
-#
-# Cookies require HTTPS by default. Set COOKIE_SECURE=false for plain HTTP.
-#
-# After changing COOKIE_SECURE or TRUST_PROXY_HEADERS, run `docker compose up -d`.
-# `docker compose restart` (or stop + start) keeps the environment the container
-# was created with, so the change silently does nothing.
-
-
-
-# NOTE: The section below is the only text needed to be in the compose file
-# once the data directory, its permissions, and the master key are set up.
-# Anything preceded with a # can be deleted. The final filename should be
-# compose.yaml.
-#
-# The paths below are absolute: /opt/docker/pcapserver is the data directory,
-# and the four bind sources and the secret's file all name it in full. They do
-# not follow wherever this compose file itself happens to sit -- see "Where
-# the paths resolve" above.
+# ============================ PASTE FROM HERE ===============================
 
 services:
   pcap-server:
@@ -132,53 +52,11 @@ services:
       - CAPTURES_DIR=/app/captures
       - DATA_DIR=/app/data
       - COOKIE_SECURE=false
-      # Where the master key is mounted. A file, not a variable: an environment
-      # variable is readable via `docker inspect` and /proc/<pid>/environ.
       - MASTER_KEY_FILE=/run/secrets/pcap_master_key
-      #
-      # Alternative: ENCRYPTION_MODE=passphrase derives the key from a
-      # passphrase an admin types after each start. Nothing on disk can decrypt
-      # anything, but the app stays locked -- and cannot capture -- until
-      # someone unlocks it. Drop MASTER_KEY_FILE and the secrets block if you
-      # choose this.
-      #
-      # To run without encryption you must say so explicitly; the app will not
-      # start with captures unprotected by accident:
-      # - ALLOW_UNENCRYPTED_CAPTURES=true
-      #
-      # Capturing from the machine that runs pcap-server records pcap-server's
-      # own traffic -- your sign-in included -- so it is refused. From inside a
-      # bridge network the container can see loopback, its own addresses, the
-      # default gateway and host.docker.internal, but NOT the host's LAN
-      # address, which is exactly what a person types for their own machine.
-      # There is a stronger check that catches it (the target's kernel boot id),
-      # but it needs a connection to the target to run.
-      #
-      # Naming the host's addresses here closes that gap with no connection
-      # needed, so it applies even to a host that is unreachable or not yet
-      # trusted. Comma-separated, IP addresses only:
-      # - HOST_ADDRESSES=192.168.1.10,10.0.0.5
-    # Makes host.docker.internal resolve to this machine on plain Linux, where
-    # Docker does not provide it by default. pcap-server already treats that
-    # name as the host, so this turns "capture from host.docker.internal" into
-    # an address the refusal can actually see.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     secrets:
       - pcap_master_key
-    # Container hardening. The app itself runs as appuser with no capabilities
-    # at all: the entrypoint starts as root only long enough to hand the three
-    # directories above to appuser, then drops to it, and a non-root process
-    # keeps none of these.
-    #
-    # The five kept are for that root moment, and for the `docker compose run`
-    # and `exec` commands in docs/operating.md and docs/tls.md, which also start
-    # as root. CHOWN and DAC_OVERRIDE let the entrypoint take over a mount some
-    # other UID owns. FOWNER lets those commands update appuser's files, and
-    # SETUID/SETGID let root become appuser. Everything else Docker grants by
-    # default (NET_RAW, MKNOD, KILL, SETFCAP and the rest) goes. Capturing
-    # happens on the target host over SSH, never in here, so NET_RAW is not
-    # needed.
     cap_drop:
       - ALL
     cap_add:
@@ -187,27 +65,169 @@ services:
       - FOWNER
       - SETUID
       - SETGID
-    # Nothing inside can gain privileges through a setuid binary.
     security_opt:
       - no-new-privileges:true
-    # The image cannot be modified at runtime. Everything the app writes goes to
-    # the three mounts above, /tmp (in memory, below), or /dev/shm, where
-    # certificate issuance keeps its scratch files.
     read_only: true
     tmpfs:
       - /tmp
     restart: unless-stopped
-    # Defence in depth against a memory spike. Each password verification runs
-    # scrypt, which is deliberately memory-hard (~128 MB per call); the app caps
-    # how many run at once (PCAP_SCRYPT_CONCURRENCY, default 4), so the login
-    # path alone stays well under this. A hard ceiling here means that even an
-    # unforeseen allocation path cannot take the host down with it -- the
-    # container is killed and restarted instead. Uncomment and size it above your
-    # real peak: the baseline is well under 200 MB, but parsing a very large
-    # capture with tshark can spike transiently, so leave generous headroom (a
-    # limit set too low will OOM-kill a legitimate large-capture view).
-    # mem_limit: 1g
 
 secrets:
   pcap_master_key:
     file: /opt/docker/pcapserver/secrets/master.key
+
+# ============================ END OF compose.yaml ===========================
+#
+# Everything below is explanation, not more steps. None of it needs to be in
+# your compose.yaml.
+#
+# ----------------------------------------------------------------------------
+# WHAT EACH SETUP LINE IS FOR
+#
+#   mkdir       The four directories the block bind-mounts. All four must exist
+#               BEFORE the first start, or Docker creates them itself as
+#               root-owned -- or creates a directory where you meant a file.
+#
+#   chmod 0700  Closes them to other accounts on this host. Not belt-and-braces:
+#               at a default umask they are world-readable, and data/ holds the
+#               SQLite database, which stores every user's TOTP secret as plain
+#               text because the app has to compute codes from it. Anyone who
+#               can read that file can produce a valid second factor for any
+#               account. Password hashes are scrypt and sessions are kept as
+#               digests, so those are a slower problem; the TOTP seeds are the
+#               immediate one.
+#
+#   openssl     The master key, generated once, before the first start. The app
+#               refuses to start without one rather than storing captures in the
+#               clear. 0400 because it is the one file that opens all the rest.
+#
+# ----------------------------------------------------------------------------
+# WHERE THE PATHS RESOLVE
+#
+# The volumes and the secret's `file:` are absolute paths, not `./` paths, so
+# they don't care where compose.yaml sits. Only the `docker compose` commands
+# need to run from its directory; the data directory can be anywhere.
+#
+# Pick the data directory deliberately: it holds your captures and the key that
+# decrypts them. Moving it means changing each `source:` and the secret's
+# `file:`, keeping every `target:` exactly as it is:
+#
+#        source: /opt/docker/pcapserver/captures
+#        target: /app/captures          # unchanged -- this is inside the container
+#
+# ----------------------------------------------------------------------------
+# THE MASTER KEY
+#
+# Captures are encrypted with secrets/master.key and there is no recovery path:
+# lose the key and every stored capture is gone. Keep a copy somewhere else, and
+# keep it OUT of data/ and captures/ -- a key stored beside the data it protects
+# protects nothing.
+#
+# It is passed as a file (MASTER_KEY_FILE, mounted as a Compose secret), not a
+# variable: an environment variable is readable via `docker inspect` and
+# /proc/<pid>/environ.
+#
+# If the key is ever exposed, do not just overwrite it: the app will refuse to
+# start against captures the new key cannot open. Rotate it properly -- see
+# "Rotating the master key" in docs/operating.md.
+#
+# A "secret ... not found" line right after `docker compose up -d` is Compose,
+# not the app -- it can log that once while the secret's file mount is still
+# settling. Give it a few seconds, then re-check `docker compose ps` and the
+# logs before troubleshooting further.
+#
+# ----------------------------------------------------------------------------
+# OWNERSHIP
+#
+# On each start the entrypoint chowns ssh-keys/, data/ and captures/ to the
+# container's non-root user (appuser, UID 1000), because a bind mount arrives
+# with whatever the host gave it. No manual chown needed -- but if your host
+# account is NOT UID 1000, those three stop belonging to you after the first
+# start and need sudo to inspect. secrets/ is left alone: the Docker daemon
+# reads the key as root before the container exists.
+#
+# ----------------------------------------------------------------------------
+# WHAT EACH SETTING IN THE BLOCK IS FOR
+#
+# ports             "8080:8080". Port 8080 taken? Change the LEFT half only --
+#                   "8081:8080" publishes it on 8081. The right half is the port
+#                   inside the container.
+#
+# COOKIE_SECURE     false lets sign-in work over plain HTTP, which is how a fresh
+#                   install starts. Set it back to true once you are behind a
+#                   reverse proxy (built-in HTTPS does not need it). After
+#                   changing it -- or TRUST_PROXY_HEADERS -- run
+#                   `docker compose up -d`, not `docker compose restart`: a
+#                   restart (or stop + start) keeps the environment the
+#                   container was created with, so the change does nothing.
+#
+# extra_hosts       Makes host.docker.internal resolve to this machine on plain
+#                   Linux, where Docker does not provide it by default.
+#                   Capturing from the machine that runs pcap-server records
+#                   pcap-server's own traffic -- your sign-in included -- so it
+#                   is refused, and pcap-server treats that name as the host.
+#                   This gives the name an address the refusal can see.
+#
+# cap_drop/cap_add  Container hardening. The app itself runs as appuser with no
+#                   capabilities at all: the entrypoint starts as root only long
+#                   enough to hand the three directories to appuser, then drops
+#                   to it. The five kept are for that root moment, and for the
+#                   `docker compose run` and `exec` commands in
+#                   docs/operating.md and docs/tls.md, which also start as root.
+#                   CHOWN and DAC_OVERRIDE let the entrypoint take over a mount
+#                   some other UID owns. FOWNER lets those commands update
+#                   appuser's files, and SETUID/SETGID let root become appuser.
+#                   Everything else Docker grants by default (NET_RAW, MKNOD,
+#                   KILL, SETFCAP and the rest) goes. Capturing happens on the
+#                   target host over SSH, never in here, so NET_RAW is not
+#                   needed.
+#
+# security_opt      no-new-privileges: nothing inside can gain privileges
+#                   through a setuid binary.
+#
+# read_only/tmpfs   The image cannot be modified at runtime. Everything the app
+#                   writes goes to the three mounts, /tmp (in memory), or
+#                   /dev/shm, where certificate issuance keeps its scratch
+#                   files.
+#
+# ----------------------------------------------------------------------------
+# OPTIONAL SETTINGS -- add these to the block only if you need them
+#
+# Under environment:
+#
+#   - HOST_ADDRESSES=192.168.1.10,10.0.0.5
+#       The Docker host's own IP addresses. From inside a bridge network the
+#       container can see loopback, its own addresses, the default gateway and
+#       host.docker.internal, but NOT the host's LAN address, which is exactly
+#       what a person types for their own machine. A stronger check (the
+#       target's kernel boot id) catches it, but only once it can connect.
+#       Naming the addresses here refuses them with no connection needed.
+#       Comma-separated, IP addresses only.
+#
+#   - TRUST_PROXY_HEADERS=true
+#       Behind a reverse proxy. See docs/reverse-proxy.md -- it matters who
+#       else can reach the app's port once this is on.
+#
+#   - ENCRYPTION_MODE=passphrase
+#       Derives the key from a passphrase an admin types after each start.
+#       Nothing on disk can decrypt anything, but the app stays locked -- and
+#       cannot capture -- until someone unlocks it. Drop MASTER_KEY_FILE, the
+#       service's `secrets:` and the top-level `secrets:` block if you choose
+#       this.
+#
+#   - ALLOW_UNENCRYPTED_CAPTURES=true
+#       Runs without encryption. You must say so explicitly; the app will not
+#       start with captures unprotected by accident.
+#
+# Under pcap-server:, alongside restart:
+#
+#   mem_limit: 1g
+#       Defence in depth against a memory spike. Each password verification
+#       runs scrypt, which is deliberately memory-hard (~128 MB per call); the
+#       app caps how many run at once (PCAP_SCRYPT_CONCURRENCY, default 4), so
+#       the login path alone stays well under this. A hard ceiling means even
+#       an unforeseen allocation path cannot take the host down with it -- the
+#       container is killed and restarted instead. Size it above your real
+#       peak: the baseline is well under 200 MB, but parsing a very large
+#       capture with tshark can spike transiently, so leave generous headroom
+#       (a limit set too low will OOM-kill a legitimate large-capture view).

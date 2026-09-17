@@ -25,6 +25,22 @@ You do not need to be an admin for this. If the host already has trusted keys �
 because another server points at it — you are not asked, and the keys it has
 are kept.
 
+**Check the fingerprints before you accept them.** Each key's SHA256
+fingerprint is shown and nothing is pinned until you accept. On the target,
+over a console or a session you already trust, run:
+
+```bash
+for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done
+```
+
+Rather than reading 43 base64 characters off two screens, paste what the host
+printed into **Compare a fingerprint** and the matching key lights up — the
+`SHA256:` prefix and any stray spacing are ignored. Accepting without comparing
+pins whatever answered on that address, which is the one thing host key
+verification exists to prevent. An existing server can be trusted later with
+the **Trust host** button on it; admins can also work from **Admin → Known
+hosts**.
+
 **Adding a server whose host is not up yet still works.** A host that is down
 answers no scan, so you are asked whether to add it anyway. Such a server is
 created untrusted and unchecked, exactly as every server used to be, and it is

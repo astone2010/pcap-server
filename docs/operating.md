@@ -5,6 +5,77 @@
 Day-to-day running: what to set, what the admin can change, and how to put it
 behind TLS — or what you give up by not.
 
+## Installing
+
+The install is [`docker-compose.yml`](../docker-compose.yml): follow the setup
+steps at the top of it, which have you paste its service block into a file
+named `compose.yaml`. The machine running pcap-server needs Docker with the
+Compose plugin (`docker compose`, v2 — not the older standalone
+`docker-compose`) and a user who can talk to the Docker socket. Nothing else:
+tshark, tcpdump and the SSH client are all inside the image.
+
+Everything about the setup itself — relocating the data directory, running the
+compose file from somewhere other than next to it, what each line of the setup
+steps does — is in the comments below that block. That is the source of truth;
+this page does not repeat it, so the two cannot drift apart.
+
+**About ownership.** On the first start the entrypoint hands `ssh-keys/`,
+`data/` and `captures/` to the container's own non-root user — `appuser`, UID
+1000 — because a bind mount arrives with whatever the host gave it. If your own
+account is UID 1000, which it is on most single-user Linux installs, nothing
+changes for you; if it is not, those three directories stop belonging to you
+after the first start and you will need `sudo` to look inside them.
+
+**Back the master key up somewhere else before you capture anything.** It is
+the only thing that can decrypt your captures, and there is no recovery path
+without it. Keep it out of `data/` and `captures/`.
+
+### If it does not come up
+
+`docker compose ps` should show the service **running**, not `restarting` — a
+container that is looping is one that failed and is being restarted for you,
+and `up -d` returns success either way. The logs should include
+`encryption enabled (key id ...)`. Read `docker compose logs pcap-server` in
+full before anything else — the app says what it is refusing and why. Four
+things account for almost every failed start:
+
+| What you see | What it is |
+|---|---|
+| `bind: address already in use` | Something else already has port 8080. Change the **left** half of the `ports:` mapping in your `compose.yaml` — `"8081:8080"` publishes it on 8081 instead. The right half is the port inside the container and does not move |
+| The container restarts in a loop, logs mention the master key | `secrets/master.key` doesn't exist yet, or it's empty. It must exist and be non-empty *before* the first start — check with `wc -c secrets/master.key`, you want 45 bytes, not 0 |
+| `secrets/master.key` is a directory | The compose file was started before the data directory and the key existed, so Docker created the bind-mount path itself. Remove the empty directory, then generate the key properly |
+| A `secret ... not found` message right after `docker compose up -d` | Cosmetic — Compose can log this once while the secret file mount is still settling. Give it a few seconds and check `docker compose ps` / the logs again before troubleshooting further |
+
+If you started it before creating the directories, the quickest fix is
+`docker compose down`, delete whatever Docker created in their place, and redo
+the setup steps. Nothing is lost — there is no data yet.
+
+### Choosing a version
+
+| Tag | What it is |
+|---|---|
+| `v0.1.0-dev.40` | A specific release, and what the compose file at that tag pins its image to. Reproducible: the same tag is the same bytes next month |
+| `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
+
+Pin a release unless you specifically want to track. The
+[releases page](https://github.com/darthrater78/pcap-server/releases) lists what
+is available; the `docker-compose.yml` at a given tag names the matching image.
+
+### Upgrading
+
+Replace the contents of your `compose.yaml` with the block from
+`docker-compose.yml` at the tag you are moving to, then pull and recreate:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+`data/`, `captures/`, `ssh-keys/` and `secrets/` are bind mounts and are
+untouched by this — the database migrates itself on start. Replacing the block
+does discard any local edits you made to it, so if you have customised it (an
+absolute path, `TRUST_PROXY_HEADERS`, a different published port), diff before
+overwriting rather than after.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -16,7 +87,7 @@ behind TLS — or what you give up by not.
 | `HOST_ADDRESSES` | empty | Comma-separated IP addresses of the machine pcap-server runs on. Capturing from that machine is refused, but from inside a bridge network the container cannot see its host's LAN address — which is the address someone would type for their own Docker host. Naming it here closes that gap with no connection to the target needed, so it applies even to a host that is unreachable or not yet trusted. IP addresses only; anything else is logged and ignored. |
 
 > **Changing `COOKIE_SECURE` or `TRUST_PROXY_HEADERS`? Recreate the container,
-> do not restart it.** Edit `docker-compose.yml`, then run `docker compose up -d`
+> do not restart it.** Edit `compose.yaml`, then run `docker compose up -d`
 > from its directory. Compose reads the environment when it *creates* a
 > container, so `docker compose restart` — and `docker compose stop` followed by
 > `start` — carry on with the old value, and the app behaves exactly as before.
@@ -93,7 +164,7 @@ That one is answered from the host, at the same bar as reading the database
 directly:
 
 ```bash
-cd /path/to/wherever/you/keep/compose/files   # wherever docker-compose.yml already is
+cd /path/to/wherever/you/keep/compose/files   # wherever compose.yaml already is
 
 # Which accounts exist, and which have MFA set up.
 docker compose run --rm --entrypoint python pcap-server \
@@ -119,7 +190,7 @@ through exactly the same checks and the same storage. They are kept in the
 `ssh-keys/` directory (mounted at `/app/ssh-keys`) and offered as options when
 connecting to a remote server. Keys can be added and deleted from the GUI; no
 manual file placement is needed. When a master key is configured
-(`MASTER_KEY_FILE` in `docker-compose.yml`), keys are sealed under it the same
+(`MASTER_KEY_FILE` in `compose.yaml`), keys are sealed under it the same
 way captures are — a key never exists as a plaintext file on disk, and one
 added before encryption was enabled is sealed in place automatically the next
 time the container starts.
@@ -299,7 +370,7 @@ the one way this can corrupt one; the tool refuses to touch a file modified in
 the last 10 seconds, but a stopped app is the real guarantee.
 
 ```bash
-cd /path/to/wherever/you/keep/compose/files   # wherever docker-compose.yml already is
+cd /path/to/wherever/you/keep/compose/files   # wherever compose.yaml already is
 docker compose stop pcap-server
 
 docker compose run --rm --entrypoint python pcap-server -m backend.rekey \
