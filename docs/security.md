@@ -21,6 +21,15 @@ that stands in the way. Password hashes are scrypt and sessions are kept only as
 SHA-256 digests, so those are an offline-cracking problem rather than an
 immediate one.
 
+The shipped `docker-compose.yml` runs the container locked down (since dev.40):
+all Linux capabilities are dropped except the five the root-owned entrypoint and
+the `docker compose run` maintenance commands need, `no-new-privileges` is set,
+and the root filesystem is read-only, with `/tmp` in memory. The app process
+itself runs as `appuser` with no capabilities at all. Capturing happens on the
+target host, so the container never needs `NET_RAW`. A compose file written
+before dev.40 has none of this. Copy the `cap_drop` through `tmpfs` block from
+the current file into yours.
+
 The container's entrypoint chowns the bind mounts to its own non-root user but
 does not set a mode, so a directory created at a default umask is world-readable
 to every account on the host. Create them closed:

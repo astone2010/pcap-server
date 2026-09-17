@@ -118,11 +118,19 @@ async def test_connect_translates_locked_vault_into_connection_error(keys_dir):
     path = keys_dir / "sealed-key"
     path.write_bytes(cryptor.seal_bytes(generate_key_bytes()))
 
-    mgr = SSHManager(keys_dir, db=None, data_dir=keys_dir, vault=FakeVault(cryptor=None))
+    # The host must be trusted: since dev.40 an untrusted one is refused before
+    # the key is opened, so the vault would never be reached.
+    class TrustedHostDB:
+        def get_known_hosts(self, hostname, port):
+            return [{"key_type": "ssh-ed25519", "host_key": "AAAA"}]
+
+    mgr = SSHManager(keys_dir, db=TrustedHostDB(), data_dir=keys_dir, vault=FakeVault(cryptor=None))
     server = ServerAuth(hostname="example.com", username="alice", ssh_key_name="sealed-key")
 
     with pytest.raises(ConnectionError, match="locked"):
         await mgr._connect(server)
+
+    assert list(keys_dir.glob("*.known_hosts")) == []
 
 
 # --- migrate_plaintext_keys(): verify-then-replace --------------------------

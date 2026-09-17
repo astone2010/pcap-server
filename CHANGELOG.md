@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.1.0-dev.40 — 2026-09-17
+
+Hardening. The container runs locked down, a release can no longer publish a
+commit that was never merged, and an untrusted host no longer gets our SSH key
+opened on its behalf. There are no feature or API changes. Upgrading is a pull
+of the new image, but **copy the new hardening block into your compose file**
+to get the container changes (see below).
+
+### Security
+
+- **The container drops everything it does not need.** `docker-compose.yml` now
+  sets `cap_drop: [ALL]`, adding back only CHOWN, DAC_OVERRIDE, FOWNER, SETUID
+  and SETGID. It also sets `no-new-privileges`, a read-only root filesystem, and
+  an in-memory `/tmp`. The five kept capabilities serve the root-owned entrypoint
+  and the `docker compose run` / `exec` maintenance commands (`rekey`,
+  `resetmfa`, `backend.tls`). The app process itself runs as `appuser` with no
+  capabilities at all. Capturing happens on the target over SSH, so `NET_RAW`
+  was never needed in here.
+
+  These are compose settings, not image settings. An existing compose file keeps
+  running exactly as before until you copy the block from `cap_drop:` through
+  `tmpfs:` into it and run `docker compose up -d`. This was tested with a mount
+  owned by root, one owned by UID 1000 and one owned by another UID (each
+  `0700`), and with `rekey --apply`, `resetmfa --list` and `backend.tls status`.
+  All of them work.
+- **`_connect` checks the target's trust before opening our key.** It used to
+  read and decrypt the client key first, so a host nobody had vouched for still
+  had a private key opened on its behalf. A missing or unparseable key also
+  answered before the `host_keys_required` refusal the add form branches on. An
+  untrusted host is now refused without the key being touched.
+
+### CI
+
+- **A release only publishes a commit that is on the default branch.** The
+  release gate already required a passing Check run for the tagged commit, but
+  Check runs on every branch, Dependabot's included. A tag on a side-branch
+  commit would have found a green run, published it, and could have moved `:dev`
+  to code that was never merged. The gate now asks the GitHub compare API first,
+  and refuses anything that is not in the default branch's history.
+- **Releases run one at a time,** queued rather than cancelled, so two tags
+  pushed together cannot race each other to `:dev`.
+- **Every job has a `timeout-minutes`** in place of GitHub's six-hour default:
+  Check 30, release gate 40, release 30, lint 10.
+- **Checkout no longer leaves the token in `.git/config`**
+  (`persist-credentials: false`) in all three workflows.
+- **`check.yml` and `lint-workflows.yml` pin their actions to commit SHAs,** as
+  `release.yml` already did. Their token is read-only, but the release gate
+  trusts Check's verdict.
+- **docker/setup-buildx-action v3.12.0 → v4.4.1** (Node 24 runtime; the inputs v4
+  removed were not in use). This also removes the release run's Node 20
+  warning. Every new SHA was checked against its tag in both `git ls-remote` and
+  the GitHub API.
+
+### Documentation
+
+- **Setup is one paste.** The top of `docker-compose.yml` is now a single
+  tested block that creates the data directory, generates the master key, and
+  starts the container. The README's Quick start moves to the top of the page:
+  it fetches the file and points at that block, with the longer walkthrough
+  folded under "Advanced quick start". The compose file and the data directory
+  no longer have to live together, because the bind paths are absolute.
+- The one-paste block names the data directory in full rather than `cd`-ing
+  into it. `docker compose up -d` has to run where the compose file is, and the
+  README puts that file somewhere else. As first written, the `cd` would have
+  made `up` fail with `no configuration file provided`.
+- The troubleshooting table explains the `secret ... not found` line Compose can
+  log once while the secret mount settles. It is harmless.
+- The master key rotation steps start from the compose file's directory.
+
+### Internal
+
+- Three new tests cover the `_connect` order: no key load for an untrusted
+  host, `HostNotTrusted` even with no key file, and no stray known_hosts file
+  when the key is missing. The locked-vault test now uses a trusted host,
+  since an untrusted one never reaches the vault.
+
 ## 0.1.0-dev.39 — 2026-09-16
 
 Dependency updates only. The ten Dependabot pull requests opened after dev.37

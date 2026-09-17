@@ -2,15 +2,14 @@
 # FIRST-TIME SETUP
 # ============================================================================
 #
-# One paste. Put this file in the directory you want the install to live in,
-# then run:
+# One paste, run from the directory THIS FILE is in (docker compose looks for it
+# there). The data directory is named in full, so it can be anywhere:
 #
 #     sudo mkdir -p /opt/docker/pcapserver && sudo chown "$USER" /opt/docker/pcapserver
-#     cd /opt/docker/pcapserver
-#     mkdir -p ssh-keys data captures secrets
-#     chmod 0700 ssh-keys data captures secrets
-#     openssl rand -base64 32 > secrets/master.key
-#     chmod 0400 secrets/master.key
+#     mkdir -p /opt/docker/pcapserver/{ssh-keys,data,captures,secrets}
+#     chmod 0700 /opt/docker/pcapserver/{ssh-keys,data,captures,secrets}
+#     openssl rand -base64 32 > /opt/docker/pcapserver/secrets/master.key
+#     chmod 0400 /opt/docker/pcapserver/secrets/master.key
 #     docker compose up -d
 #     docker compose ps
 #     docker compose logs pcap-server | grep -i encryption
@@ -21,7 +20,7 @@
 # hand: TOTP enrolment is part of creating it.
 #
 # Using a different directory than /opt/docker/pcapserver? Substitute it in
-# both `mkdir`/`chown`/`cd` above AND in the four `source:` lines and the
+# every line above AND in the four `source:` lines and the
 # secret's `file:` at the bottom of this file -- they're written out in full,
 # not relative to where this file sits, so both places need to agree.
 #

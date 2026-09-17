@@ -798,6 +798,46 @@ def test_connect_refuses_a_host_with_no_trusted_keys(manager, monkeypatch):
     assert "target.example:22" in str(exc.value)
 
 
+def test_an_untrusted_host_is_refused_before_our_key_is_opened(manager, monkeypatch):
+    """Trust is settled first. The client key used to be read and parsed
+    before the trust store was consulted, so a host nobody had vouched for
+    still had a private key decrypted on its behalf."""
+    from backend.ssh_manager import HostNotTrusted
+
+    _plaintext_key(manager)
+    manager._db = StubKnownHostsDB([])
+
+    def must_not_be_called(path):
+        raise AssertionError("the client key was loaded for an untrusted host")
+
+    monkeypatch.setattr(manager, "_load_client_key", must_not_be_called)
+
+    with pytest.raises(HostNotTrusted):
+        asyncio.run(manager._connect(_server()))
+
+
+def test_an_untrusted_host_is_reported_as_untrusted_even_without_a_key(manager):
+    """A missing key used to answer first, hiding the host_not_trusted result
+    the add form branches on behind a generic failure."""
+    from backend.ssh_manager import HostNotTrusted
+
+    manager._db = StubKnownHostsDB([])
+
+    with pytest.raises(HostNotTrusted):
+        asyncio.run(manager._connect(_server()))
+
+
+def test_a_missing_key_for_a_trusted_host_leaves_no_known_hosts_file(manager, tmp_path):
+    """The known_hosts file is written before the key is looked at now, so a
+    key that turns out to be missing must not strand it in the data dir."""
+    manager._db = StubKnownHostsDB(["ssh-ed25519"])
+
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(manager._connect(_server()))
+
+    assert list(tmp_path.glob("*.known_hosts")) == []
+
+
 def test_refusal_tells_the_operator_to_scan_and_accept(manager):
     """The message is the only thing standing between the operator and a
     connection that simply does not work -- so it must name the action that

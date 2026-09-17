@@ -401,19 +401,12 @@ class SSHManager:
         return len(keys)
 
     async def _connect(self, server: ServerAuth) -> asyncssh.SSHClientConnection:
-        key_path = self._key_path(server.ssh_key_name)
-        if not key_path.exists():
-            raise FileNotFoundError(f"SSH key not found: {server.ssh_key_name}")
-
-        # A locked or absent vault preventing key access reads to every caller
-        # exactly like any other reason a connection can't be established --
-        # _connect()'s documented failure modes stay FileNotFoundError and
-        # ConnectionError, so nothing downstream needs a third except clause.
-        try:
-            client_key = self._load_client_key(key_path)
-        except CryptoError as exc:
-            raise ConnectionError(str(exc)) from exc
-
+        # The target's trust is settled before our own key is touched. The key
+        # used to be read and parsed first, so a host nobody had vouched for
+        # still got a private key decrypted on its behalf, and a missing or
+        # unparseable key hid the "not trusted" answer the add form branches on
+        # behind a generic failure. Nothing about an untrusted host needs the
+        # key, so it is not opened for one.
         kh_file = await self._get_known_hosts_file(server.hostname, server.port)
         if not kh_file:
             # Fail closed. asyncssh reads known_hosts=None as "skip host key
@@ -434,7 +427,23 @@ class SSHManager:
                 port=server.port,
             )
 
+        # Inside the try so the finally below removes the known_hosts file
+        # whichever way loading the key fails.
         try:
+            key_path = self._key_path(server.ssh_key_name)
+            if not key_path.exists():
+                raise FileNotFoundError(f"SSH key not found: {server.ssh_key_name}")
+
+            # A locked or absent vault preventing key access reads to every
+            # caller exactly like any other reason a connection can't be
+            # established -- _connect()'s documented failure modes stay
+            # FileNotFoundError and ConnectionError, so nothing downstream needs
+            # a third except clause.
+            try:
+                client_key = self._load_client_key(key_path)
+            except CryptoError as exc:
+                raise ConnectionError(str(exc)) from exc
+
             conn = await asyncssh.connect(
                 server.hostname,
                 port=server.port,

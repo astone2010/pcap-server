@@ -8,6 +8,137 @@ Built for the case where the machine you need to capture on is not the machine
 you want to analyse from: a firewall, a hypervisor, a container host, a box you
 only reach over SSH.
 
+## Quick start
+
+**There is nothing to clone and nothing to build.** The image is published, and
+`docker-compose.yml` is the entire install.
+
+```bash
+mkdir -p ~/pcap-server && cd ~/pcap-server   # or wherever you keep compose files
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.40/docker-compose.yml
+```
+
+Follow the setup block at the very top of that file — one paste creates the
+data directory, generates the master key, and starts the container. Then open
+`http://<host>:8080`, create the admin account (have an authenticator app
+ready — TOTP is required to finish), and turn on HTTPS before doing anything
+else: **Admin → HTTPS → Set up certificate**, or put a proxy in front.
+
+<details>
+<summary><strong>Advanced quick start</strong> — ownership, troubleshooting, choosing a version, upgrading, the admin account and HTTPS steps in full</summary>
+
+On the machine that will run pcap-server you need Docker with the Compose plugin
+(`docker compose`, v2 — not the older standalone `docker-compose`) and a user
+who can talk to the Docker socket. Nothing else: tshark, tcpdump and the SSH
+client are all inside the image.
+
+**About ownership.** On the first start the entrypoint hands `ssh-keys/`,
+`data/` and `captures/` to the container's own non-root user — `appuser`, UID
+1000 — because a bind mount arrives with whatever the host gave it. If your own
+account is UID 1000, which it is on most single-user Linux installs, nothing
+changes for you; if it is not, those three directories stop belonging to you
+after the first start and you will need `sudo` to look inside them. The
+compose file's own comments have the full mechanics.
+
+Two things are worth reading rather than skipping. `docker compose ps` should
+show the service **running**, not `restarting` — a container that is looping is
+one that failed and is being restarted for you, and `up -d` returns success
+either way. And the log `grep` should print `encryption enabled (key id ...)`;
+if it prints nothing at all, or you see a message about a missing secret, see
+[If it does not come up](#if-it-does-not-come-up) below.
+
+**Back that key up somewhere else before you capture anything.** It is the only
+thing that can decrypt your captures, and there is no recovery path without it.
+Keep it out of `data/` and `captures/`.
+
+Everything else — relocating the data directory, running the compose file from
+somewhere other than next to it, what each line of the setup block does — is in
+`docker-compose.yml`'s own comments. That's the source of truth for the setup
+steps themselves; this page won't repeat it, so the two can't drift apart.
+
+#### Open it and create the admin account
+
+Open `http://<host>:8080`. The first user to register becomes the admin, and
+registration runs straight into TOTP enrolment: you are shown a QR code and the
+secret behind it, and the account is not usable until you have entered a code
+back from your authenticator. The published compose file already sets
+`COOKIE_SECURE=false`, which is what lets that sign-in work over plain HTTP at
+all.
+
+Scan the QR into an app you will still have next month. If it does go missing,
+an admin can reset another account's MFA from **Admin → Users → Reset MFA**, and
+a locked-out *sole* admin has a host-side way back in — see
+[If you lose your authenticator](docs/operating.md#if-you-lose-your-authenticator).
+
+Once you are in, expect the app to be **read-only**, with a bar across the top
+saying so. That is intended rather than broken — and it is why the next step is not
+optional.
+
+#### Turn on HTTPS
+
+**Admin → HTTPS → Set up certificate**, as in
+[the recommended route](#recommended-let-pcap-server-get-its-own-certificate) —
+or put a proxy in front, with a real certificate or a
+[self-signed one](#no-domain-a-proxy-with-a-self-signed-certificate). When the
+read-only bar is gone, go on to [Your first capture](#your-first-capture).
+
+#### If it does not come up
+
+Four things account for almost all of them. Most are visible in
+`docker compose logs pcap-server`, which is worth reading in full before
+anything else — the app says what it is refusing and why.
+
+| What you see | What it is |
+|---|---|
+| `bind: address already in use` | Something else already has port 8080. Change the **left** half of the `ports:` mapping in `docker-compose.yml` — `"8081:8080"` publishes it on 8081 instead. The right half is the port inside the container and does not move |
+| The container restarts in a loop, logs mention the master key | `secrets/master.key` doesn't exist yet, or it's empty. It must exist and be non-empty *before* the first start — check with `wc -c secrets/master.key`, you want 45 bytes, not 0 |
+| `secrets/master.key` is a directory | The compose file was started before the data directory and the key existed, so Docker created the bind-mount path itself. Remove the empty directory, then generate the key properly |
+| A `secret ... not found` message right after `docker compose up -d` | Cosmetic — Compose can log this once while the secret file mount is still settling. Give it a few seconds and check `docker compose ps` / the logs again before troubleshooting further |
+
+If you started it before creating the directories, the quickest fix is
+`docker compose down`, delete whatever Docker created in their place, and redo
+the setup block at the top of `docker-compose.yml`. Nothing is lost — there is
+no data yet.
+
+#### Choosing a version
+
+| Tag | What it is |
+|---|---|
+| `v0.1.0-dev.40` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
+| `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
+
+Pin a release unless you specifically want to track. The
+[releases page](https://github.com/darthrater78/pcap-server/releases) lists what
+is available; substitute that tag in the `curl` above and the compose file will
+name the matching image.
+
+#### Upgrading
+
+Re-fetch the compose file at the tag you are moving to, then pull and
+recreate. The tag below is the current release; substitute a later one when
+there is one:
+
+```bash
+cd /path/to/wherever/you/keep/compose/files   # wherever docker-compose.yml already is
+curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.40/docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+`data/`, `captures/`, `ssh-keys/` and `secrets/` are bind mounts and are
+untouched by this — the database migrates itself on start. Re-fetching the file
+does discard any local edits you made to it, so if you have customised it (an
+absolute path, `TRUST_PROXY_HEADERS`, a different published port), diff before
+overwriting rather than after.
+
+#### If you would rather clone
+
+Cloning still works and is the right move if you intend to change the code —
+the repo carries the same `docker-compose.yml` plus the test suite and the
+Dockerfile. See [Development](#development). Running it needs nothing from the
+repo but that one file.
+
+</details>
+
 > **HTTPS is not optional.** Over plain HTTP pcap-server is read-only: it will
 > not add a server, start a capture or hand one over, so a fresh install cannot
 > take its first capture until HTTPS is on. **The recommended way is built in** —
@@ -15,8 +146,8 @@ only reach over SSH.
 > ports. No domain? A reverse proxy with a self-signed certificate works too.
 > **[Choose one →](#https)**
 
-**Start here** — [What it does](#what-it-does) · [Requirements](#requirements) ·
-[**HTTPS**](#https) · [Quick start](#quick-start) ·
+**Start here** — [**Quick start**](#quick-start) · [What it does](#what-it-does) ·
+[Requirements](#requirements) · [HTTPS](#https) ·
 [Your first capture](#your-first-capture)
 
 **Using it** — [Preparing a target host](#preparing-a-target-host) ·
@@ -198,138 +329,6 @@ but the proxy may be able to reach the app's port**.
 **[Self-signed certificate](docs/reverse-proxy.md#no-domain-a-self-signed-certificate)**
 has each of the three worked through, with the one command that makes the
 certificate.
-
-## Quick start
-
-**There is nothing to clone and nothing to build.** The image is published, and
-`docker-compose.yml` is the entire install — one file, fetched straight from the
-release you intend to run.
-
-On the machine that will run pcap-server you need Docker with the Compose plugin
-(`docker compose`, v2 — not the older standalone `docker-compose`) and a user
-who can talk to the Docker socket. Nothing else: tshark, tcpdump and the SSH
-client are all inside the image.
-
-**Before you start, have an authenticator app on your phone.** TOTP is not
-optional here and it is enforced by the API, not just the login screen — the
-account you are about to create cannot finish being created without it. See
-[Open it and create the admin account](#open-it-and-create-the-admin-account)
-below.
-
-```bash
-mkdir -p ~/pcap-server && cd ~/pcap-server   # or wherever you keep compose files
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.40/docker-compose.yml
-```
-
-Then follow the block at the very top of that file — it's one paste that
-creates the data directory, generates the master key, and starts the
-container. Pin the tag in the URL above to the release you intend to run; see
-"Choosing a version" below before substituting a later one.
-
-**About ownership.** On the first start the entrypoint hands `ssh-keys/`,
-`data/` and `captures/` to the container's own non-root user — `appuser`, UID
-1000 — because a bind mount arrives with whatever the host gave it. If your own
-account is UID 1000, which it is on most single-user Linux installs, nothing
-changes for you; if it is not, those three directories stop belonging to you
-after the first start and you will need `sudo` to look inside them. The
-compose file's own comments have the full mechanics.
-
-Two things are worth reading rather than skipping. `docker compose ps` should
-show the service **running**, not `restarting` — a container that is looping is
-one that failed and is being restarted for you, and `up -d` returns success
-either way. And the log `grep` should print `encryption enabled (key id ...)`;
-if it prints nothing at all, or you see a message about a missing secret, see
-[If it does not come up](#if-it-does-not-come-up) below.
-
-**Back that key up somewhere else before you capture anything.** It is the only
-thing that can decrypt your captures, and there is no recovery path without it.
-Keep it out of `data/` and `captures/`.
-
-Everything else — relocating the data directory, running the compose file from
-somewhere other than next to it, what each line of the setup block does — is in
-`docker-compose.yml`'s own comments. That's the source of truth for the setup
-steps themselves; this page won't repeat it, so the two can't drift apart.
-
-### Open it and create the admin account
-
-Open `http://<host>:8080`. The first user to register becomes the admin, and
-registration runs straight into TOTP enrolment: you are shown a QR code and the
-secret behind it, and the account is not usable until you have entered a code
-back from your authenticator. The published compose file already sets
-`COOKIE_SECURE=false`, which is what lets that sign-in work over plain HTTP at
-all.
-
-Scan the QR into an app you will still have next month. If it does go missing,
-an admin can reset another account's MFA from **Admin → Users → Reset MFA**, and
-a locked-out *sole* admin has a host-side way back in — see
-[If you lose your authenticator](docs/operating.md#if-you-lose-your-authenticator).
-
-Once you are in, expect the app to be **read-only**, with a bar across the top
-saying so. That is intended rather than broken — and it is why the next step is not
-optional.
-
-### Turn on HTTPS
-
-**Admin → HTTPS → Set up certificate**, as in
-[the recommended route](#recommended-let-pcap-server-get-its-own-certificate) —
-or put a proxy in front, with a real certificate or a
-[self-signed one](#no-domain-a-proxy-with-a-self-signed-certificate). When the
-read-only bar is gone, go on to [Your first capture](#your-first-capture).
-
-### If it does not come up
-
-Four things account for almost all of them. Most are visible in
-`docker compose logs pcap-server`, which is worth reading in full before
-anything else — the app says what it is refusing and why.
-
-| What you see | What it is |
-|---|---|
-| `bind: address already in use` | Something else already has port 8080. Change the **left** half of the `ports:` mapping in `docker-compose.yml` — `"8081:8080"` publishes it on 8081 instead. The right half is the port inside the container and does not move |
-| The container restarts in a loop, logs mention the master key | `secrets/master.key` doesn't exist yet, or it's empty. It must exist and be non-empty *before* the first start — check with `wc -c secrets/master.key`, you want 45 bytes, not 0 |
-| `secrets/master.key` is a directory | The compose file was started before the data directory and the key existed, so Docker created the bind-mount path itself. Remove the empty directory, then generate the key properly |
-| A `secret ... not found` message right after `docker compose up -d` | Cosmetic — Compose can log this once while the secret file mount is still settling. Give it a few seconds and check `docker compose ps` / the logs again before troubleshooting further |
-
-If you started it before creating the directories, the quickest fix is
-`docker compose down`, delete whatever Docker created in their place, and redo
-the setup block at the top of `docker-compose.yml`. Nothing is lost — there is
-no data yet.
-
-### Choosing a version
-
-| Tag | What it is |
-|---|---|
-| `v0.1.0-dev.40` | A specific release. What the command above fetches, and what the compose file it fetches pins its image to. Reproducible: the same tag is the same bytes next month |
-| `:dev` | A floating tag that is moved to each new dev release as it is published. Convenient for tracking along, but `docker compose pull` will change the running version underneath you without the compose file changing at all |
-
-Pin a release unless you specifically want to track. The
-[releases page](https://github.com/darthrater78/pcap-server/releases) lists what
-is available; substitute that tag in the `curl` above and the compose file will
-name the matching image.
-
-### Upgrading
-
-Re-fetch the compose file at the tag you are moving to, then pull and
-recreate. The tag below is the current release; substitute a later one when
-there is one:
-
-```bash
-cd /path/to/wherever/you/keep/compose/files   # wherever docker-compose.yml already is
-curl -fsSLO https://raw.githubusercontent.com/darthrater78/pcap-server/v0.1.0-dev.40/docker-compose.yml
-docker compose pull && docker compose up -d
-```
-
-`data/`, `captures/`, `ssh-keys/` and `secrets/` are bind mounts and are
-untouched by this — the database migrates itself on start. Re-fetching the file
-does discard any local edits you made to it, so if you have customised it (an
-absolute path, `TRUST_PROXY_HEADERS`, a different published port), diff before
-overwriting rather than after.
-
-### If you would rather clone
-
-Cloning still works and is the right move if you intend to change the code —
-the repo carries the same `docker-compose.yml` plus the test suite and the
-Dockerfile. See [Development](#development). Running it needs nothing from the
-repo but that one file.
 
 ## Your first capture
 

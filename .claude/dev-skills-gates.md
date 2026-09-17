@@ -1,5 +1,85 @@
 # Dev Skills gate state
 
+## WORK COMMIT — setup docs restructure (2026-09-17)
+Track: WORK COMMIT (docs only, no version bump, no artifact, no publish).
+Scope: README.md Quick Start + docs/operating.md + docker-compose.yml's own
+header comments, restructured on the user's direction: a one-paste setup
+block leads docker-compose.yml (matching a block the user tested directly
+against the live compose file), the compose file and the data directory are
+documented as independent locations, README's Quick Start now points at that
+block instead of duplicating it, and a troubleshooting row documents a
+cosmetic `secret ... not found` message (confirmed by a read-only Explore
+agent to originate from Compose's own secret-mount timing, not from
+backend/*.py or entrypoint.sh — details in the gate line below). Not part of the
+in-flight RELEASE SEQUENCE 0.1.0-dev.40 below, which has other, unrelated
+uncommitted files (backend/main.py, CI workflows, tests, CHANGELOG.md,
+docs/architecture.md) this commit does not touch or stage.
+Commit approval: user said "commit and push" (2026-09-17), after reviewing
+each doc edit made in this conversation.
+
+🔒 SECURITY   ✅ Diff is comments/prose only (markdown + YAML `#` comments) —
+                no source file, route, dependency, or schema changed. Grepped
+                the staged diff for password/secret/token/api-key/private-key
+                patterns and shell/eval/exec markers: every hit is the literal
+                word "secret" used in its documentation sense (the master-key
+                file, the Compose `secrets:` block) or a path like
+                `secrets/master.key` — no credential value, no real secret
+                material. 0 Critical, 0 High, 0 Medium, 0 Low.
+                Dependencies: unchanged (no manifest touched) — audit not
+                re-run, nothing to audit.
+                Quality: N/A — no code structure/performance patterns apply
+                to a comments-only diff.
+VERSION / BUILD / DOCS / RELEASE / SHIP: not owed on this track (Section 2).
+
+## RELEASE SEQUENCE 0.1.0-dev.40 — hardening (opened 2026-09-17, dev-skills 2.23.0)
+Track: RELEASE SEQUENCE (version bump plus tag).
+User: "stay on opus, adopt all, go with that scope". Opus is approved for this task.
+DECISION (adopted from 2.23.0): what makes something a release is intent to
+publish (a bump, tag or artifact). A push to claude/admiring-wright-k20ptf
+(which is the remote default) without a bump is a WORK COMMIT. This replaces
+the older rule that "any merge to the canonical branch is a release". No PRs
+before 1.0 still stands (the Gate 5 PR is N/A).
+Hook: .claude/hooks/gate-preflight.sh (upstream v2.23.0, read in full), wired
+into .claude/settings.json under PreToolUse.
+Start: 1a316df. Scope: buildx v4; release.yml tag-on-default-branch check,
+concurrency, timeouts and persist-credentials; SHA pins in check.yml and
+lint-workflows.yml; _connect trust-before-key; compose hardening.
+NOT MINE, found in the tree mid-session: README install steps and the compose
+header comments were rewritten (the data dir is decoupled from where the
+compose file lives). Treated as the user's; included in dev.40 pending their OK.
+
+🔢 VERSION    ✅ 0.1.0-dev.40 in all seven refs (main.py:116, compose image,
+              reverse-proxy x2, README install curl / version table / upgrade
+              curl). v0.1.0-dev.39 is tagged on the remote. release_notes_url is
+              derived from APP_VERSION.
+🔨 BUILD      ✅ check.sh EXIT=0, 1559 passed / 0 skipped (349s), on the code as it
+              will be committed. Since then only comments/docs changed
+              (compose header, README, CHANGELOG); test_entrypoint.py (reads
+              compose) 7 passed; actionlint clean. Image
+              localhost/pcap-server:0.1.0-dev.40 built. Hardened compose run for
+              real (CapEff=0, NoNewPrivs=1, RO rootfs, rekey/resetmfa/tls OK,
+              mounts owned by root/1000/1001 boot). The fixed one-paste block also
+              ran for real from a separate compose dir: running, encryption
+              enabled. handoff offered, user declined to try it (AskUserQuestion:
+              "Skip trying it").
+🔒 SECURITY   ✅ 0 Critical / 0 High, in code and dependencies. pip-audit clean;
+              Dependabot alerts and security updates enabled by the user, 0 alerts
+              (SBOM has 22 packages). SHAs checked in two places. Medium items
+              ACCEPTED by the user (AskUserQuestion): DAC_OVERRIDE kept, apt
+              unpinned, no osv-scanner. Quality: _connect restructure keeps the
+              finally cleanup; no new nesting/duplication.
+📄 DOCS       ✅ CHANGELOG dev.40 (Security / CI / Documentation / Internal).
+              security.md hardening, architecture.md _connect order. The user's
+              commit 2e458b9 (setup untangle) and the README move to the top (the
+              user said include it) are covered in CHANGELOG Documentation. FIXED:
+              the compose one-paste block cd'd into the data dir and then ran
+              `docker compose up -d` there, which fails because the README puts the
+              compose file elsewhere; it now uses absolute paths and was tested.
+              Every version ref is dev.40: README 18/107/123, compose,
+              reverse-proxy x2, main.py.
+📦 RELEASE    ⏳ PR ➖ N/A (no PRs pre-1.0). Commit approved by the user ("commit, push, and lets tag"). Release notes approval pending.
+🚀 SHIP       ⬜
+
 ## RELEASE SEQUENCE 0.1.0-dev.39 — the Dependabot batch (2026-09-16)
 Track: RELEASE SEQUENCE -- merging into the canonical branch counts as a release (SKILL.md 2).
 User: "Dev 38 was pushed" (live box REDEPLOYED to dev.38 -- carried item closed),

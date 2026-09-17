@@ -624,7 +624,9 @@ stored keys are used and kept.
 
 **One code for one condition.** When no keys are supplied and the endpoint is
 untrusted, `add_server` refuses before connecting and `_connect` raises
-`HostNotTrusted` from the probes. Both now answer `409` with code
+`HostNotTrusted` from the probes, before it so much as opens the client key
+(since dev.40 — it used to decrypt and parse our key first, so a missing or
+locked key could hide the untrusted answer behind a generic failure). Both now answer `409` with code
 `host_keys_required`, naming `hostname` and `port` as their own fields. They used
 to differ — a `400 host_keys_required` from add and a `409 host_not_trusted` from
 the probes — which meant every caller had to know both, and the form handled one
