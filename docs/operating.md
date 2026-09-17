@@ -93,7 +93,7 @@ That one is answered from the host, at the same bar as reading the database
 directly:
 
 ```bash
-cd /opt/docker/pcapserver
+cd /path/to/wherever/you/keep/compose/files   # wherever docker-compose.yml already is
 
 # Which accounts exist, and which have MFA set up.
 docker compose run --rm --entrypoint python pcap-server \
@@ -299,6 +299,7 @@ the one way this can corrupt one; the tool refuses to touch a file modified in
 the last 10 seconds, but a stopped app is the real guarantee.
 
 ```bash
+cd /path/to/wherever/you/keep/compose/files   # wherever docker-compose.yml already is
 docker compose stop pcap-server
 
 docker compose run --rm --entrypoint python pcap-server -m backend.rekey \

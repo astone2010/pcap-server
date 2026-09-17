@@ -2,10 +2,11 @@
 # FIRST-TIME SETUP
 # ============================================================================
 #
-# Put this file in the directory you want the install to live in -- that
-# directory IS the install; see "Where the paths resolve" below -- then paste
-# this block into a terminal standing in it. Every line is explained underneath.
+# One paste. Put this file in the directory you want the install to live in,
+# then run:
 #
+#     sudo mkdir -p /opt/docker/pcapserver && sudo chown "$USER" /opt/docker/pcapserver
+#     cd /opt/docker/pcapserver
 #     mkdir -p ssh-keys data captures secrets
 #     chmod 0700 ssh-keys data captures secrets
 #     openssl rand -base64 32 > secrets/master.key
@@ -18,6 +19,16 @@
 # -- not `restarting` -- from `docker compose ps`. Then open
 # http://<host>:8080 and create the admin account. Have an authenticator app to
 # hand: TOTP enrolment is part of creating it.
+#
+# Using a different directory than /opt/docker/pcapserver? Substitute it in
+# both `mkdir`/`chown`/`cd` above AND in the four `source:` lines and the
+# secret's `file:` at the bottom of this file -- they're written out in full,
+# not relative to where this file sits, so both places need to agree.
+#
+# That's the whole install. Everything below is explanation and the less
+# common cases (secrets error that isn't one, running the data directory
+# somewhere other than next to this file, a start that fails) -- not more
+# steps.
 #
 # ----------------------------------------------------------------------------
 # WHAT EACH LINE IS FOR
@@ -42,28 +53,21 @@
 # ----------------------------------------------------------------------------
 # WHERE THE PATHS RESOLVE
 #
-# Every `./` path below is resolved by Docker relative to THE DIRECTORY THIS
-# FILE IS IN -- not your home directory, and not wherever you happen to be
-# standing when you type `docker compose`. So this file's location IS the
-# install directory, and the four subdirectories sit next to it. Pick that
-# directory deliberately: it will hold your captures and the key that decrypts
-# them. /opt/docker/pcap is a reasonable choice on a Linux host:
+# The volumes and the secret's `file:` below are absolute paths, not `./`
+# paths. The setup above keeps this file and the data directory together for
+# simplicity, but that's a choice, not a requirement: because the paths are
+# absolute, they don't care where this compose file sits. Run it from wherever
+# you keep compose files for your other services if you'd rather -- only the
+# `docker compose` commands need to run from that directory; the data
+# directory can be anywhere.
 #
-#     sudo mkdir -p /opt/docker/pcap
-#     sudo chown "$USER" /opt/docker/pcap
-#     cd /opt/docker/pcap
+# Either way, pick the data directory deliberately: it holds your captures and
+# the key that decrypts them. Installing it somewhere other than
+# /opt/docker/pcapserver means changing each `source:` and the
+# `secrets: file:` at the bottom to match, keeping every `target:` exactly as
+# it is:
 #
-# Run every later `docker compose` command from this directory too. Run it from
-# somewhere else and Docker looks for a compose file that isn't there -- or, if
-# one is, mounts that directory's data instead of yours.
-#
-# ----------------------------------------------------------------------------
-# Prefer absolute paths? Supported, and worth it if anyone else will administer
-# this host: nothing then depends on which directory the command was run from.
-# Replace each `source:` and the `secrets: file:` at the bottom with a full
-# path, keeping every `target:` exactly as it is:
-#
-#        source: /opt/docker/pcap/captures
+#        source: /opt/docker/pcapserver/captures
 #        target: /app/captures          # unchanged -- this is inside the container
 #
 # ----------------------------------------------------------------------------
@@ -75,6 +79,12 @@
 # If that key is ever exposed, do not just overwrite it: the app will refuse to
 # start against captures the new key cannot open. Rotate it properly --
 # see "Rotating the master key" in the README.
+#
+# A "secret ... not found" line right after `docker compose up -d` is
+# Compose, not the app -- it can log that once while the secret's file mount
+# is still settling, before the container actually needs it. It clears on its
+# own a moment later. Give it a few seconds, then re-check `docker compose ps`
+# and the logs before troubleshooting further.
 #
 # OWNERSHIP. On each start the entrypoint chowns ssh-keys/, data/ and captures/
 # to the container's non-root user (appuser, UID 1000), because a bind mount
@@ -94,17 +104,18 @@
 
 
 # NOTE: The section below is the only text needed to be in the compose file
-# after the folders, permissions, and master key are created. Anything preceded
-# with a # can be deleted. The final filename should be compose.yaml.
+# once the data directory, its permissions, and the master key are set up.
+# Anything preceded with a # can be deleted. The final filename should be
+# compose.yaml.
 #
-# The paths below are absolute: /opt/docker/pcapserver is the install
-# directory, and the four bind sources and the secret's file all name it in
-# full. Installing somewhere else means changing them here -- they do not
-# follow the directory the file happens to sit in.
+# The paths below are absolute: /opt/docker/pcapserver is the data directory,
+# and the four bind sources and the secret's file all name it in full. They do
+# not follow wherever this compose file itself happens to sit -- see "Where
+# the paths resolve" above.
 
 services:
   pcap-server:
-    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.39
+    image: ghcr.io/darthrater78/pcap-server:0.1.0-dev.40
     ports:
       - "8080:8080"
     volumes:
@@ -156,6 +167,36 @@ services:
       - "host.docker.internal:host-gateway"
     secrets:
       - pcap_master_key
+    # Container hardening. The app itself runs as appuser with no capabilities
+    # at all: the entrypoint starts as root only long enough to hand the three
+    # directories above to appuser, then drops to it, and a non-root process
+    # keeps none of these.
+    #
+    # The five kept are for that root moment, and for the `docker compose run`
+    # and `exec` commands in docs/operating.md and docs/tls.md, which also start
+    # as root. CHOWN and DAC_OVERRIDE let the entrypoint take over a mount some
+    # other UID owns. FOWNER lets those commands update appuser's files, and
+    # SETUID/SETGID let root become appuser. Everything else Docker grants by
+    # default (NET_RAW, MKNOD, KILL, SETFCAP and the rest) goes. Capturing
+    # happens on the target host over SSH, never in here, so NET_RAW is not
+    # needed.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+    # Nothing inside can gain privileges through a setuid binary.
+    security_opt:
+      - no-new-privileges:true
+    # The image cannot be modified at runtime. Everything the app writes goes to
+    # the three mounts above, /tmp (in memory, below), or /dev/shm, where
+    # certificate issuance keeps its scratch files.
+    read_only: true
+    tmpfs:
+      - /tmp
     restart: unless-stopped
     # Defence in depth against a memory spike. Each password verification runs
     # scrypt, which is deliberately memory-hard (~128 MB per call); the app caps
