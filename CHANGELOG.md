@@ -105,7 +105,15 @@ Wireshark-style viewer in the browser, sanitized sharing, and HTTPS built in.
 
 ### Changes since 0.1.0-dev.40
 
-No code changes beyond the version. Documentation only:
+- **A release refuses a tag that does not match the code.** The release gate
+  now reads `APP_VERSION` from the tagged commit and refuses to publish unless
+  the tag names that version. `v1.0.0` was first pushed onto the dev.40 commit,
+  before this release merged. That commit was on `main` with a green Check, so
+  the gate let it through, and `:1.0.0` and `:latest` briefly held dev.40 code.
+  The release was withdrawn and re-published from the merged commit. Covered by
+  `tests/test_release_workflow.py`, which runs the step's own script.
+
+Everything else is documentation:
 
 - **The README is a short tour.** Each section links to the document that holds
   the detail. New `docs/viewer.md`, `docs/sanitizing.md` and

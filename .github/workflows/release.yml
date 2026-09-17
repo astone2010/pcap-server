@@ -73,6 +73,36 @@ jobs:
               ;;
           esac
 
+      # v1.0.0 was first pushed onto the dev.40 commit, before the release PR
+      # merged. That commit was on main and its Check was green, so both checks
+      # around this one passed, and :1.0.0 and :latest were published holding
+      # code that called itself 0.1.0-dev.40. The tag names a version; the
+      # commit has to be that version.
+      - name: Require the tag to match APP_VERSION in the tagged commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          app_version=$(gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${REPO}/contents/backend/main.py?ref=${SHA}" \
+            | sed -n 's/^APP_VERSION = "\([^"]*\)"$/\1/p')
+
+          if [ -z "$app_version" ]; then
+            echo "::error::No APP_VERSION line found in backend/main.py at ${SHA}. Refusing to publish a version nothing declares."
+            exit 1
+          fi
+
+          if [ "v${app_version}" != "$TAG" ]; then
+            echo "::error::Tag ${TAG} is on a commit whose APP_VERSION is ${app_version}. Refusing to publish. Merge the release first, then tag the merged commit."
+            exit 1
+          fi
+
+          echo "${TAG} matches APP_VERSION ${app_version} at ${SHA}."
+
       - name: Require a passing Check run for this commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
